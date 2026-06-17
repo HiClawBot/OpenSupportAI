@@ -361,7 +361,7 @@ AI 摘要、建议回复、标签、情绪识别、自动分流。
 
 ### v0.5：多渠道适配
 
-Email、Slack、Telegram、Tiledesk、Zammad、Generic Webhook。
+Email、Slack、Telegram、Tiledesk、Zammad、Generic Webhook。v0.5.0 已先落地 Generic Webhook 入站 adapter，并把 Slack、Email、Telegram 纳入契约 stub。
 
 ### v1.0：稳定发行
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.5.0 - 2026-06-18
+
+English:
+
+- Added shared channel adapter protocol types for multi-channel inbound support.
+- Added `@opensupportai/adapter-channels` with a fully testable generic webhook adapter and Slack/email/Telegram contract stubs.
+- Added admin channel adapter catalog and adapter test endpoints.
+- Added `POST /v1/channel-webhooks/generic` to ingest generic webhook messages into OpenSupportAI conversations.
+- Added channel webhook smoke testing with `pnpm smoke:channels`.
+- Added tests for channel catalog, generic webhook ingestion, external conversation reuse, stored messages, and webhook event visibility.
+
+中文：
+
+- 新增共享 channel adapter 协议类型，为多渠道接入打基础。
+- 新增 `@opensupportai/adapter-channels`，包含可完整测试的 generic webhook adapter，以及 Slack/email/Telegram 契约 stub。
+- 管理端新增 channel adapter catalog 和 adapter test API。
+- 新增 `POST /v1/channel-webhooks/generic`，可把通用 webhook 消息写入 OpenSupportAI 会话。
+- 新增 `pnpm smoke:channels`，用于 channel webhook 本地 smoke test。
+- 新增 channel catalog、generic webhook 入站、外部会话复用、消息落库和 webhook event 可见性测试。
+
 ## v0.4.0 - 2026-06-18
 
 English:

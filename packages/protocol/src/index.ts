@@ -2,6 +2,7 @@ export * from "./ai";
 export * from "./agent-assist";
 export * from "./api";
 export * from "./auth";
+export * from "./channel";
 export * from "./conversation";
 export * from "./events";
 export * from "./handoff";

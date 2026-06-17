@@ -110,9 +110,12 @@ Zammad Adapter
 Slack Adapter
 Email Adapter
 Telegram Adapter
-Generic Webhook Adapter
+Generic Webhook Adapter（v0.5.0 已提供入站版本）
+Channel Adapter Catalog（v0.5.0 已提供）
 Mobile SDK 方案
 ```
+
+说明：v0.5.0 已落地 generic webhook 入站 adapter；Slack、Email、Telegram 当前是契约 stub，后续再接真实 provider API。
 
 ---
 

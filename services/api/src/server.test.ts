@@ -208,6 +208,135 @@ describe("OpenSupportAI API", () => {
     }
   });
 
+  it("lists channel adapters and ingests generic webhook messages", async () => {
+    const adaptersResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/channels/adapters",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(adaptersResponse.statusCode).toBe(200);
+    const adapters = adaptersResponse.json<{
+      adapters: Array<{ provider: string; status: string }>;
+    }>().adapters;
+    expect(adapters.map((adapter) => adapter.provider)).toEqual([
+      "generic_webhook",
+      "slack",
+      "email",
+      "telegram"
+    ]);
+
+    const genericTestResponse = await app.inject({
+      method: "POST",
+      url: "/v1/admin/projects/proj_demo/channels/adapters/generic_webhook/test",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(genericTestResponse.statusCode).toBe(200);
+    expect(
+      genericTestResponse.json<{ result: { ok: boolean; status: string } }>().result
+    ).toMatchObject({
+      ok: true,
+      status: "ok"
+    });
+
+    const slackTestResponse = await app.inject({
+      method: "POST",
+      url: "/v1/admin/projects/proj_demo/channels/adapters/slack/test",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(slackTestResponse.statusCode).toBe(200);
+    expect(
+      slackTestResponse.json<{ result: { ok: boolean; status: string } }>().result
+    ).toMatchObject({
+      ok: false,
+      status: "stub"
+    });
+
+    const firstWebhookResponse = await app.inject({
+      method: "POST",
+      url: "/v1/channel-webhooks/generic?public_key=pk_demo",
+      payload: {
+        project_id: "proj_demo",
+        inbox_id: "inbox_default",
+        event_id: "generic_evt_1",
+        conversation_id: "generic_thread_1",
+        text: "怎么取消订阅？",
+        contact: {
+          id: "generic_user_1",
+          name: "Generic User",
+          email: "generic@example.com"
+        }
+      }
+    });
+    expect(firstWebhookResponse.statusCode).toBe(200);
+    const firstWebhook = firstWebhookResponse.json<{
+      status: string;
+      conversation_id: string;
+      message_id: string;
+    }>();
+    expect(firstWebhook.status).toBe("processed");
+    expect(firstWebhook.conversation_id).toMatch(/^conv_/);
+    expect(firstWebhook.message_id).toMatch(/^msg_/);
+
+    const secondWebhookResponse = await app.inject({
+      method: "POST",
+      url: "/v1/channel-webhooks/generic?public_key=pk_demo",
+      payload: {
+        project_id: "proj_demo",
+        message: {
+          id: "generic_evt_2",
+          content: "我还想了解退款"
+        },
+        conversation: {
+          id: "generic_thread_1"
+        },
+        user: {
+          external_user_id: "generic_user_1"
+        }
+      }
+    });
+    expect(secondWebhookResponse.statusCode).toBe(200);
+    expect(secondWebhookResponse.json<{ conversation_id: string }>().conversation_id).toBe(
+      firstWebhook.conversation_id
+    );
+
+    const messagesResponse = await app.inject({
+      method: "GET",
+      url: `/v1/client/conversations/${firstWebhook.conversation_id}/messages`,
+      headers: {
+        "x-opensupportai-public-key": "pk_demo"
+      }
+    });
+    const messages = messagesResponse.json<{
+      messages: Array<{ role: string; content: { text?: string } }>;
+    }>().messages;
+    const endUserTexts = messages
+      .filter((message) => message.role === "end_user")
+      .map((message) => message.content.text);
+    expect(endUserTexts).toContain("怎么取消订阅？");
+    expect(endUserTexts).toContain("我还想了解退款");
+
+    const webhookEventsResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/webhooks/events?provider=generic_webhook&status=processed",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(webhookEventsResponse.statusCode).toBe(200);
+    const webhookEvents = webhookEventsResponse.json<{
+      webhook_events: Array<{ externalEventId?: string; status: string }>;
+    }>().webhook_events;
+    expect(webhookEvents.map((event) => event.externalEventId)).toEqual(
+      expect.arrayContaining(["generic_evt_1", "generic_evt_2"])
+    );
+  });
+
   it("handles explicit handoff requests", async () => {
     const conversationResponse = await app.inject({
       method: "POST",

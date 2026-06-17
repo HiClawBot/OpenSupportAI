@@ -1,7 +1,18 @@
+import {
+  channelAdapterCatalog,
+  createGenericWebhookAdapter,
+  createStubChannelAdapter,
+  type StubChannelProvider
+} from "@opensupportai/adapter-channels";
 import { createChatwootAdapter, type ChatwootAdapterConfig } from "@opensupportai/adapter-chatwoot";
 import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import type { ConversationStatus, HandoffReason } from "@opensupportai/protocol";
+import type {
+  ChannelProvider,
+  ConversationStatus,
+  HandoffReason,
+  NormalizedInboundChannelMessage
+} from "@opensupportai/protocol";
 import { ZodError } from "zod";
 import { authenticateAdminIdentity, authenticateClient, type AdminIdentity } from "./auth";
 import { type ApiConfig, loadConfig } from "./config";
@@ -26,6 +37,7 @@ import type {
   ContactRecord,
   ConversationRecord,
   HandoffSessionRecord,
+  InboxRecord,
   IntegrationConfigRecord,
   JsonRecord,
   MessageRecord,
@@ -39,6 +51,7 @@ import {
   createConversationBodySchema,
   createKnowledgeDocumentBodySchema,
   createProjectBodySchema,
+  genericChannelWebhookBodySchema,
   listApiKeysQuerySchema,
   listAuditLogsQuerySchema,
   listAsyncJobsQuerySchema,
@@ -253,6 +266,85 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     };
   });
 
+  app.post("/v1/channel-webhooks/generic", async (request) => {
+    const body = genericChannelWebhookBodySchema.parse(request.body);
+    const project = await authenticateClient(request, repository, stringValue(body["project_id"]));
+    const adapter = createGenericWebhookAdapter();
+    let webhookEvent: Awaited<ReturnType<SupportRepository["createWebhookEvent"]>> | undefined;
+
+    try {
+      const normalized = await adapter.normalizeInboundWebhook({
+        headers: normalizeRequestHeaders(request),
+        payload: body
+      });
+      webhookEvent = await repository.createWebhookEvent({
+        projectId: project.id,
+        provider: normalized.provider,
+        externalEventId: normalized.externalEventId,
+        payload: body
+      });
+      const inbox = await repository.findInbox(project.id, normalized.inboxId);
+      if (!inbox) {
+        throw notFound("Inbox not found");
+      }
+
+      const conversation = await findOrCreateChannelConversation(repository, {
+        project,
+        inbox,
+        normalized
+      });
+      const message = await repository.createMessage({
+        projectId: project.id,
+        conversationId: conversation.id,
+        message: {
+          role: "end_user",
+          text: normalized.message.text,
+          metadata: {
+            ...normalized.metadata,
+            channel: channelMessageMetadata(normalized)
+          }
+        }
+      });
+      eventHub.publish(project.id, conversation.id, {
+        event: "message.created",
+        data: { message }
+      });
+
+      await orchestrator.respondToUserMessage({
+        projectId: project.id,
+        conversationId: conversation.id,
+        message
+      });
+
+      await repository.markWebhookEvent({
+        id: webhookEvent.id,
+        status: "processed"
+      });
+      return {
+        status: "processed",
+        provider: normalized.provider,
+        webhook_event_id: webhookEvent.id,
+        conversation_id: conversation.id,
+        message_id: message.id
+      };
+    } catch (error) {
+      webhookEvent ??= await repository.createWebhookEvent({
+        projectId: project.id,
+        provider: "generic_webhook",
+        payload: body
+      });
+      await repository.markWebhookEvent({
+        id: webhookEvent.id,
+        status: "failed",
+        error: error instanceof Error ? error.message : "Unknown channel webhook error"
+      });
+      if (error instanceof ApiError) {
+        throw error;
+      }
+      throw invalidRequest(error instanceof Error ? error.message : "Invalid generic webhook");
+    }
+  });
+
   app.get("/v1/admin/projects", async (request) => {
     const identity = await authenticateAdminIdentity(request, repository, config);
     return {
@@ -285,6 +377,46 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   app.get("/v1/admin/projects/:projectId/ops/health", async (request) => {
     const { project } = await authenticateAdminProjectIdentity(request, repository, config);
     return buildOpsHealth(repository, project, config);
+  });
+
+  app.get("/v1/admin/projects/:projectId/channels/adapters", async (request) => {
+    const { identity } = await authenticateAdminProjectIdentity(request, repository, config);
+    requireAdminScope(identity, "admin:channels");
+    return {
+      adapters: channelAdapterCatalog
+    };
+  });
+
+  app.post("/v1/admin/projects/:projectId/channels/adapters/:provider/test", async (request) => {
+    const params = request.params as { provider: string };
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:channels");
+    const provider = channelProviderFromParam(params.provider);
+    if (!provider) {
+      throw notFound("Channel adapter not found");
+    }
+
+    const adapter =
+      provider === "generic_webhook"
+        ? createGenericWebhookAdapter()
+        : createStubChannelAdapter(provider);
+    const result = await adapter.testConnection();
+    await recordAudit(repository, request, {
+      project,
+      identity,
+      action: "channel_adapter.tested",
+      targetType: "channel_adapter",
+      targetId: provider,
+      metadata: {
+        ok: result.ok,
+        status: result.status
+      }
+    });
+    return { result };
   });
 
   app.get("/v1/admin/projects/:projectId/api-keys", async (request) => {
@@ -2011,6 +2143,110 @@ function chatwootStatusToLocalStatus(status: string): "handed_off" | "closed" | 
     return "handed_off";
   }
   return undefined;
+}
+
+function channelProviderFromParam(
+  provider: string
+): "generic_webhook" | StubChannelProvider | undefined {
+  if (provider === "generic_webhook" || provider === "slack" || provider === "email") {
+    return provider;
+  }
+  if (provider === "telegram") {
+    return provider;
+  }
+  return undefined;
+}
+
+function normalizeRequestHeaders(request: FastifyRequest): Record<string, string | undefined> {
+  return Object.fromEntries(
+    Object.entries(request.headers).map(([key, value]) => [
+      key.toLowerCase(),
+      Array.isArray(value) ? value[0] : value
+    ])
+  );
+}
+
+async function findOrCreateChannelConversation(
+  repository: SupportRepository,
+  input: {
+    project: ProjectRecord;
+    inbox: InboxRecord;
+    normalized: NormalizedInboundChannelMessage;
+  }
+): Promise<ConversationRecord> {
+  const localConversationId = input.normalized.localConversationId;
+  if (localConversationId) {
+    const existing = await repository.findConversation(input.project.id, localConversationId);
+    if (existing) {
+      return existing;
+    }
+  }
+
+  const externalConversationId = input.normalized.externalConversationId;
+  if (externalConversationId) {
+    const existing = (await repository.listConversations(input.project.id)).find((conversation) =>
+      conversationMatchesChannel(conversation, input.normalized.provider, externalConversationId)
+    );
+    if (existing) {
+      return existing;
+    }
+  }
+
+  const contact = await repository.upsertContact(input.project.id, {
+    externalUserId:
+      input.normalized.contact.externalUserId ??
+      input.normalized.externalConversationId ??
+      input.normalized.externalEventId,
+    name: input.normalized.contact.name,
+    email: input.normalized.contact.email,
+    metadata: {
+      channel: channelMessageMetadata(input.normalized)
+    }
+  });
+
+  return repository.createConversation({
+    projectId: input.project.id,
+    inboxId: input.inbox.id,
+    contactId: contact.id,
+    metadata: {
+      ...input.normalized.metadata,
+      channel: {
+        ...channelMessageMetadata(input.normalized),
+        inboxId: input.inbox.id
+      }
+    }
+  });
+}
+
+function conversationMatchesChannel(
+  conversation: ConversationRecord,
+  provider: ChannelProvider,
+  externalConversationId: string
+): boolean {
+  const channel = recordValue(conversation.metadata["channel"]);
+  return (
+    stringValue(channel?.["provider"]) === provider &&
+    stringValue(channel?.["externalConversationId"]) === externalConversationId
+  );
+}
+
+function channelMessageMetadata(
+  normalized: NormalizedInboundChannelMessage
+): Record<string, unknown> {
+  return {
+    provider: normalized.provider,
+    externalEventId: normalized.externalEventId,
+    externalConversationId: normalized.externalConversationId,
+    externalUserId: normalized.contact.externalUserId,
+    receivedAt: normalized.receivedAt
+  };
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
 }
 
 function metadataString(metadata: JsonRecord, key: string): string | undefined {

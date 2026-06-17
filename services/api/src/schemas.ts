@@ -132,3 +132,5 @@ export const upsertChatwootIntegrationBodySchema = z.object({
 });
 
 export const chatwootWebhookBodySchema = z.record(z.string(), z.unknown());
+
+export const genericChannelWebhookBodySchema = z.record(z.string(), z.unknown());

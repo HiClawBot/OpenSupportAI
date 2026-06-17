@@ -1,4 +1,4 @@
-# OpenSupportAI 数据模型 v0.1
+# OpenSupportAI 数据模型 v0.5
 
 ## 设计目标
 
@@ -14,6 +14,7 @@ AI 消息
 LLM 调用日志
 外部集成
 Webhook 幂等
+多渠道入站消息
 ```
 
 ---
@@ -34,7 +35,10 @@ Organization
         │             └── KnowledgeChunk
         ├── LLMProvider
         ├── IntegrationConfig
+        ├── WebhookEvent
         ├── APIKey
+        ├── AsyncJob
+        ├── AuditLog
         ├── ToolDefinition
         ├── ToolCall
         └── ConversationInsight
@@ -140,6 +144,21 @@ project_id + contact_id
 project_id + status
 project_id + last_message_at
 ```
+
+v0.5 的 generic channel webhook 不新增单独的 channel conversation 表；它在 `conversations.metadata.channel` 中保存：
+
+```json
+{
+  "provider": "generic_webhook",
+  "externalConversationId": "external_thread_123",
+  "externalEventId": "evt_123",
+  "externalUserId": "external_user_123",
+  "inboxId": "inbox_default",
+  "receivedAt": "2026-06-18T00:00:00.000Z"
+}
+```
+
+后续相同 `provider + externalConversationId` 的 webhook 会复用该 conversation。
 
 ---
 
@@ -332,7 +351,7 @@ provider + external_conversation_id unique
 ```text
 id                string primary key
 project_id        string references projects(id)
-provider          string      -- chatwoot
+provider          string      -- chatwoot 等需要持久配置的 provider
 status            string      -- active / disabled
 config_encrypted  text
 metadata          jsonb
@@ -361,6 +380,8 @@ error              text nullable
 created_at         timestamp
 processed_at       timestamp nullable
 ```
+
+v0.5 generic channel webhook 使用 `provider=generic_webhook` 记录入站事件。Slack/email/Telegram 当前是 adapter 契约 stub，还不会写入真实 provider webhook。
 
 索引：
 

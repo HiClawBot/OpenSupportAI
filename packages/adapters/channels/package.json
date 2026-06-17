@@ -1,5 +1,5 @@
 {
-  "name": "@opensupportai/adapter-chatwoot",
+  "name": "@opensupportai/adapter-channels",
   "version": "0.5.0",
   "private": false,
   "type": "module",

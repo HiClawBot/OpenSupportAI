@@ -1,4 +1,4 @@
-# OpenSupportAI API 规范 v0.4
+# OpenSupportAI API 规范 v0.5
 
 ## 通用约定
 
@@ -87,7 +87,19 @@ Authorization: Bearer <admin_token>
 
 ### Webhook API
 
-Webhook 使用 provider secret 校验。
+Webhook 按入口使用 provider secret 或项目 public key 校验。Generic channel webhook 使用项目 public key：
+
+```http
+X-OpenSupportAI-Public-Key: pk_live_xxx
+```
+
+或：
+
+```http
+POST /v1/channel-webhooks/generic?public_key=pk_live_xxx
+```
+
+Chatwoot webhook 使用 provider secret 校验。
 
 ```http
 X-OpenSupportAI-Signature: <signature>
@@ -262,6 +274,74 @@ Content-Type: application/json
   "status": "handoff_requested"
 }
 ```
+
+---
+
+## Channel Webhook API
+
+### Generic Webhook 入站消息
+
+```http
+POST /v1/channel-webhooks/generic?public_key=pk_live_xxx
+Content-Type: application/json
+```
+
+请求支持扁平或嵌套 JSON。示例：
+
+```json
+{
+  "project_id": "proj_123",
+  "inbox_id": "inbox_default",
+  "event_id": "evt_123",
+  "conversation_id": "external_thread_123",
+  "text": "我怎么取消订阅？",
+  "contact": {
+    "id": "external_user_123",
+    "name": "张三",
+    "email": "zhangsan@example.com"
+  },
+  "metadata": {
+    "source_url": "https://example.com/account"
+  }
+}
+```
+
+也支持：
+
+```json
+{
+  "project_id": "proj_123",
+  "message": {
+    "id": "msg_external_123",
+    "content": "我还想了解退款"
+  },
+  "conversation": {
+    "id": "external_thread_123"
+  },
+  "user": {
+    "external_user_id": "external_user_123"
+  }
+}
+```
+
+响应：
+
+```json
+{
+  "status": "processed",
+  "provider": "generic_webhook",
+  "webhook_event_id": "webhook_123",
+  "conversation_id": "conv_123",
+  "message_id": "msg_123"
+}
+```
+
+处理语义：
+
+- `event_id` / `message.id` 会写入 `webhook_events.external_event_id`。
+- 相同外部 `conversation_id` 会复用同一个本地 conversation。
+- 如果传入 `local_conversation_id` 或 `opensupportai_conversation_id`，会优先写入该本地 conversation。
+- 成功处理后写入 end-user message，并复用现有 orchestrator 生成 AI 回复。
 
 ---
 
@@ -450,6 +530,64 @@ GET /v1/admin/projects/{project_id}/ops/health
   }
 }
 ```
+
+---
+
+### 获取 Channel Adapter Catalog
+
+```http
+GET /v1/admin/projects/{project_id}/channels/adapters
+```
+
+需要 `admin:channels` scope。
+
+响应：
+
+```json
+{
+  "adapters": [
+    {
+      "provider": "generic_webhook",
+      "name": "Generic Webhook",
+      "status": "available",
+      "capabilities": ["receive_message", "verify_webhook", "test_connection"],
+      "configurationKeys": ["public_key", "webhook_secret"]
+    },
+    {
+      "provider": "slack",
+      "name": "Slack",
+      "status": "stub",
+      "capabilities": ["receive_message", "send_message", "verify_webhook", "test_connection"],
+      "configurationKeys": ["bot_token", "signing_secret", "default_channel_id"]
+    }
+  ]
+}
+```
+
+`slack`、`email`、`telegram` 在 v0.5 是契约 stub，表示协议、能力和配置项已固定，但尚未连接真实 provider API。
+
+---
+
+### 测试 Channel Adapter
+
+```http
+POST /v1/admin/projects/{project_id}/channels/adapters/{provider}/test
+```
+
+响应：
+
+```json
+{
+  "result": {
+    "provider": "generic_webhook",
+    "ok": true,
+    "status": "ok",
+    "message": "Generic webhook adapter is available."
+  }
+}
+```
+
+Stub provider 会返回 `ok=false`、`status=stub`，不会访问真实第三方平台。
 
 ---
 
