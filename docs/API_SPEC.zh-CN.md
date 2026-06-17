@@ -390,6 +390,62 @@ Content-Type: application/json
 
 ---
 
+### 测试 Chatwoot 连接
+
+```http
+POST /v1/admin/projects/{project_id}/integrations/chatwoot/test
+```
+
+响应：
+
+```json
+{
+  "ok": true,
+  "result": {
+    "accountId": "1",
+    "inboxId": "2",
+    "inboxName": "Support"
+  },
+  "integration": {
+    "provider": "chatwoot",
+    "status": "active",
+    "metadata": {
+      "last_tested_at": "2026-06-17T10:00:00.000Z",
+      "last_test_ok": true,
+      "last_test_inbox_name": "Support"
+    }
+  }
+}
+```
+
+失败时返回 200 且 `ok=false`，错误会写入 `integration.metadata.last_test_error`。
+
+---
+
+### 重试 Chatwoot Handoff
+
+```http
+POST /v1/admin/projects/{project_id}/handoffs/{handoff_id}/retry
+```
+
+响应：
+
+```json
+{
+  "handoff_session": {
+    "id": "handoff_123",
+    "provider": "chatwoot",
+    "status": "active",
+    "externalConversationId": "91"
+  },
+  "status": "handed_off"
+}
+```
+
+仅支持重试 `provider=chatwoot` 且尚未 `active/closed` 的 handoff session。
+
+---
+
 ### 获取会话列表
 
 ```http
@@ -432,7 +488,18 @@ GET /v1/admin/projects/{project_id}/conversations/{conversation_id}
     "status": "open"
   },
   "messages": [],
-  "ai_runs": []
+  "ai_runs": [],
+  "handoff_sessions": [
+    {
+      "id": "handoff_123",
+      "provider": "chatwoot",
+      "status": "active",
+      "externalConversationId": "91",
+      "metadata": {
+        "external_contact_source_id": "source_42"
+      }
+    }
+  ]
 }
 ```
 
@@ -455,8 +522,9 @@ X-OpenSupportAI-Signature: <signature>
 2. 写入 webhook_events。
 3. 根据 external_conversation_id 查找 handoff_session。
 4. 如果是坐席公开回复，写入 human_agent message。
-5. 广播 human.message.created。
-6. 幂等处理重复 webhook。
+5. 如果是 conversation_status_changed，更新 conversation 和 handoff_session 状态。
+6. 广播 human.message.created 或 conversation.status_changed。
+7. 幂等处理重复 webhook。
 ```
 
 ---

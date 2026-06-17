@@ -33,7 +33,7 @@ The first public release is a v0.1 MVP. It is intentionally small: it is not a f
 - Embeddable browser widget with Shadow DOM UI, SSE updates, conversation persistence, source references, and handoff action.
 - React admin console for projects, conversations, knowledge documents, LLM settings, and Chatwoot settings.
 - React demo app showing a SaaS billing page with the widget embedded.
-- Chatwoot handoff integration: creates contacts/conversations, pushes handoff summaries and transcript messages, stores external IDs, and maps public agent replies back into local `human_agent` messages.
+- Chatwoot handoff integration: creates contacts/conversations, pushes handoff summaries and transcript messages, stores external IDs, maps public agent replies back into local `human_agent` messages, tests connectivity, retries failed handoffs, and syncs Chatwoot resolved/open status.
 - Docker Compose stack for PostgreSQL/pgvector, Redis, MinIO, API, worker, admin console, demo app, and optional Chatwoot.
 
 ### Repository Layout
@@ -128,7 +128,7 @@ docker compose -f deploy/docker-compose/docker-compose.yml --profile chatwoot up
 
 ### Chatwoot Handoff
 
-Configure Chatwoot from the admin console with `base_url`, `account_id`, `inbox_id`, `api_access_token`, and `webhook_secret`. When a user requests human handoff, OpenSupportAI creates or updates the Chatwoot contact, creates a Chatwoot conversation with OpenSupportAI custom attributes, pushes a private handoff summary plus recent public transcript messages, marks the local conversation `handed_off`, and accepts public Chatwoot agent replies through `/v1/webhooks/chatwoot/{project_id}`.
+Configure Chatwoot from the admin console with `base_url`, `account_id`, `inbox_id`, `api_access_token`, and `webhook_secret`. The console can test the configured Chatwoot account/inbox before traffic is sent. When a user requests human handoff, OpenSupportAI creates or updates the Chatwoot contact, creates a Chatwoot conversation with OpenSupportAI custom attributes, pushes a private handoff summary plus recent public transcript messages, marks the local conversation `handed_off`, and accepts public Chatwoot agent replies through `/v1/webhooks/chatwoot/{project_id}`. Failed handoff sessions are visible in the admin conversation view and can be retried. Chatwoot `conversation_status_changed` webhooks sync `resolved` to local `closed` and `open`/`pending`/`snoozed` to `handed_off`.
 
 ### Development Commands
 
@@ -279,7 +279,7 @@ OpenSupportAI 是一套开源、可嵌入、LLM-native 的 AI 智能客服运行
 - 可嵌入浏览器 Widget：Shadow DOM UI、SSE 更新、会话持久化、source references 和人工转接。
 - React Admin Console：项目、会话、知识库、LLM 设置、Chatwoot 设置。
 - React Demo App：展示一个嵌入 Widget 的 SaaS 账单页。
-- Chatwoot 人工转接集成：创建 contact/conversation，推送转接摘要和历史消息，保存 external IDs，并把公开坐席回复回流为本地 `human_agent` 消息。
+- Chatwoot 人工转接集成：创建 contact/conversation，推送转接摘要和历史消息，保存 external IDs，把公开坐席回复回流为本地 `human_agent` 消息，支持连接测试、失败重试和 Chatwoot resolved/open 状态同步。
 - Docker Compose：PostgreSQL/pgvector、Redis、MinIO、API、worker、admin console、demo app，以及可选 Chatwoot。
 
 ### 仓库结构
@@ -374,7 +374,7 @@ docker compose -f deploy/docker-compose/docker-compose.yml --profile chatwoot up
 
 ### Chatwoot 人工转接
 
-在 Admin Console 中配置 Chatwoot 的 `base_url`、`account_id`、`inbox_id`、`api_access_token` 和 `webhook_secret`。用户请求转人工时，OpenSupportAI 会创建或更新 Chatwoot contact，创建带 OpenSupportAI custom attributes 的 Chatwoot conversation，推送一条私有转接摘要和最近公开会话记录，把本地会话标记为 `handed_off`，并通过 `/v1/webhooks/chatwoot/{project_id}` 接收公开坐席回复。
+在 Admin Console 中配置 Chatwoot 的 `base_url`、`account_id`、`inbox_id`、`api_access_token` 和 `webhook_secret`。管理台可以先测试 Chatwoot account/inbox 是否可用。用户请求转人工时，OpenSupportAI 会创建或更新 Chatwoot contact，创建带 OpenSupportAI custom attributes 的 Chatwoot conversation，推送一条私有转接摘要和最近公开会话记录，把本地会话标记为 `handed_off`，并通过 `/v1/webhooks/chatwoot/{project_id}` 接收公开坐席回复。失败的 handoff session 会显示在管理台会话详情中，并可手动 retry。Chatwoot `conversation_status_changed` webhook 会把 `resolved` 同步为本地 `closed`，把 `open`/`pending`/`snoozed` 同步为 `handed_off`。
 
 ### 开发命令
 

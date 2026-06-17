@@ -522,6 +522,33 @@ export class PrismaSupportRepository implements SupportRepository {
     return mapHandoffSession(session);
   }
 
+  async findHandoffSession(input: {
+    projectId: string;
+    id: string;
+  }): Promise<HandoffSessionRecord | undefined> {
+    const session = await this.prisma.handoffSession.findFirst({
+      where: {
+        id: input.id,
+        projectId: input.projectId
+      }
+    });
+    return session ? mapHandoffSession(session) : undefined;
+  }
+
+  async listHandoffSessions(input: {
+    projectId: string;
+    conversationId?: string;
+  }): Promise<HandoffSessionRecord[]> {
+    const sessions = await this.prisma.handoffSession.findMany({
+      where: {
+        projectId: input.projectId,
+        ...(input.conversationId ? { conversationId: input.conversationId } : {})
+      },
+      orderBy: { createdAt: "desc" }
+    });
+    return sessions.map(mapHandoffSession);
+  }
+
   async upsertIntegrationConfig(input: {
     projectId: string;
     provider: string;

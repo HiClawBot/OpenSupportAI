@@ -179,6 +179,77 @@ describe("OpenSupportAI API", () => {
     expect(handoffResponse.json<{ status: string }>().status).toBe("handoff_requested");
   });
 
+  it("tests Chatwoot integration connectivity", async () => {
+    const chatwootFetch: typeof fetch = async (input) => {
+      if (String(input).endsWith("/inboxes")) {
+        return new Response(
+          JSON.stringify({
+            payload: [
+              {
+                id: 1,
+                name: "Support"
+              }
+            ]
+          }),
+          { status: 200 }
+        );
+      }
+
+      return new Response(JSON.stringify({ error: "unexpected url" }), { status: 404 });
+    };
+    const chatwootApp = await buildApp({
+      config: {
+        nodeEnv: "test",
+        port: 0,
+        storageMode: "memory",
+        adminToken: "admin_demo_key",
+        encryptionKey: "test_encryption_key",
+        corsOrigin: true
+      },
+      chatwootFetch
+    });
+    await chatwootApp.ready();
+
+    try {
+      await chatwootApp.inject({
+        method: "POST",
+        url: "/v1/admin/projects/proj_demo/integrations/chatwoot",
+        headers: {
+          authorization: "Bearer admin_demo_key"
+        },
+        payload: {
+          base_url: "http://chatwoot.test",
+          account_id: "1",
+          inbox_id: "1",
+          api_access_token: "chatwoot_token",
+          webhook_secret: "chatwoot_secret",
+          status: "active"
+        }
+      });
+
+      const testResponse = await chatwootApp.inject({
+        method: "POST",
+        url: "/v1/admin/projects/proj_demo/integrations/chatwoot/test",
+        headers: {
+          authorization: "Bearer admin_demo_key"
+        }
+      });
+
+      expect(testResponse.statusCode).toBe(200);
+      const payload = testResponse.json<{
+        ok: boolean;
+        result: { inboxName?: string };
+        integration: { metadata: Record<string, unknown> };
+      }>();
+      expect(payload.ok).toBe(true);
+      expect(payload.result.inboxName).toBe("Support");
+      expect(payload.integration.metadata["last_test_ok"]).toBe(true);
+      expect(payload.integration.metadata["last_test_inbox_name"]).toBe("Support");
+    } finally {
+      await chatwootApp.close();
+    }
+  });
+
   it("creates Chatwoot handoff conversations and maps replies by external id", async () => {
     const chatwootCalls: Array<{ url: string; body: Record<string, unknown> }> = [];
     const chatwootFetch: typeof fetch = async (input, init) => {
@@ -382,6 +453,196 @@ describe("OpenSupportAI API", () => {
             message.content.text?.includes("我已经看到你前面的对话记录")
         )
       ).toBe(true);
+
+      const statusResponse = await chatwootApp.inject({
+        method: "POST",
+        url: "/v1/webhooks/chatwoot/proj_demo",
+        headers: {
+          "x-opensupportai-signature": "chatwoot_secret"
+        },
+        payload: {
+          id: "cw_status_1",
+          event: "conversation_status_changed",
+          status: "resolved",
+          conversation: {
+            id: 91
+          }
+        }
+      });
+      expect(statusResponse.statusCode).toBe(200);
+      expect(statusResponse.json<{ conversation_status: string }>().conversation_status).toBe(
+        "closed"
+      );
+
+      const closedAdminResponse = await chatwootApp.inject({
+        method: "GET",
+        url: `/v1/admin/projects/proj_demo/conversations/${conversation.conversation_id}`,
+        headers: {
+          authorization: "Bearer admin_demo_key"
+        }
+      });
+      const closedAdmin = closedAdminResponse.json<{
+        conversation: { status: string };
+        handoff_sessions: Array<{ status: string; externalConversationId?: string }>;
+      }>();
+      expect(closedAdmin.conversation.status).toBe("closed");
+      expect(closedAdmin.handoff_sessions[0]).toMatchObject({
+        status: "closed",
+        externalConversationId: "91"
+      });
+    } finally {
+      await chatwootApp.close();
+    }
+  });
+
+  it("retries failed Chatwoot handoff sessions", async () => {
+    let failFirstTranscriptPush = true;
+    const chatwootCalls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const chatwootFetch: typeof fetch = async (input, init) => {
+      const url = String(input);
+      const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+      chatwootCalls.push({ url, body });
+
+      if (url.endsWith("/contacts")) {
+        return new Response(
+          JSON.stringify({
+            id: 42,
+            payload: [
+              {
+                id: 42,
+                contact_inboxes: [
+                  {
+                    source_id: "source_42",
+                    inbox: {
+                      id: 1
+                    }
+                  }
+                ]
+              }
+            ]
+          }),
+          { status: 200 }
+        );
+      }
+
+      if (url.endsWith("/conversations")) {
+        return new Response(JSON.stringify({ id: 91 }), { status: 200 });
+      }
+
+      if (url.endsWith("/conversations/91/messages")) {
+        if (failFirstTranscriptPush) {
+          failFirstTranscriptPush = false;
+          return new Response(JSON.stringify({ error: "temporary failure" }), { status: 503 });
+        }
+        return new Response(JSON.stringify({ id: 100 }), { status: 200 });
+      }
+
+      return new Response(JSON.stringify({ error: "unexpected url" }), { status: 404 });
+    };
+
+    const chatwootApp = await buildApp({
+      config: {
+        nodeEnv: "test",
+        port: 0,
+        storageMode: "memory",
+        adminToken: "admin_demo_key",
+        encryptionKey: "test_encryption_key",
+        corsOrigin: true
+      },
+      chatwootFetch
+    });
+    await chatwootApp.ready();
+
+    try {
+      await chatwootApp.inject({
+        method: "POST",
+        url: "/v1/admin/projects/proj_demo/integrations/chatwoot",
+        headers: {
+          authorization: "Bearer admin_demo_key"
+        },
+        payload: {
+          base_url: "http://chatwoot.test",
+          account_id: "1",
+          inbox_id: "1",
+          api_access_token: "chatwoot_token",
+          webhook_secret: "chatwoot_secret",
+          status: "active"
+        }
+      });
+
+      const conversationResponse = await chatwootApp.inject({
+        method: "POST",
+        url: "/v1/client/conversations",
+        headers: {
+          "x-opensupportai-public-key": "pk_demo"
+        },
+        payload: {
+          project_id: "proj_demo",
+          inbox_id: "inbox_default",
+          contact: {
+            external_user_id: "user_retry"
+          }
+        }
+      });
+      const conversation = conversationResponse.json<{ conversation_id: string }>();
+
+      const failedHandoffResponse = await chatwootApp.inject({
+        method: "POST",
+        url: `/v1/client/conversations/${conversation.conversation_id}/handoff`,
+        headers: {
+          "x-opensupportai-public-key": "pk_demo"
+        },
+        payload: {
+          reason: "user_requested"
+        }
+      });
+      expect(failedHandoffResponse.statusCode).toBe(200);
+      expect(failedHandoffResponse.json<{ status: string }>().status).toBe("handoff_requested");
+
+      const failedAdminResponse = await chatwootApp.inject({
+        method: "GET",
+        url: `/v1/admin/projects/proj_demo/conversations/${conversation.conversation_id}`,
+        headers: {
+          authorization: "Bearer admin_demo_key"
+        }
+      });
+      const failedAdmin = failedAdminResponse.json<{
+        handoff_sessions: Array<{
+          id: string;
+          status: string;
+          externalConversationId?: string;
+        }>;
+      }>();
+      expect(failedAdmin.handoff_sessions[0]).toMatchObject({
+        status: "failed",
+        externalConversationId: "91"
+      });
+
+      const retryResponse = await chatwootApp.inject({
+        method: "POST",
+        url: `/v1/admin/projects/proj_demo/handoffs/${failedAdmin.handoff_sessions[0]?.id}/retry`,
+        headers: {
+          authorization: "Bearer admin_demo_key"
+        }
+      });
+      expect(retryResponse.statusCode).toBe(200);
+      expect(retryResponse.json<{ status: string }>().status).toBe("handed_off");
+
+      const retriedAdminResponse = await chatwootApp.inject({
+        method: "GET",
+        url: `/v1/admin/projects/proj_demo/conversations/${conversation.conversation_id}`,
+        headers: {
+          authorization: "Bearer admin_demo_key"
+        }
+      });
+      const retriedAdmin = retriedAdminResponse.json<{
+        conversation: { status: string };
+        handoff_sessions: Array<{ status: string; metadata: Record<string, unknown> }>;
+      }>();
+      expect(retriedAdmin.conversation.status).toBe("handed_off");
+      expect(retriedAdmin.handoff_sessions[0]?.status).toBe("active");
+      expect(retriedAdmin.handoff_sessions[0]?.metadata["retry_count"]).toBe(1);
+      expect(chatwootCalls.filter((call) => call.url.endsWith("/conversations")).length).toBe(1);
     } finally {
       await chatwootApp.close();
     }

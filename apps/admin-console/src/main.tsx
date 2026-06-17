@@ -1,6 +1,7 @@
 import { StrictMode, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  ArrowClockwise,
   ChatCircleText,
   Database,
   GearSix,
@@ -41,6 +42,26 @@ type Message = {
   createdAt: string;
 };
 
+type HandoffSession = {
+  id: string;
+  provider: string;
+  externalContactId?: string;
+  externalConversationId?: string;
+  status: string;
+  reason?: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ChatwootIntegration = {
+  id: string;
+  status: string;
+  metadata: Record<string, unknown>;
+  configured: boolean;
+  updatedAt?: string;
+};
+
 const apiUrl = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
 function App() {
@@ -53,6 +74,9 @@ function App() {
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<string | undefined>();
   const [messages, setMessages] = useState<Message[]>([]);
+  const [handoffSessions, setHandoffSessions] = useState<HandoffSession[]>([]);
+  const [chatwootIntegration, setChatwootIntegration] = useState<ChatwootIntegration | undefined>();
+  const [chatwootStatus, setChatwootStatus] = useState<string | undefined>();
   const [status, setStatus] = useState("Loading");
   const [error, setError] = useState<string | undefined>();
 
@@ -71,7 +95,11 @@ function App() {
 
   useEffect(() => {
     if (activeProjectId) {
-      void Promise.all([loadConversations(activeProjectId), loadDocuments(activeProjectId)]);
+      void Promise.all([
+        loadConversations(activeProjectId),
+        loadDocuments(activeProjectId),
+        loadChatwootIntegration(activeProjectId)
+      ]);
     }
   }, [activeProjectId, adminToken]);
 
@@ -118,12 +146,20 @@ function App() {
     setDocuments(payload.documents);
   }
 
+  async function loadChatwootIntegration(projectId: string) {
+    const payload = await request<{ integration: ChatwootIntegration | null }>(
+      `/v1/admin/projects/${projectId}/integrations/chatwoot`
+    );
+    setChatwootIntegration(payload.integration ?? undefined);
+  }
+
   async function loadConversation(conversationId: string) {
     setSelectedConversation(conversationId);
-    const payload = await request<{ messages: Message[] }>(
+    const payload = await request<{ messages: Message[]; handoff_sessions: HandoffSession[] }>(
       `/v1/admin/projects/${activeProjectId}/conversations/${conversationId}`
     );
     setMessages(payload.messages);
+    setHandoffSessions(payload.handoff_sessions);
   }
 
   async function createProject(form: FormData) {
@@ -163,17 +199,52 @@ function App() {
   }
 
   async function saveChatwoot(form: FormData) {
-    await request(`/v1/admin/projects/${activeProjectId}/integrations/chatwoot`, {
+    const payload = await request<{ integration: ChatwootIntegration }>(
+      `/v1/admin/projects/${activeProjectId}/integrations/chatwoot`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          base_url: String(form.get("base_url") ?? "http://localhost:3008"),
+          account_id: String(form.get("account_id") ?? "1"),
+          inbox_id: String(form.get("inbox_id") ?? "1"),
+          api_access_token: String(form.get("api_access_token") ?? ""),
+          webhook_secret: String(form.get("webhook_secret") ?? ""),
+          status: "active"
+        })
+      }
+    );
+    setChatwootIntegration(payload.integration);
+    setChatwootStatus("Chatwoot settings saved");
+  }
+
+  async function testChatwoot() {
+    setChatwootStatus("Testing Chatwoot");
+    const payload = await request<{
+      ok: boolean;
+      error?: string;
+      result?: { inboxName?: string };
+      integration: ChatwootIntegration;
+    }>(`/v1/admin/projects/${activeProjectId}/integrations/chatwoot/test`, {
       method: "POST",
-      body: JSON.stringify({
-        base_url: String(form.get("base_url") ?? "http://localhost:3008"),
-        account_id: String(form.get("account_id") ?? "1"),
-        inbox_id: String(form.get("inbox_id") ?? "1"),
-        api_access_token: String(form.get("api_access_token") ?? ""),
-        webhook_secret: String(form.get("webhook_secret") ?? ""),
-        status: "active"
-      })
+      body: JSON.stringify({})
     });
+    setChatwootIntegration(payload.integration);
+    setChatwootStatus(
+      payload.ok
+        ? `Connected${payload.result?.inboxName ? ` to ${payload.result.inboxName}` : ""}`
+        : payload.error
+    );
+  }
+
+  async function retryHandoff(handoffId: string) {
+    await request(`/v1/admin/projects/${activeProjectId}/handoffs/${handoffId}/retry`, {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+    if (selectedConversation) {
+      await loadConversation(selectedConversation);
+    }
+    await loadConversations(activeProjectId);
   }
 
   return (
@@ -267,6 +338,32 @@ function App() {
                 </article>
               ))}
             </div>
+            {selectedConversation ? (
+              <div className="handoffs">
+                <h3>Handoff</h3>
+                {handoffSessions.length === 0 ? <Empty text="No handoff sessions" /> : null}
+                {handoffSessions.map((session) => (
+                  <div className="handoff-row" key={session.id}>
+                    <div>
+                      <strong>{session.provider}</strong>
+                      <span>{session.status}</span>
+                      {session.externalConversationId ? (
+                        <small>External conversation {session.externalConversationId}</small>
+                      ) : null}
+                      {typeof session.metadata.error === "string" ? (
+                        <small>{session.metadata.error}</small>
+                      ) : null}
+                    </div>
+                    {session.provider === "chatwoot" &&
+                    (session.status === "failed" || session.status === "requested") ? (
+                      <button className="secondary" onClick={() => void retryHandoff(session.id)}>
+                        <ArrowClockwise size={16} /> Retry
+                      </button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
         </section>
 
@@ -356,7 +453,13 @@ function App() {
               <span>Webhook secret</span>
               <input name="webhook_secret" type="password" />
             </label>
-            <button className="primary">Save Chatwoot</button>
+            <div className="actions">
+              <button className="primary">Save Chatwoot</button>
+              <button className="secondary" type="button" onClick={() => void testChatwoot()}>
+                <PlugsConnected size={16} /> Test
+              </button>
+            </div>
+            <IntegrationStatus integration={chatwootIntegration} status={chatwootStatus} />
           </form>
         </section>
 
@@ -383,6 +486,30 @@ function Metric(props: { icon: React.ReactNode; label: string; value: string }) 
 
 function Empty(props: { text: string }) {
   return <div className="empty">{props.text}</div>;
+}
+
+function IntegrationStatus(props: {
+  integration?: ChatwootIntegration;
+  status?: string;
+}): React.ReactElement {
+  const metadata = props.integration?.metadata ?? {};
+  const lastTestOk = metadata["last_test_ok"];
+  const lastTestedAt = metadata["last_tested_at"];
+  const lastTestError = metadata["last_test_error"];
+  const lastTestInboxName = metadata["last_test_inbox_name"];
+
+  return (
+    <div className="integration-status">
+      <span>{props.integration ? `Status: ${props.integration.status}` : "Not configured"}</span>
+      {props.status ? <b>{props.status}</b> : null}
+      {typeof lastTestOk === "boolean" ? (
+        <span>Last test: {lastTestOk ? "ok" : "failed"}</span>
+      ) : null}
+      {typeof lastTestInboxName === "string" ? <span>Inbox: {lastTestInboxName}</span> : null}
+      {typeof lastTestError === "string" ? <span>{lastTestError}</span> : null}
+      {typeof lastTestedAt === "string" ? <small>{lastTestedAt}</small> : null}
+    </div>
+  );
 }
 
 createRoot(document.getElementById("root")!).render(

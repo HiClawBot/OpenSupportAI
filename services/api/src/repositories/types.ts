@@ -235,6 +235,14 @@ export type SupportRepository = {
     externalConversationId?: string;
     metadata?: JsonRecord;
   }): Promise<HandoffSessionRecord>;
+  findHandoffSession(input: {
+    projectId: string;
+    id: string;
+  }): Promise<HandoffSessionRecord | undefined>;
+  listHandoffSessions(input: {
+    projectId: string;
+    conversationId?: string;
+  }): Promise<HandoffSessionRecord[]>;
   upsertIntegrationConfig(input: {
     projectId: string;
     provider: string;

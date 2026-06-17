@@ -13,6 +13,38 @@ describe("chatwoot adapter skeleton", () => {
     expect(adapter.provider).toBe("chatwoot");
   });
 
+  it("tests Chatwoot connectivity against the configured inbox", async () => {
+    const calls: string[] = [];
+    const adapter = createChatwootAdapter({
+      baseUrl: "http://chatwoot.test",
+      accountId: "1",
+      inboxId: "2",
+      apiAccessToken: "token",
+      fetchImpl: async (input) => {
+        calls.push(String(input));
+        return new Response(
+          JSON.stringify({
+            payload: [
+              {
+                id: 2,
+                name: "Support"
+              }
+            ]
+          }),
+          { status: 200 }
+        );
+      }
+    });
+
+    await expect(adapter.testConnection()).resolves.toEqual({
+      ok: true,
+      accountId: "1",
+      inboxId: "2",
+      inboxName: "Support"
+    });
+    expect(calls[0]).toBe("http://chatwoot.test/api/v1/accounts/1/inboxes");
+  });
+
   it("creates contacts through the Chatwoot API", async () => {
     const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
     const adapter = createChatwootAdapter({

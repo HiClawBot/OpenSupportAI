@@ -11,11 +11,19 @@ export type ChatwootAdapterConfig = {
 
 export interface ChatwootHandoffAdapter {
   provider: "chatwoot";
+  testConnection(): Promise<ChatwootConnectionTestResult>;
   createOrUpdateContact(input: CreateContactInput): Promise<ExternalContactRef>;
   createConversation(input: CreateConversationInput): Promise<ExternalConversationRef>;
   pushMessage(input: PushMessageInput): Promise<void>;
   handleWebhook(input: WebhookInput): Promise<WebhookResult>;
 }
+
+export type ChatwootConnectionTestResult = {
+  ok: boolean;
+  accountId: string;
+  inboxId: string;
+  inboxName?: string;
+};
 
 export type CreateContactInput = {
   projectId: string;
@@ -64,6 +72,21 @@ export function createChatwootAdapter(config: ChatwootAdapterConfig): ChatwootHa
   const client = new ChatwootApiClient(config);
   return {
     provider: "chatwoot",
+    async testConnection() {
+      const response = await client.get<ChatwootInboxesResponse>("/inboxes");
+      const inboxes = Array.isArray(response.payload) ? response.payload : [];
+      const inbox = inboxes.find((item) => stringValue(item.id) === config.inboxId);
+      if (!inbox) {
+        throw new Error(`Chatwoot inbox ${config.inboxId} was not found`);
+      }
+
+      return {
+        ok: true,
+        accountId: config.accountId,
+        inboxId: config.inboxId,
+        inboxName: typeof inbox.name === "string" ? inbox.name : undefined
+      };
+    },
     async createOrUpdateContact(input) {
       const response = await client.post<ChatwootContactResponse>(`/contacts`, {
         inbox_id: numericString(config.inboxId),
@@ -143,11 +166,34 @@ type ChatwootContactResponse = {
   contact_inboxes?: unknown;
 };
 
+type ChatwootInboxesResponse = {
+  payload?: Array<{
+    id?: number | string;
+    name?: string;
+  }>;
+};
+
 class ChatwootApiClient {
   private readonly fetchImpl: typeof fetch;
 
   constructor(private readonly config: ChatwootAdapterConfig) {
     this.fetchImpl = config.fetchImpl ?? fetch;
+  }
+
+  async get<T>(path: string): Promise<T> {
+    const response = await this.fetchImpl(this.url(path), {
+      method: "GET",
+      headers: {
+        api_access_token: this.config.apiAccessToken
+      },
+      signal: AbortSignal.timeout(this.config.timeoutMs ?? 30_000)
+    });
+
+    if (!response.ok) {
+      throw new Error(`Chatwoot request failed with status ${response.status}`);
+    }
+
+    return response.json() as Promise<T>;
   }
 
   async post<T>(path: string, body: Record<string, unknown>): Promise<T> {

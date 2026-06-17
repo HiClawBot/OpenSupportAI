@@ -458,6 +458,26 @@ export class MemorySupportRepository implements SupportRepository {
     return updated;
   }
 
+  async findHandoffSession(input: {
+    projectId: string;
+    id: string;
+  }): Promise<HandoffSessionRecord | undefined> {
+    const session = this.handoffSessions.get(input.id);
+    return session?.projectId === input.projectId ? session : undefined;
+  }
+
+  async listHandoffSessions(input: {
+    projectId: string;
+    conversationId?: string;
+  }): Promise<HandoffSessionRecord[]> {
+    return [...this.handoffSessions.values()]
+      .filter((session) => session.projectId === input.projectId)
+      .filter((session) =>
+        input.conversationId ? session.conversationId === input.conversationId : true
+      )
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
   async upsertIntegrationConfig(input: {
     projectId: string;
     provider: string;

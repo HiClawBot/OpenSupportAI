@@ -12,11 +12,14 @@ OpenSupportAI 核心不依赖 Chatwoot 数据模型，只依赖统一 Handoff Ad
 
 ```text
 配置 Chatwoot base_url/account_id/inbox_id/token
+测试 Chatwoot account/inbox 连接
 创建或更新 Chatwoot contact
 创建 Chatwoot conversation
 推送会话摘要和历史消息
 接收 Chatwoot webhook
 将坐席回复写回 OpenSupportAI messages
+同步 Chatwoot conversation status
+失败 handoff 可在管理台重试
 通过 SSE 推给 Widget
 ```
 
@@ -27,6 +30,13 @@ OpenSupportAI 核心不依赖 Chatwoot 数据模型，只依赖统一 Handoff Ad
 ```ts
 export interface HandoffAdapter {
   provider: string;
+
+  testConnection(): Promise<{
+    ok: boolean;
+    accountId: string;
+    inboxId: string;
+    inboxName?: string;
+  }>;
 
   createOrUpdateContact(input: { projectId: string; contactId: string }): Promise<{
     externalContactId: string;
@@ -100,6 +110,32 @@ GET API 不返回明文
 9. SSE 广播 handoff.requested。
 ```
 
+### 连接测试
+
+管理台调用：
+
+```http
+POST /v1/admin/projects/{project_id}/integrations/chatwoot/test
+```
+
+服务端使用 Chatwoot Application API：
+
+```http
+GET /api/v1/accounts/{account_id}/inboxes
+```
+
+测试成功后，`integration_configs.metadata` 会记录：
+
+```json
+{
+  "last_tested_at": "iso-time",
+  "last_test_ok": true,
+  "last_test_inbox_name": "Support"
+}
+```
+
+失败时记录 `last_test_ok=false` 和 `last_test_error`。
+
 ---
 
 ## 推送到 Chatwoot 的内容
@@ -163,6 +199,28 @@ POST /v1/webhooks/chatwoot/{project_id}
 9. 广播 human.message.created。
 ```
 
+### 状态同步
+
+OpenSupportAI 处理 Chatwoot `conversation_status_changed` webhook。
+
+映射规则：
+
+```text
+Chatwoot resolved -> OpenSupportAI closed
+Chatwoot open     -> OpenSupportAI handed_off
+Chatwoot pending  -> OpenSupportAI handed_off
+Chatwoot snoozed  -> OpenSupportAI handed_off
+```
+
+同步成功后：
+
+```text
+conversation.status 更新
+handoff_session.status 更新为 active 或 closed
+handoff_session.metadata.chatwoot_status 记录原始状态
+广播 conversation.status_changed
+```
+
 ---
 
 ## 幂等设计
@@ -189,6 +247,16 @@ handoff_sessions(provider, external_conversation_id)
 保留 conversation.status=open 或 handoff_requested
 ```
 
+### Handoff 重试
+
+管理台会显示当前会话的 `handoff_sessions`。当 Chatwoot handoff 为 `failed` 或 `requested` 时，管理员可以调用：
+
+```http
+POST /v1/admin/projects/{project_id}/handoffs/{handoff_id}/retry
+```
+
+重试会复用已有 handoff session。若失败时已经保存了 `external_contact_id` 或 `external_conversation_id`，重试会优先复用这些外部 ID，避免重复创建 Chatwoot conversation。
+
 ### Webhook 校验失败
 
 ```text
@@ -210,12 +278,15 @@ webhook_events.status=ignored
 
 ```text
 createOrUpdateContact 成功
+testConnection 成功
 createConversation 成功
 pushMessage 成功
 requestHandoff 完整流程成功
+failed handoff retry 成功
 webhook secret 错误被拒绝
 重复 webhook 不重复写 message
 坐席公开回复写入 human_agent message
+conversation_status_changed 同步 closed/handed_off
 非公开 note 不展示给 end user
 跨 project external_conversation_id 不能串库
 ```
@@ -225,7 +296,6 @@ webhook secret 错误被拒绝
 ## 后续增强
 
 ```text
-同步 Chatwoot conversation close
 同步 Chatwoot assignee
 同步 tags
 同步 attachments

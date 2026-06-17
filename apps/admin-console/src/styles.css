@@ -247,6 +247,53 @@ h2 {
   overflow: auto;
 }
 
+.handoffs {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid #e6eaf0;
+  margin-top: 16px;
+  padding-top: 14px;
+}
+
+.handoffs h3 {
+  margin: 0;
+  color: #1f2937;
+  font-size: 13px;
+}
+
+.handoff-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #e6eaf0;
+  background: #fbfcfe;
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.handoff-row div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.handoff-row strong,
+.handoff-row span,
+.handoff-row small {
+  overflow-wrap: anywhere;
+}
+
+.handoff-row span {
+  color: #3158f5;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.handoff-row small {
+  color: #5d6b82;
+}
+
 .message {
   border-top: 1px solid #e6eaf0;
   padding-top: 10px;
@@ -292,6 +339,13 @@ select {
   gap: 12px;
 }
 
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .two {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -299,6 +353,7 @@ select {
 }
 
 .primary,
+.secondary,
 .create-project button {
   min-height: 40px;
   border: 0;
@@ -311,6 +366,27 @@ select {
   justify-content: center;
   gap: 8px;
   cursor: pointer;
+}
+
+.secondary {
+  border: 1px solid #cfd7e3;
+  background: #fff;
+  color: #182230;
+}
+
+.integration-status {
+  display: grid;
+  gap: 4px;
+  border: 1px solid #e6eaf0;
+  border-radius: 6px;
+  background: #fbfcfe;
+  padding: 10px;
+  color: #5d6b82;
+  font-size: 12px;
+}
+
+.integration-status b {
+  color: #182230;
 }
 
 .create-project {
