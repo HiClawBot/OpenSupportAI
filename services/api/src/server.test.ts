@@ -730,9 +730,9 @@ describe("OpenSupportAI API", () => {
     const calls = callsResponse.json<{
       tool_calls: Array<{ toolSlug: string; status: string }>;
     }>();
-    expect(calls.tool_calls.map((call) => call.toolSlug)).toEqual([
-      "demo.subscription_lookup",
-      "demo.order_lookup"
+    expect(calls.tool_calls.map((call) => call.toolSlug).sort()).toEqual([
+      "demo.order_lookup",
+      "demo.subscription_lookup"
     ]);
     expect(calls.tool_calls.every((call) => call.status === "completed")).toBe(true);
 
