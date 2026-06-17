@@ -42,12 +42,16 @@ import {
   listAuditLogsQuerySchema,
   listAsyncJobsQuerySchema,
   listConversationsQuerySchema,
+  listToolCallsQuerySchema,
+  listToolsQuerySchema,
   listWebhookEventsQuerySchema,
   requestHandoffBodySchema,
   retryWebhookEventBodySchema,
   sendMessageBodySchema,
+  updateToolDefinitionBodySchema,
   upsertChatwootIntegrationBodySchema,
-  upsertLlmProviderBodySchema
+  upsertLlmProviderBodySchema,
+  upsertToolDefinitionBodySchema
 } from "./schemas";
 
 export type BuildAppOptions = {
@@ -385,6 +389,114 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     };
   });
 
+  app.get("/v1/admin/projects/:projectId/tools", async (request) => {
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:tools");
+    const query = listToolsQuerySchema.parse(request.query);
+    return {
+      tools: await repository.listToolDefinitions({
+        projectId: project.id,
+        status: query.status,
+        limit: query.limit
+      })
+    };
+  });
+
+  app.post("/v1/admin/projects/:projectId/tools", async (request) => {
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:tools");
+    const body = upsertToolDefinitionBodySchema.parse(request.body);
+    const tool = await repository.upsertToolDefinition({
+      projectId: project.id,
+      slug: body.slug,
+      name: body.name,
+      description: body.description,
+      kind: body.kind,
+      status: body.status,
+      method: body.method,
+      path: body.path,
+      inputSchema: body.input_schema,
+      outputSchema: body.output_schema,
+      metadata: body.metadata
+    });
+    await recordAudit(repository, request, {
+      project,
+      identity,
+      action: "tool_definition.upserted",
+      targetType: "tool_definition",
+      targetId: tool.id,
+      metadata: {
+        slug: tool.slug,
+        status: tool.status,
+        kind: tool.kind
+      }
+    });
+    return { tool };
+  });
+
+  app.patch("/v1/admin/projects/:projectId/tools/:toolId", async (request) => {
+    const params = request.params as { toolId: string };
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:tools");
+    const body = updateToolDefinitionBodySchema.parse(request.body);
+    const existingTool = (
+      await repository.listToolDefinitions({
+        projectId: project.id,
+        limit: 100
+      })
+    ).find((tool) => tool.id === params.toolId);
+    if (!existingTool) {
+      throw notFound("Tool definition not found");
+    }
+
+    const tool = await repository.updateToolDefinitionStatus({
+      projectId: project.id,
+      id: params.toolId,
+      status: body.status
+    });
+    await recordAudit(repository, request, {
+      project,
+      identity,
+      action: "tool_definition.status_updated",
+      targetType: "tool_definition",
+      targetId: tool.id,
+      metadata: {
+        slug: tool.slug,
+        status: tool.status
+      }
+    });
+    return { tool };
+  });
+
+  app.get("/v1/admin/projects/:projectId/tool-calls", async (request) => {
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:tools");
+    const query = listToolCallsQuerySchema.parse(request.query);
+    return {
+      tool_calls: await repository.listToolCalls({
+        projectId: project.id,
+        conversationId: query.conversation_id,
+        limit: query.limit
+      })
+    };
+  });
+
   app.get("/v1/admin/projects/:projectId/conversations", async (request) => {
     const projectId = await authenticateAdminProject(request, repository, config);
     const query = listConversationsQuerySchema.parse(request.query);
@@ -402,6 +514,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       conversation,
       messages: await repository.listMessages(projectId, conversation.id),
       ai_runs: await repository.listAiRuns(projectId, conversation.id),
+      tool_calls: await repository.listToolCalls({
+        projectId,
+        conversationId: conversation.id
+      }),
       handoff_sessions: await repository.listHandoffSessions({
         projectId,
         conversationId: conversation.id
@@ -1236,18 +1352,30 @@ async function buildOpsHealth(
     conversations: Record<string, number>;
     recent_async_jobs: Record<string, number>;
     recent_webhook_events: Record<string, number>;
+    tools: Record<string, number>;
+    recent_tool_calls: Record<string, number>;
   };
   latest_audit_log?: AuditLogRecord;
 }> {
-  const [conversations, llmProvider, chatwootIntegration, jobs, webhookEvents, auditLogs] =
-    await Promise.all([
-      repository.listConversations(project.id),
-      repository.getActiveLlmProvider(project.id),
-      repository.getIntegrationConfig(project.id, "chatwoot"),
-      repository.listAsyncJobs({ projectId: project.id, limit: 100 }),
-      repository.listWebhookEvents({ projectId: project.id, limit: 100 }),
-      repository.listAuditLogs({ projectId: project.id, limit: 1 })
-    ]);
+  const [
+    conversations,
+    llmProvider,
+    chatwootIntegration,
+    jobs,
+    webhookEvents,
+    tools,
+    toolCalls,
+    auditLogs
+  ] = await Promise.all([
+    repository.listConversations(project.id),
+    repository.getActiveLlmProvider(project.id),
+    repository.getIntegrationConfig(project.id, "chatwoot"),
+    repository.listAsyncJobs({ projectId: project.id, limit: 100 }),
+    repository.listWebhookEvents({ projectId: project.id, limit: 100 }),
+    repository.listToolDefinitions({ projectId: project.id, limit: 100 }),
+    repository.listToolCalls({ projectId: project.id, limit: 100 }),
+    repository.listAuditLogs({ projectId: project.id, limit: 1 })
+  ]);
 
   return {
     status: "ok",
@@ -1271,7 +1399,9 @@ async function buildOpsHealth(
     counts: {
       conversations: countBy(conversations, (conversation) => conversation.status),
       recent_async_jobs: countBy(jobs, (job) => job.status),
-      recent_webhook_events: countBy(webhookEvents, (event) => event.status)
+      recent_webhook_events: countBy(webhookEvents, (event) => event.status),
+      tools: countBy(tools, (tool) => tool.status),
+      recent_tool_calls: countBy(toolCalls, (toolCall) => toolCall.status)
     },
     latest_audit_log: auditLogs[0]
   };

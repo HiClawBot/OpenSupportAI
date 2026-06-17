@@ -25,6 +25,8 @@ import type {
   MessageRecord,
   ProjectRecord,
   SupportRepository,
+  ToolCallRecord,
+  ToolDefinitionRecord,
   WebhookEventRecord
 } from "./types";
 import type {
@@ -127,6 +129,46 @@ export class PrismaSupportRepository implements SupportRepository {
         scopes: ["admin:*"]
       }
     });
+
+    await this.seedDemoTools(project.id);
+  }
+
+  private async seedDemoTools(projectId: string): Promise<void> {
+    for (const tool of demoToolDefinitions(projectId)) {
+      await this.prisma.toolDefinition.upsert({
+        where: {
+          projectId_slug: {
+            projectId,
+            slug: tool.slug
+          }
+        },
+        update: {
+          name: tool.name,
+          description: tool.description,
+          kind: tool.kind,
+          status: tool.status,
+          method: tool.method,
+          path: tool.path,
+          inputSchema: jsonInput(tool.inputSchema),
+          outputSchema: jsonInput(tool.outputSchema),
+          metadata: jsonInput(tool.metadata)
+        },
+        create: {
+          id: tool.id,
+          projectId,
+          slug: tool.slug,
+          name: tool.name,
+          description: tool.description,
+          kind: tool.kind,
+          status: tool.status,
+          method: tool.method,
+          path: tool.path,
+          inputSchema: jsonInput(tool.inputSchema),
+          outputSchema: jsonInput(tool.outputSchema),
+          metadata: jsonInput(tool.metadata)
+        }
+      });
+    }
   }
 
   async findProjectByPublicKey(publicKey: string): Promise<ProjectRecord | undefined> {
@@ -808,6 +850,152 @@ export class PrismaSupportRepository implements SupportRepository {
     return auditLogs.map(mapAuditLog);
   }
 
+  async upsertToolDefinition(input: {
+    projectId: string;
+    slug: string;
+    name: string;
+    description: string;
+    kind: ToolDefinitionRecord["kind"];
+    status: ToolDefinitionRecord["status"];
+    method?: string;
+    path?: string;
+    inputSchema?: JsonRecord;
+    outputSchema?: JsonRecord;
+    metadata?: JsonRecord;
+  }): Promise<ToolDefinitionRecord> {
+    const tool = await this.prisma.toolDefinition.upsert({
+      where: {
+        projectId_slug: {
+          projectId: input.projectId,
+          slug: input.slug
+        }
+      },
+      update: {
+        name: input.name,
+        description: input.description,
+        kind: input.kind,
+        status: input.status,
+        method: input.method,
+        path: input.path,
+        inputSchema: jsonInput(input.inputSchema ?? {}),
+        outputSchema: jsonInput(input.outputSchema ?? {}),
+        metadata: jsonInput(input.metadata ?? {})
+      },
+      create: {
+        id: id("tool"),
+        projectId: input.projectId,
+        slug: input.slug,
+        name: input.name,
+        description: input.description,
+        kind: input.kind,
+        status: input.status,
+        method: input.method,
+        path: input.path,
+        inputSchema: jsonInput(input.inputSchema ?? {}),
+        outputSchema: jsonInput(input.outputSchema ?? {}),
+        metadata: jsonInput(input.metadata ?? {})
+      }
+    });
+    return mapToolDefinition(tool);
+  }
+
+  async listToolDefinitions(input: {
+    projectId: string;
+    status?: ToolDefinitionRecord["status"];
+    limit?: number;
+  }): Promise<ToolDefinitionRecord[]> {
+    const tools = await this.prisma.toolDefinition.findMany({
+      where: {
+        projectId: input.projectId,
+        ...(input.status ? { status: input.status } : {})
+      },
+      take: input.limit ?? 100,
+      orderBy: { slug: "asc" }
+    });
+    return tools.map(mapToolDefinition);
+  }
+
+  async findToolDefinitionBySlug(input: {
+    projectId: string;
+    slug: string;
+  }): Promise<ToolDefinitionRecord | undefined> {
+    const tool = await this.prisma.toolDefinition.findUnique({
+      where: {
+        projectId_slug: {
+          projectId: input.projectId,
+          slug: input.slug
+        }
+      }
+    });
+    return tool ? mapToolDefinition(tool) : undefined;
+  }
+
+  async updateToolDefinitionStatus(input: {
+    projectId: string;
+    id: string;
+    status: ToolDefinitionRecord["status"];
+  }): Promise<ToolDefinitionRecord> {
+    const tools = await this.prisma.toolDefinition.updateManyAndReturn({
+      where: {
+        id: input.id,
+        projectId: input.projectId
+      },
+      data: {
+        status: input.status
+      }
+    });
+    if (!tools[0]) {
+      throw new Error(`Tool definition not found: ${input.id}`);
+    }
+    return mapToolDefinition(tools[0]);
+  }
+
+  async createToolCall(input: {
+    projectId: string;
+    conversationId?: string;
+    messageId?: string;
+    toolId?: string;
+    toolSlug: string;
+    status: ToolCallRecord["status"];
+    input?: JsonRecord;
+    output?: JsonRecord;
+    error?: string;
+    latencyMs?: number;
+  }): Promise<ToolCallRecord> {
+    const toolCall = await this.prisma.toolCall.create({
+      data: {
+        id: id("toolcall"),
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        messageId: input.messageId,
+        toolId: input.toolId,
+        toolSlug: input.toolSlug,
+        status: input.status,
+        input: jsonInput(input.input ?? {}),
+        output: input.output ? jsonInput(input.output) : undefined,
+        error: input.error,
+        latencyMs: input.latencyMs
+      }
+    });
+    return mapToolCall(toolCall);
+  }
+
+  async listToolCalls(input: {
+    projectId: string;
+    conversationId?: string;
+    limit?: number;
+  }): Promise<ToolCallRecord[]> {
+    const toolCalls = await this.prisma.toolCall.findMany({
+      where: {
+        projectId: input.projectId,
+        ...(input.conversationId ? { conversationId: input.conversationId } : {})
+      },
+      take: input.limit ?? 100,
+      orderBy: { createdAt: "desc" }
+    });
+    return toolCalls.map(mapToolCall);
+  }
+
   async createAsyncJob(input: {
     projectId: string;
     type: string;
@@ -929,6 +1117,8 @@ type PrismaIntegrationConfig = Awaited<ReturnType<PrismaClient["integrationConfi
 type PrismaWebhookEvent = Awaited<ReturnType<PrismaClient["webhookEvent"]["findFirst"]>>;
 type PrismaApiKey = Awaited<ReturnType<PrismaClient["apiKey"]["findFirst"]>>;
 type PrismaAuditLog = Awaited<ReturnType<PrismaClient["auditLog"]["findFirst"]>>;
+type PrismaToolDefinition = Awaited<ReturnType<PrismaClient["toolDefinition"]["findFirst"]>>;
+type PrismaToolCall = Awaited<ReturnType<PrismaClient["toolCall"]["findFirst"]>>;
 type PrismaAsyncJob = Awaited<ReturnType<PrismaClient["asyncJob"]["findFirst"]>>;
 
 function mapProject(project: NonNullable<PrismaProject>): ProjectRecord {
@@ -1134,6 +1324,42 @@ function mapAuditLog(auditLog: NonNullable<PrismaAuditLog>): AuditLogRecord {
   };
 }
 
+function mapToolDefinition(tool: NonNullable<PrismaToolDefinition>): ToolDefinitionRecord {
+  return {
+    id: tool.id,
+    projectId: tool.projectId,
+    slug: tool.slug,
+    name: tool.name,
+    description: tool.description,
+    kind: tool.kind as ToolDefinitionRecord["kind"],
+    status: tool.status as ToolDefinitionRecord["status"],
+    method: tool.method ?? undefined,
+    path: tool.path ?? undefined,
+    inputSchema: jsonRecord(tool.inputSchema),
+    outputSchema: jsonRecord(tool.outputSchema),
+    metadata: jsonRecord(tool.metadata),
+    createdAt: tool.createdAt.toISOString(),
+    updatedAt: tool.updatedAt.toISOString()
+  };
+}
+
+function mapToolCall(toolCall: NonNullable<PrismaToolCall>): ToolCallRecord {
+  return {
+    id: toolCall.id,
+    projectId: toolCall.projectId,
+    conversationId: toolCall.conversationId ?? undefined,
+    messageId: toolCall.messageId ?? undefined,
+    toolId: toolCall.toolId ?? undefined,
+    toolSlug: toolCall.toolSlug,
+    status: toolCall.status as ToolCallRecord["status"],
+    input: jsonRecord(toolCall.input),
+    output: toolCall.output ? jsonRecord(toolCall.output) : undefined,
+    error: toolCall.error ?? undefined,
+    latencyMs: toolCall.latencyMs ?? undefined,
+    createdAt: toolCall.createdAt.toISOString()
+  };
+}
+
 function mapAsyncJob(job: NonNullable<PrismaAsyncJob>): AsyncJobRecord {
   return {
     id: job.id,
@@ -1151,4 +1377,87 @@ function mapAsyncJob(job: NonNullable<PrismaAsyncJob>): AsyncJobRecord {
     createdAt: job.createdAt.toISOString(),
     updatedAt: job.updatedAt.toISOString()
   };
+}
+
+function demoToolDefinitions(
+  projectId: string
+): Array<
+  Pick<
+    ToolDefinitionRecord,
+    | "id"
+    | "projectId"
+    | "slug"
+    | "name"
+    | "description"
+    | "kind"
+    | "status"
+    | "method"
+    | "path"
+    | "inputSchema"
+    | "outputSchema"
+    | "metadata"
+  >
+> {
+  return [
+    {
+      id: "tool_demo_order_lookup",
+      projectId,
+      slug: "demo.order_lookup",
+      name: "Demo order lookup",
+      description: "Looks up a demo billing order by order_id.",
+      kind: "demo",
+      status: "active",
+      method: "GET",
+      path: "demo://orders/{order_id}",
+      inputSchema: {
+        type: "object",
+        required: ["order_id"],
+        properties: {
+          order_id: { type: "string" }
+        }
+      },
+      outputSchema: {
+        type: "object",
+        properties: {
+          found: { type: "boolean" },
+          order_id: { type: "string" },
+          status: { type: "string" }
+        }
+      },
+      metadata: {
+        readonly: true,
+        demo: true
+      }
+    },
+    {
+      id: "tool_demo_subscription_lookup",
+      projectId,
+      slug: "demo.subscription_lookup",
+      name: "Demo subscription lookup",
+      description: "Looks up the demo user's subscription status by external_user_id.",
+      kind: "demo",
+      status: "active",
+      method: "GET",
+      path: "demo://subscriptions/{external_user_id}",
+      inputSchema: {
+        type: "object",
+        required: ["external_user_id"],
+        properties: {
+          external_user_id: { type: "string" }
+        }
+      },
+      outputSchema: {
+        type: "object",
+        properties: {
+          found: { type: "boolean" },
+          status: { type: "string" },
+          plan: { type: "string" }
+        }
+      },
+      metadata: {
+        readonly: true,
+        demo: true
+      }
+    }
+  ];
 }

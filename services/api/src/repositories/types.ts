@@ -4,7 +4,10 @@ import type {
   HandoffReason,
   Message,
   MessageRole,
-  SourceReference
+  SourceReference,
+  ToolCallStatus,
+  ToolDefinitionKind,
+  ToolDefinitionStatus
 } from "@opensupportai/protocol";
 
 export type JsonRecord = Record<string, unknown>;
@@ -177,6 +180,38 @@ export type AuditLogRecord = {
   targetId?: string;
   metadata: JsonRecord;
   requestId?: string;
+  createdAt: string;
+};
+
+export type ToolDefinitionRecord = {
+  id: string;
+  projectId: string;
+  slug: string;
+  name: string;
+  description: string;
+  kind: ToolDefinitionKind;
+  status: ToolDefinitionStatus;
+  method?: string;
+  path?: string;
+  inputSchema: JsonRecord;
+  outputSchema: JsonRecord;
+  metadata: JsonRecord;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ToolCallRecord = {
+  id: string;
+  projectId: string;
+  conversationId?: string;
+  messageId?: string;
+  toolId?: string;
+  toolSlug: string;
+  status: ToolCallStatus;
+  input: JsonRecord;
+  output?: JsonRecord;
+  error?: string;
+  latencyMs?: number;
   createdAt: string;
 };
 
@@ -357,6 +392,50 @@ export type SupportRepository = {
     action?: string;
     limit?: number;
   }): Promise<AuditLogRecord[]>;
+  upsertToolDefinition(input: {
+    projectId: string;
+    slug: string;
+    name: string;
+    description: string;
+    kind: ToolDefinitionKind;
+    status: ToolDefinitionStatus;
+    method?: string;
+    path?: string;
+    inputSchema?: JsonRecord;
+    outputSchema?: JsonRecord;
+    metadata?: JsonRecord;
+  }): Promise<ToolDefinitionRecord>;
+  listToolDefinitions(input: {
+    projectId: string;
+    status?: ToolDefinitionStatus;
+    limit?: number;
+  }): Promise<ToolDefinitionRecord[]>;
+  findToolDefinitionBySlug(input: {
+    projectId: string;
+    slug: string;
+  }): Promise<ToolDefinitionRecord | undefined>;
+  updateToolDefinitionStatus(input: {
+    projectId: string;
+    id: string;
+    status: ToolDefinitionStatus;
+  }): Promise<ToolDefinitionRecord>;
+  createToolCall(input: {
+    projectId: string;
+    conversationId?: string;
+    messageId?: string;
+    toolId?: string;
+    toolSlug: string;
+    status: ToolCallStatus;
+    input?: JsonRecord;
+    output?: JsonRecord;
+    error?: string;
+    latencyMs?: number;
+  }): Promise<ToolCallRecord>;
+  listToolCalls(input: {
+    projectId: string;
+    conversationId?: string;
+    limit?: number;
+  }): Promise<ToolCallRecord[]>;
   createAsyncJob(input: {
     projectId: string;
     type: string;

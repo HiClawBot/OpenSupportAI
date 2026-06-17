@@ -34,7 +34,9 @@ Organization
         │             └── KnowledgeChunk
         ├── LLMProvider
         ├── IntegrationConfig
-        └── APIKey
+        ├── APIKey
+        ├── ToolDefinition
+        └── ToolCall
 ```
 
 ---
@@ -365,6 +367,61 @@ processed_at       timestamp nullable
 project_id + provider
 provider + external_event_id unique
 status + created_at
+```
+
+---
+
+## tool_definitions
+
+```text
+id              string primary key
+project_id      string references projects(id)
+slug            string
+name            string
+description     string
+kind            string      -- demo / openapi
+status          string      -- active / disabled
+method          string nullable
+path            string nullable
+input_schema    jsonb
+output_schema   jsonb
+metadata        jsonb
+created_at      timestamp
+updated_at      timestamp
+```
+
+索引：
+
+```text
+project_id + slug unique
+project_id + status
+```
+
+---
+
+## tool_calls
+
+```text
+id                string primary key
+project_id        string references projects(id)
+conversation_id   string nullable references conversations(id)
+message_id        string nullable references messages(id)
+tool_id           string nullable references tool_definitions(id)
+tool_slug         string
+status            string      -- completed / failed / skipped
+input             jsonb
+output            jsonb nullable
+error             text nullable
+latency_ms        int nullable
+created_at        timestamp
+```
+
+索引：
+
+```text
+project_id + created_at
+conversation_id + created_at
+tool_slug + created_at
 ```
 
 ---

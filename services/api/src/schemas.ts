@@ -86,6 +86,33 @@ export const listAuditLogsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(100)
 });
 
+export const listToolsQuerySchema = z.object({
+  status: z.enum(["active", "disabled"]).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(100)
+});
+
+export const upsertToolDefinitionBodySchema = z.object({
+  slug: z.string().trim().min(1).max(120),
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().min(1).max(500),
+  kind: z.enum(["demo", "openapi"]).default("openapi"),
+  status: z.enum(["active", "disabled"]).default("active"),
+  method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).optional(),
+  path: z.string().trim().min(1).max(500).optional(),
+  input_schema: metadataSchema.optional(),
+  output_schema: metadataSchema.optional(),
+  metadata: metadataSchema.optional()
+});
+
+export const updateToolDefinitionBodySchema = z.object({
+  status: z.enum(["active", "disabled"])
+});
+
+export const listToolCallsQuerySchema = z.object({
+  conversation_id: z.string().trim().min(1).max(120).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(100)
+});
+
 export const upsertLlmProviderBodySchema = z.object({
   provider: z.literal("openai_compatible").default("openai_compatible"),
   base_url: z.string().min(1),

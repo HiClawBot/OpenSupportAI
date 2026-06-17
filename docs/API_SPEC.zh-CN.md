@@ -1,4 +1,4 @@
-# OpenSupportAI API 规范 v0.2
+# OpenSupportAI API 规范 v0.3
 
 ## 通用约定
 
@@ -475,6 +475,134 @@ GET /v1/admin/projects/{project_id}/audit-log?action=api_key.created&limit=100
         "name": "Production automation"
       },
       "requestId": "req_123",
+      "createdAt": "2026-06-18T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+### 获取工具列表
+
+```http
+GET /v1/admin/projects/{project_id}/tools?status=active&limit=100
+```
+
+响应：
+
+```json
+{
+  "tools": [
+    {
+      "id": "tool_demo_order_lookup",
+      "projectId": "proj_demo",
+      "slug": "demo.order_lookup",
+      "name": "Demo order lookup",
+      "description": "Looks up a demo billing order by order_id.",
+      "kind": "demo",
+      "status": "active",
+      "method": "GET",
+      "path": "demo://orders/{order_id}",
+      "inputSchema": {
+        "type": "object"
+      },
+      "outputSchema": {
+        "type": "object"
+      }
+    }
+  ]
+}
+```
+
+---
+
+### Upsert 工具定义
+
+```http
+POST /v1/admin/projects/{project_id}/tools
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "slug": "openapi.customer_lookup",
+  "name": "Customer lookup",
+  "description": "Looks up customer data from an allowlisted business API.",
+  "kind": "openapi",
+  "status": "disabled",
+  "method": "GET",
+  "path": "https://api.example.com/customers/{customer_id}",
+  "input_schema": {
+    "type": "object"
+  },
+  "output_schema": {
+    "type": "object"
+  }
+}
+```
+
+响应：
+
+```json
+{
+  "tool": {
+    "id": "tool_123",
+    "slug": "openapi.customer_lookup",
+    "kind": "openapi",
+    "status": "disabled"
+  }
+}
+```
+
+---
+
+### 启停工具 Allowlist
+
+```http
+PATCH /v1/admin/projects/{project_id}/tools/{tool_id}
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "status": "active"
+}
+```
+
+`status=disabled` 的工具不会被 orchestrator 执行。
+
+---
+
+### 获取 Tool Call 日志
+
+```http
+GET /v1/admin/projects/{project_id}/tool-calls?conversation_id=conv_123&limit=100
+```
+
+响应：
+
+```json
+{
+  "tool_calls": [
+    {
+      "id": "toolcall_123",
+      "projectId": "proj_demo",
+      "conversationId": "conv_123",
+      "toolSlug": "demo.order_lookup",
+      "status": "completed",
+      "input": {
+        "order_id": "ORD-2026-1001"
+      },
+      "output": {
+        "found": true,
+        "status": "paid"
+      },
+      "latencyMs": 1,
       "createdAt": "2026-06-18T00:00:00.000Z"
     }
   ]

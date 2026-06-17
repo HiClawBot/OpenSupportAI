@@ -44,6 +44,8 @@ model Project {
   apiKeys            ApiKey[]
   asyncJobs          AsyncJob[]
   auditLogs          AuditLog[]
+  toolDefinitions    ToolDefinition[]
+  toolCalls          ToolCall[]
 
   @@index([organizationId])
   @@map("projects")
@@ -102,6 +104,7 @@ model Conversation {
   messages        Message[]
   aiRuns          AiRun[]
   handoffSessions HandoffSession[]
+  toolCalls       ToolCall[]
 
   @@index([projectId])
   @@index([projectId, contactId])
@@ -125,6 +128,7 @@ model Message {
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
   aiRuns       AiRun[]
+  toolCalls    ToolCall[]
 
   @@index([projectId])
   @@index([conversationId, createdAt])
@@ -337,6 +341,55 @@ model AuditLog {
   @@index([organizationId, createdAt])
   @@index([action, createdAt])
   @@map("audit_logs")
+}
+
+model ToolDefinition {
+  id           String   @id @default(cuid())
+  projectId    String   @map("project_id")
+  slug         String
+  name         String
+  description  String
+  kind         String   @default("demo")
+  status       String   @default("active")
+  method       String?
+  path         String?
+  inputSchema  Json     @default("{}") @map("input_schema")
+  outputSchema Json     @default("{}") @map("output_schema")
+  metadata     Json     @default("{}")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  project Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  calls   ToolCall[]
+
+  @@unique([projectId, slug])
+  @@index([projectId, status])
+  @@map("tool_definitions")
+}
+
+model ToolCall {
+  id             String   @id @default(cuid())
+  projectId      String   @map("project_id")
+  conversationId String?  @map("conversation_id")
+  messageId      String?  @map("message_id")
+  toolId         String?  @map("tool_id")
+  toolSlug       String   @map("tool_slug")
+  status         String
+  input          Json     @default("{}")
+  output         Json?
+  error          String?
+  latencyMs      Int?     @map("latency_ms")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  conversation Conversation?   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message      Message?        @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  tool         ToolDefinition? @relation(fields: [toolId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, createdAt])
+  @@index([conversationId, createdAt])
+  @@index([toolSlug, createdAt])
+  @@map("tool_calls")
 }
 
 model AsyncJob {

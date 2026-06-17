@@ -87,6 +87,8 @@ async function main(): Promise<void> {
     }
   });
 
+  await seedDemoTools(project.id);
+
   const source = await prisma.knowledgeSource.upsert({
     where: { id: "ks_demo" },
     update: {
@@ -162,6 +164,95 @@ async function main(): Promise<void> {
 
   console.log("Seeded demo organization, project, inbox, admin key, LLM provider, and FAQ.");
   console.log("Demo project_id=proj_demo public_key=pk_demo admin_token=admin_demo_key");
+}
+
+async function seedDemoTools(projectId: string): Promise<void> {
+  for (const tool of [
+    {
+      id: "tool_demo_order_lookup",
+      slug: "demo.order_lookup",
+      name: "Demo order lookup",
+      description: "Looks up a demo billing order by order_id.",
+      path: "demo://orders/{order_id}",
+      inputSchema: {
+        type: "object",
+        required: ["order_id"],
+        properties: {
+          order_id: { type: "string" }
+        }
+      },
+      outputSchema: {
+        type: "object",
+        properties: {
+          found: { type: "boolean" },
+          order_id: { type: "string" },
+          status: { type: "string" }
+        }
+      }
+    },
+    {
+      id: "tool_demo_subscription_lookup",
+      slug: "demo.subscription_lookup",
+      name: "Demo subscription lookup",
+      description: "Looks up the demo user's subscription status by external_user_id.",
+      path: "demo://subscriptions/{external_user_id}",
+      inputSchema: {
+        type: "object",
+        required: ["external_user_id"],
+        properties: {
+          external_user_id: { type: "string" }
+        }
+      },
+      outputSchema: {
+        type: "object",
+        properties: {
+          found: { type: "boolean" },
+          status: { type: "string" },
+          plan: { type: "string" }
+        }
+      }
+    }
+  ]) {
+    await prisma.toolDefinition.upsert({
+      where: {
+        projectId_slug: {
+          projectId,
+          slug: tool.slug
+        }
+      },
+      update: {
+        name: tool.name,
+        description: tool.description,
+        kind: "demo",
+        status: "active",
+        method: "GET",
+        path: tool.path,
+        inputSchema: tool.inputSchema,
+        outputSchema: tool.outputSchema,
+        metadata: {
+          readonly: true,
+          demo: true
+        }
+      },
+      create: {
+        id: tool.id,
+        projectId,
+        slug: tool.slug,
+        name: tool.name,
+        description: tool.description,
+        kind: "demo",
+        status: "active",
+        method: "GET",
+        path: tool.path,
+        inputSchema: tool.inputSchema,
+        outputSchema: tool.outputSchema,
+        metadata: {
+          readonly: true,
+          demo: true
+        }
+      }
+    });
+  }
 }
 
 main()

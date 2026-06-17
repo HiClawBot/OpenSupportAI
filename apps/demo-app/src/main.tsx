@@ -90,7 +90,9 @@ function App() {
 
       <section className="prompt-strip">
         <CheckCircle size={20} />
-        <span>Try asking the widget: “怎么取消订阅？” or “我要转人工”。</span>
+        <span>
+          Try asking: “请帮我查订单 ORD-2026-1001”, “我的订阅状态是什么？” or “我要转人工”。
+        </span>
       </section>
     </main>
   );

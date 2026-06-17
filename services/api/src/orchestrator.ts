@@ -6,6 +6,7 @@ import type {
   MessageRecord,
   SupportRepository
 } from "./repositories/types";
+import { maybeRunBusinessTool } from "./business-tools";
 
 export type Orchestrator = {
   respondToUserMessage(input: {
@@ -68,6 +69,49 @@ export function createOrchestrator(
       }
 
       const startedAt = Date.now();
+      const toolResult = await maybeRunBusinessTool(repository, {
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        text
+      });
+      if (toolResult) {
+        const message = await repository.createMessage({
+          projectId: input.projectId,
+          conversationId: input.conversationId,
+          message: {
+            role: "ai_agent",
+            text: toolResult.answer,
+            metadata: {
+              grounded: true,
+              tool_slug: toolResult.tool.slug,
+              tool_call_id: toolResult.toolCall.id
+            }
+          }
+        });
+
+        await repository.createAiRun({
+          projectId: input.projectId,
+          conversationId: input.conversationId,
+          messageId: message.id,
+          provider: "opensupportai",
+          model: "demo-business-tool",
+          promptVersion: "v0.3",
+          inputTokens: text.length,
+          outputTokens: toolResult.answer.length,
+          latencyMs: Date.now() - startedAt,
+          retrievedChunkIds: [],
+          confidence: 0.9,
+          status: "completed",
+          metadata: {
+            tool_slug: toolResult.tool.slug,
+            tool_call_id: toolResult.toolCall.id
+          }
+        });
+
+        publishCompletion(eventHub, input.projectId, input.conversationId, message);
+        return;
+      }
+
       const chunks = await repository.retrieveKnowledge(input.projectId, text, 6);
       const provider = await repository.getActiveLlmProvider(input.projectId);
 

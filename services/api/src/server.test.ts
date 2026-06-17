@@ -616,6 +616,151 @@ describe("OpenSupportAI API", () => {
     expect(ops.counts.recent_webhook_events.received).toBeGreaterThanOrEqual(1);
   });
 
+  it("manages business tools and records demo tool calls", async () => {
+    const toolsResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/tools",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(toolsResponse.statusCode).toBe(200);
+    const tools = toolsResponse.json<{
+      tools: Array<{ id: string; slug: string; status: string }>;
+    }>();
+    const orderTool = tools.tools.find((tool) => tool.slug === "demo.order_lookup");
+    expect(orderTool).toBeDefined();
+    expect(orderTool?.status).toBe("active");
+
+    const upsertResponse = await app.inject({
+      method: "POST",
+      url: "/v1/admin/projects/proj_demo/tools",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      },
+      payload: {
+        slug: "openapi.customer_lookup",
+        name: "Customer lookup",
+        description: "Demo OpenAPI-style customer lookup connector.",
+        kind: "openapi",
+        status: "disabled",
+        method: "GET",
+        path: "https://api.example.com/customers/{customer_id}",
+        input_schema: {
+          type: "object"
+        }
+      }
+    });
+    expect(upsertResponse.statusCode).toBe(200);
+    expect(
+      upsertResponse.json<{ tool: { slug: string; kind: string; status: string } }>().tool
+    ).toMatchObject({
+      slug: "openapi.customer_lookup",
+      kind: "openapi",
+      status: "disabled"
+    });
+
+    const conversationResponse = await app.inject({
+      method: "POST",
+      url: "/v1/client/conversations",
+      headers: {
+        "x-opensupportai-public-key": "pk_demo"
+      },
+      payload: {
+        project_id: "proj_demo",
+        inbox_id: "inbox_default",
+        contact: {
+          external_user_id: "demo_user_8462",
+          name: "Mina Hart",
+          email: "mina.hart@example.com"
+        }
+      }
+    });
+    const conversation = conversationResponse.json<{ conversation_id: string }>();
+
+    await app.inject({
+      method: "POST",
+      url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
+      headers: {
+        "x-opensupportai-public-key": "pk_demo"
+      },
+      payload: {
+        type: "text",
+        text: "请帮我查订单 ORD-2026-1001"
+      }
+    });
+
+    await app.inject({
+      method: "POST",
+      url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
+      headers: {
+        "x-opensupportai-public-key": "pk_demo"
+      },
+      payload: {
+        type: "text",
+        text: "我的订阅状态和续费日期是什么？"
+      }
+    });
+
+    const messagesResponse = await app.inject({
+      method: "GET",
+      url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
+      headers: {
+        "x-opensupportai-public-key": "pk_demo"
+      }
+    });
+    const messages = messagesResponse.json<{
+      messages: Array<{ role: string; content: { text?: string } }>;
+    }>();
+    expect(
+      messages.messages.some((message) => message.content.text?.includes("ORD-2026-1001"))
+    ).toBe(true);
+    expect(
+      messages.messages.some((message) => message.content.text?.includes("Growth Annual"))
+    ).toBe(true);
+
+    const callsResponse = await app.inject({
+      method: "GET",
+      url: `/v1/admin/projects/proj_demo/tool-calls?conversation_id=${conversation.conversation_id}`,
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(callsResponse.statusCode).toBe(200);
+    const calls = callsResponse.json<{
+      tool_calls: Array<{ toolSlug: string; status: string }>;
+    }>();
+    expect(calls.tool_calls.map((call) => call.toolSlug)).toEqual([
+      "demo.subscription_lookup",
+      "demo.order_lookup"
+    ]);
+    expect(calls.tool_calls.every((call) => call.status === "completed")).toBe(true);
+
+    const disableResponse = await app.inject({
+      method: "PATCH",
+      url: `/v1/admin/projects/proj_demo/tools/${orderTool?.id}`,
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      },
+      payload: {
+        status: "disabled"
+      }
+    });
+    expect(disableResponse.statusCode).toBe(200);
+    expect(disableResponse.json<{ tool: { status: string } }>().tool.status).toBe("disabled");
+
+    await app.inject({
+      method: "PATCH",
+      url: `/v1/admin/projects/proj_demo/tools/${orderTool?.id}`,
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      },
+      payload: {
+        status: "active"
+      }
+    });
+  });
+
   it("tests Chatwoot integration connectivity", async () => {
     const chatwootFetch: typeof fetch = async (input) => {
       if (String(input).endsWith("/inboxes")) {

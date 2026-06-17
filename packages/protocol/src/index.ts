@@ -6,3 +6,4 @@ export * from "./events";
 export * from "./handoff";
 export * from "./knowledge";
 export * from "./message";
+export * from "./tools";

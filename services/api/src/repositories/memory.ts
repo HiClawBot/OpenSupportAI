@@ -23,6 +23,8 @@ import type {
   MessageRecord,
   ProjectRecord,
   SupportRepository,
+  ToolCallRecord,
+  ToolDefinitionRecord,
   WebhookEventRecord
 } from "./types";
 import { chunkText, scoreChunk, tokenize } from "../knowledge-text";
@@ -54,6 +56,8 @@ export class MemorySupportRepository implements SupportRepository {
   private readonly webhookEvents = new Map<string, WebhookEventRecord>();
   private readonly apiKeys = new Map<string, ApiKeyRecord>();
   private readonly auditLogs = new Map<string, AuditLogRecord>();
+  private readonly toolDefinitions = new Map<string, ToolDefinitionRecord>();
+  private readonly toolCalls = new Map<string, ToolCallRecord>();
   private readonly asyncJobs = new Map<string, AsyncJobRecord>();
 
   async seedDemo(): Promise<void> {
@@ -99,6 +103,9 @@ export class MemorySupportRepository implements SupportRepository {
       status: "active",
       metadata: { demo: true }
     });
+    for (const tool of demoToolDefinitions(project.id, timestamp)) {
+      this.toolDefinitions.set(tool.id, tool);
+    }
 
     const document: KnowledgeDocumentRecord = {
       id: "doc_demo_billing",
@@ -714,6 +721,124 @@ export class MemorySupportRepository implements SupportRepository {
       .slice(0, input.limit ?? 100);
   }
 
+  async upsertToolDefinition(input: {
+    projectId: string;
+    slug: string;
+    name: string;
+    description: string;
+    kind: ToolDefinitionRecord["kind"];
+    status: ToolDefinitionRecord["status"];
+    method?: string;
+    path?: string;
+    inputSchema?: JsonRecord;
+    outputSchema?: JsonRecord;
+    metadata?: JsonRecord;
+  }): Promise<ToolDefinitionRecord> {
+    await this.requireProject(input.projectId);
+    const existing = [...this.toolDefinitions.values()].find(
+      (tool) => tool.projectId === input.projectId && tool.slug === input.slug
+    );
+    const timestamp = now();
+    const tool: ToolDefinitionRecord = {
+      id: existing?.id ?? id("tool"),
+      projectId: input.projectId,
+      slug: input.slug,
+      name: input.name,
+      description: input.description,
+      kind: input.kind,
+      status: input.status,
+      method: input.method,
+      path: input.path,
+      inputSchema: input.inputSchema ?? existing?.inputSchema ?? {},
+      outputSchema: input.outputSchema ?? existing?.outputSchema ?? {},
+      metadata: input.metadata ?? existing?.metadata ?? {},
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    this.toolDefinitions.set(tool.id, tool);
+    return tool;
+  }
+
+  async listToolDefinitions(input: {
+    projectId: string;
+    status?: ToolDefinitionRecord["status"];
+    limit?: number;
+  }): Promise<ToolDefinitionRecord[]> {
+    return [...this.toolDefinitions.values()]
+      .filter((tool) => tool.projectId === input.projectId)
+      .filter((tool) => (input.status ? tool.status === input.status : true))
+      .sort((a, b) => a.slug.localeCompare(b.slug))
+      .slice(0, input.limit ?? 100);
+  }
+
+  async findToolDefinitionBySlug(input: {
+    projectId: string;
+    slug: string;
+  }): Promise<ToolDefinitionRecord | undefined> {
+    return [...this.toolDefinitions.values()].find(
+      (tool) => tool.projectId === input.projectId && tool.slug === input.slug
+    );
+  }
+
+  async updateToolDefinitionStatus(input: {
+    projectId: string;
+    id: string;
+    status: ToolDefinitionRecord["status"];
+  }): Promise<ToolDefinitionRecord> {
+    const tool = this.requireToolDefinition(input.projectId, input.id);
+    const updated: ToolDefinitionRecord = {
+      ...tool,
+      status: input.status,
+      updatedAt: now()
+    };
+    this.toolDefinitions.set(updated.id, updated);
+    return updated;
+  }
+
+  async createToolCall(input: {
+    projectId: string;
+    conversationId?: string;
+    messageId?: string;
+    toolId?: string;
+    toolSlug: string;
+    status: ToolCallRecord["status"];
+    input?: JsonRecord;
+    output?: JsonRecord;
+    error?: string;
+    latencyMs?: number;
+  }): Promise<ToolCallRecord> {
+    const toolCall: ToolCallRecord = {
+      id: id("toolcall"),
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      messageId: input.messageId,
+      toolId: input.toolId,
+      toolSlug: input.toolSlug,
+      status: input.status,
+      input: input.input ?? {},
+      output: input.output,
+      error: input.error,
+      latencyMs: input.latencyMs,
+      createdAt: now()
+    };
+    this.toolCalls.set(toolCall.id, toolCall);
+    return toolCall;
+  }
+
+  async listToolCalls(input: {
+    projectId: string;
+    conversationId?: string;
+    limit?: number;
+  }): Promise<ToolCallRecord[]> {
+    return [...this.toolCalls.values()]
+      .filter((toolCall) => toolCall.projectId === input.projectId)
+      .filter((toolCall) =>
+        input.conversationId ? toolCall.conversationId === input.conversationId : true
+      )
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, input.limit ?? 100);
+  }
+
   async createAsyncJob(input: {
     projectId: string;
     type: string;
@@ -844,6 +969,14 @@ export class MemorySupportRepository implements SupportRepository {
     return apiKey;
   }
 
+  private requireToolDefinition(projectId: string, toolId: string): ToolDefinitionRecord {
+    const tool = this.toolDefinitions.get(toolId);
+    if (!tool || tool.projectId !== projectId) {
+      throw new Error(`Tool definition not found: ${toolId}`);
+    }
+    return tool;
+  }
+
   private requireAsyncJob(jobId: string): AsyncJobRecord {
     const job = this.asyncJobs.get(jobId);
     if (!job) {
@@ -851,4 +984,73 @@ export class MemorySupportRepository implements SupportRepository {
     }
     return job;
   }
+}
+
+function demoToolDefinitions(projectId: string, timestamp: string): ToolDefinitionRecord[] {
+  return [
+    {
+      id: "tool_demo_order_lookup",
+      projectId,
+      slug: "demo.order_lookup",
+      name: "Demo order lookup",
+      description: "Looks up a demo billing order by order_id.",
+      kind: "demo",
+      status: "active",
+      method: "GET",
+      path: "demo://orders/{order_id}",
+      inputSchema: {
+        type: "object",
+        required: ["order_id"],
+        properties: {
+          order_id: { type: "string" }
+        }
+      },
+      outputSchema: {
+        type: "object",
+        properties: {
+          found: { type: "boolean" },
+          order_id: { type: "string" },
+          status: { type: "string" }
+        }
+      },
+      metadata: {
+        readonly: true,
+        demo: true
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp
+    },
+    {
+      id: "tool_demo_subscription_lookup",
+      projectId,
+      slug: "demo.subscription_lookup",
+      name: "Demo subscription lookup",
+      description: "Looks up the demo user's subscription status by external_user_id.",
+      kind: "demo",
+      status: "active",
+      method: "GET",
+      path: "demo://subscriptions/{external_user_id}",
+      inputSchema: {
+        type: "object",
+        required: ["external_user_id"],
+        properties: {
+          external_user_id: { type: "string" }
+        }
+      },
+      outputSchema: {
+        type: "object",
+        properties: {
+          found: { type: "boolean" },
+          status: { type: "string" },
+          plan: { type: "string" }
+        }
+      },
+      metadata: {
+        readonly: true,
+        demo: true
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp
+    }
+  ];
 }

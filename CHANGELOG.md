@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.3.0 - 2026-06-18
+
+English:
+
+- Added business tool primitives with `ToolDefinition` and `ToolCall` storage.
+- Added admin tools API for listing, upserting, enabling/disabling allowlisted tools, and reading tool-call logs.
+- Added seeded demo tools for order lookup and subscription lookup.
+- Added deterministic demo tool execution in the orchestrator before RAG fallback.
+- Added tool-call visibility in admin conversation detail and ops health counts.
+- Updated the demo app prompt strip and tests for business tool flows.
+
+中文：
+
+- 新增业务工具基础设施：`ToolDefinition` 和 `ToolCall` 存储。
+- 管理端新增 tools API，支持列表、upsert、启停 allowlist 工具，以及读取 tool-call 日志。
+- 内置 demo 订单查询和订阅查询工具。
+- Orchestrator 在 RAG fallback 前会先执行确定性的 demo tool。
+- 管理端会话详情和 ops health 新增 tool-call 可见性。
+- 更新 Demo App 提示和业务工具流程测试。
+
 ## v0.2.0 - 2026-06-18
 
 English:
