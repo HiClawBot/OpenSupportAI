@@ -41,6 +41,14 @@ export const createKnowledgeDocumentBodySchema = z.object({
   metadata: metadataSchema.optional()
 });
 
+export const listConversationsQuerySchema = z.object({
+  status: z.enum(["open", "pending_ai", "handoff_requested", "handed_off", "closed"]).optional(),
+  assignee_type: z.enum(["ai", "human", "none"]).optional(),
+  q: z.string().trim().max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  offset: z.coerce.number().int().min(0).default(0)
+});
+
 export const upsertLlmProviderBodySchema = z.object({
   provider: z.literal("openai_compatible").default("openai_compatible"),
   base_url: z.string().min(1),

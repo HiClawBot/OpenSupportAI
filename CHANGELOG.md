@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.1.2 - 2026-06-17
+
+English:
+
+- Added enriched admin conversation lists with status/search filters, pagination metadata, and project-level summary counts.
+- Added contact labels, message counts, recent-message previews, and latest handoff status to admin conversation list responses.
+- Updated the admin console with conversation status filters, search, refresh, queue metrics, recent-message previews, and failed-handoff visibility.
+- Added API regression coverage for admin conversation summary/filter behavior.
+- Updated bilingual README and API documentation for the new conversation operations surface.
+
+中文：
+
+- 管理端会话列表新增状态/搜索筛选、分页元数据和项目级摘要计数。
+- 会话列表响应新增联系人标签、消息数、最近消息预览和最新 handoff 状态。
+- Admin Console 新增会话状态筛选、搜索、刷新、队列指标、最近消息预览和失败 handoff 可见性。
+- 新增 API 回归测试，覆盖管理端会话摘要和筛选行为。
+- 更新双语 README 和 API 文档，说明新的会话运营能力。
+
 ## v0.1.1 - 2026-06-17
 
 English:

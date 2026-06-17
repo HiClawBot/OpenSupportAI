@@ -179,6 +179,129 @@ describe("OpenSupportAI API", () => {
     expect(handoffResponse.json<{ status: string }>().status).toBe("handoff_requested");
   });
 
+  it("returns enriched admin conversation summaries with filters", async () => {
+    const alphaResponse = await app.inject({
+      method: "POST",
+      url: "/v1/client/conversations",
+      headers: {
+        "x-opensupportai-public-key": "pk_demo"
+      },
+      payload: {
+        project_id: "proj_demo",
+        inbox_id: "inbox_default",
+        contact: {
+          external_user_id: "ops_filter_alpha",
+          name: "Ops Alpha",
+          email: "ops-alpha@example.com"
+        }
+      }
+    });
+    const alpha = alphaResponse.json<{ conversation_id: string }>();
+
+    await app.inject({
+      method: "POST",
+      url: `/v1/client/conversations/${alpha.conversation_id}/messages`,
+      headers: {
+        "x-opensupportai-public-key": "pk_demo"
+      },
+      payload: {
+        type: "text",
+        text: "怎么取消订阅？"
+      }
+    });
+
+    const betaResponse = await app.inject({
+      method: "POST",
+      url: "/v1/client/conversations",
+      headers: {
+        "x-opensupportai-public-key": "pk_demo"
+      },
+      payload: {
+        project_id: "proj_demo",
+        inbox_id: "inbox_default",
+        contact: {
+          external_user_id: "ops_filter_beta",
+          name: "Ops Beta"
+        }
+      }
+    });
+    const beta = betaResponse.json<{ conversation_id: string }>();
+
+    await app.inject({
+      method: "POST",
+      url: `/v1/client/conversations/${beta.conversation_id}/handoff`,
+      headers: {
+        "x-opensupportai-public-key": "pk_demo"
+      },
+      payload: {
+        reason: "user_requested"
+      }
+    });
+
+    const alphaListResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/conversations?q=ops_filter_alpha",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+
+    expect(alphaListResponse.statusCode).toBe(200);
+    const alphaList = alphaListResponse.json<{
+      conversations: Array<{
+        id: string;
+        contact?: { externalUserId?: string };
+        messageCount: number;
+        lastMessage?: { text: string; role: string };
+      }>;
+      summary: {
+        total: number;
+        filtered: number;
+        byStatus: Record<string, number>;
+        byAssigneeType: Record<string, number>;
+        handoffStatus: Record<string, number>;
+      };
+      pagination: { returned: number; hasMore: boolean };
+    }>();
+    expect(alphaList.conversations).toHaveLength(1);
+    expect(alphaList.conversations[0]).toMatchObject({
+      id: alpha.conversation_id,
+      contact: {
+        externalUserId: "ops_filter_alpha"
+      }
+    });
+    expect(alphaList.conversations[0]?.messageCount).toBeGreaterThanOrEqual(2);
+    expect(alphaList.conversations[0]?.lastMessage?.role).toBe("ai_agent");
+    expect(alphaList.summary.total).toBeGreaterThanOrEqual(2);
+    expect(alphaList.summary.filtered).toBe(1);
+    expect(alphaList.summary.byStatus.open).toBeGreaterThanOrEqual(1);
+    expect(alphaList.summary.byAssigneeType.human).toBeGreaterThanOrEqual(1);
+    expect(alphaList.pagination.returned).toBe(1);
+    expect(alphaList.pagination.hasMore).toBe(false);
+
+    const handoffListResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/conversations?status=handoff_requested&q=ops_filter_beta",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    const handoffList = handoffListResponse.json<{
+      conversations: Array<{ id: string; handoff?: { status: string; provider: string } }>;
+      summary: { filtered: number; handoffStatus: Record<string, number> };
+    }>();
+    expect(handoffList.conversations).toHaveLength(1);
+    expect(handoffList.conversations[0]).toMatchObject({
+      id: beta.conversation_id,
+      handoff: {
+        provider: "chatwoot",
+        status: "requested"
+      }
+    });
+    expect(handoffList.summary.filtered).toBe(1);
+    expect(handoffList.summary.handoffStatus.requested).toBeGreaterThanOrEqual(1);
+  });
+
   it("tests Chatwoot integration connectivity", async () => {
     const chatwootFetch: typeof fetch = async (input) => {
       if (String(input).endsWith("/inboxes")) {

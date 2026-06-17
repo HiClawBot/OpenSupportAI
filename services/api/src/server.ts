@@ -25,6 +25,7 @@ import {
   createConversationBodySchema,
   createKnowledgeDocumentBodySchema,
   createProjectBodySchema,
+  listConversationsQuerySchema,
   requestHandoffBodySchema,
   sendMessageBodySchema,
   upsertChatwootIntegrationBodySchema,
@@ -247,9 +248,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   app.get("/v1/admin/projects/:projectId/conversations", async (request) => {
     const projectId = await authenticateAdminProject(request, repository, config);
-    return {
-      conversations: await repository.listConversations(projectId)
-    };
+    const query = listConversationsQuerySchema.parse(request.query);
+    return buildAdminConversationList(repository, projectId, query);
   });
 
   app.get("/v1/admin/projects/:projectId/conversations/:conversationId", async (request) => {
@@ -819,6 +819,211 @@ function safeIntegrationResponse(integration: IntegrationConfigRecord): {
     createdAt: integration.createdAt,
     updatedAt: integration.updatedAt
   };
+}
+
+type ListConversationsQuery = {
+  status?: ConversationStatus;
+  assignee_type?: ConversationRecord["assigneeType"];
+  q?: string;
+  limit: number;
+  offset: number;
+};
+
+type AdminConversationListItem = ConversationRecord & {
+  contact?: {
+    id: string;
+    name?: string;
+    email?: string;
+    externalUserId?: string;
+  };
+  messageCount: number;
+  lastMessage?: {
+    id: string;
+    role: MessageRecord["role"];
+    text: string;
+    createdAt: string;
+  };
+  handoff?: {
+    id: string;
+    provider: string;
+    status: HandoffSessionRecord["status"];
+    externalConversationId?: string;
+    updatedAt: string;
+  };
+};
+
+async function buildAdminConversationList(
+  repository: SupportRepository,
+  projectId: string,
+  query: ListConversationsQuery
+): Promise<{
+  conversations: AdminConversationListItem[];
+  summary: {
+    total: number;
+    filtered: number;
+    byStatus: Record<ConversationStatus, number>;
+    byAssigneeType: Record<ConversationRecord["assigneeType"], number>;
+    handoffStatus: Record<HandoffSessionRecord["status"], number>;
+  };
+  pagination: {
+    limit: number;
+    offset: number;
+    returned: number;
+    hasMore: boolean;
+  };
+}> {
+  const conversations = await repository.listConversations(projectId);
+  const enriched = await Promise.all(
+    conversations.map((conversation) =>
+      buildAdminConversationListItem(repository, projectId, conversation)
+    )
+  );
+  const filtered = enriched.filter((conversation) =>
+    matchesAdminConversationQuery(conversation, query)
+  );
+  const page = filtered.slice(query.offset, query.offset + query.limit);
+
+  return {
+    conversations: page,
+    summary: {
+      total: enriched.length,
+      filtered: filtered.length,
+      byStatus: countConversationStatuses(enriched),
+      byAssigneeType: countAssigneeTypes(enriched),
+      handoffStatus: countHandoffStatuses(enriched)
+    },
+    pagination: {
+      limit: query.limit,
+      offset: query.offset,
+      returned: page.length,
+      hasMore: query.offset + page.length < filtered.length
+    }
+  };
+}
+
+async function buildAdminConversationListItem(
+  repository: SupportRepository,
+  projectId: string,
+  conversation: ConversationRecord
+): Promise<AdminConversationListItem> {
+  const [contact, messages, handoffSessions] = await Promise.all([
+    repository.findContact(projectId, conversation.contactId),
+    repository.listMessages(projectId, conversation.id),
+    repository.listHandoffSessions({ projectId, conversationId: conversation.id })
+  ]);
+  const lastMessage = messages.at(-1);
+  const latestHandoff = [...handoffSessions].sort((a, b) =>
+    b.updatedAt.localeCompare(a.updatedAt)
+  )[0];
+
+  return {
+    ...conversation,
+    contact: contact
+      ? {
+          id: contact.id,
+          name: contact.name,
+          email: contact.email,
+          externalUserId: contact.externalUserId
+        }
+      : undefined,
+    messageCount: messages.length,
+    lastMessage: lastMessage
+      ? {
+          id: lastMessage.id,
+          role: lastMessage.role,
+          text: truncate(textFromMessage(lastMessage), 240),
+          createdAt: lastMessage.createdAt
+        }
+      : undefined,
+    handoff: latestHandoff
+      ? {
+          id: latestHandoff.id,
+          provider: latestHandoff.provider,
+          status: latestHandoff.status,
+          externalConversationId: latestHandoff.externalConversationId,
+          updatedAt: latestHandoff.updatedAt
+        }
+      : undefined
+  };
+}
+
+function matchesAdminConversationQuery(
+  conversation: AdminConversationListItem,
+  query: ListConversationsQuery
+): boolean {
+  if (query.status && conversation.status !== query.status) {
+    return false;
+  }
+  if (query.assignee_type && conversation.assigneeType !== query.assignee_type) {
+    return false;
+  }
+
+  const term = query.q?.trim().toLowerCase();
+  if (!term) {
+    return true;
+  }
+
+  return [
+    conversation.id,
+    conversation.status,
+    conversation.assigneeType,
+    conversation.contact?.name,
+    conversation.contact?.email,
+    conversation.contact?.externalUserId,
+    conversation.lastMessage?.text,
+    conversation.handoff?.provider,
+    conversation.handoff?.status,
+    conversation.handoff?.externalConversationId
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .some((value) => value.toLowerCase().includes(term));
+}
+
+function countConversationStatuses(
+  conversations: AdminConversationListItem[]
+): Record<ConversationStatus, number> {
+  const counts: Record<ConversationStatus, number> = {
+    open: 0,
+    pending_ai: 0,
+    handoff_requested: 0,
+    handed_off: 0,
+    closed: 0
+  };
+  for (const conversation of conversations) {
+    counts[conversation.status] += 1;
+  }
+  return counts;
+}
+
+function countAssigneeTypes(
+  conversations: AdminConversationListItem[]
+): Record<ConversationRecord["assigneeType"], number> {
+  const counts: Record<ConversationRecord["assigneeType"], number> = {
+    ai: 0,
+    human: 0,
+    none: 0
+  };
+  for (const conversation of conversations) {
+    counts[conversation.assigneeType] += 1;
+  }
+  return counts;
+}
+
+function countHandoffStatuses(
+  conversations: AdminConversationListItem[]
+): Record<HandoffSessionRecord["status"], number> {
+  const counts: Record<HandoffSessionRecord["status"], number> = {
+    requested: 0,
+    active: 0,
+    closed: 0,
+    failed: 0
+  };
+  for (const conversation of conversations) {
+    if (conversation.handoff) {
+      counts[conversation.handoff.status] += 1;
+    }
+  }
+  return counts;
 }
 
 function requiredConfigString(configPayload: JsonRecord, key: string): string {

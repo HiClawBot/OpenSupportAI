@@ -449,8 +449,18 @@ POST /v1/admin/projects/{project_id}/handoffs/{handoff_id}/retry
 ### 获取会话列表
 
 ```http
-GET /v1/admin/projects/{project_id}/conversations
+GET /v1/admin/projects/{project_id}/conversations?status=open&q=zhang&limit=50&offset=0
 ```
+
+查询参数：
+
+| 参数            | 说明                                                                                   |
+| --------------- | -------------------------------------------------------------------------------------- |
+| `status`        | 可选。`open`、`pending_ai`、`handoff_requested`、`handed_off`、`closed`。              |
+| `assignee_type` | 可选。`ai`、`human`、`none`。                                                          |
+| `q`             | 可选。按 conversation id、联系人、最近消息、handoff provider/status/external id 搜索。 |
+| `limit`         | 可选。默认 `50`，最大 `100`。                                                          |
+| `offset`        | 可选。默认 `0`。                                                                       |
 
 响应：
 
@@ -460,14 +470,60 @@ GET /v1/admin/projects/{project_id}/conversations
     {
       "id": "conv_123",
       "status": "open",
-      "assignee_type": "ai",
+      "assigneeType": "ai",
       "contact": {
+        "id": "contact_123",
         "name": "张三",
-        "email": "zhangsan@example.com"
+        "email": "zhangsan@example.com",
+        "externalUserId": "user_123"
       },
-      "last_message_at": "2026-06-17T10:00:00.000Z"
+      "messageCount": 4,
+      "lastMessage": {
+        "id": "msg_123",
+        "role": "ai_agent",
+        "text": "根据知识库，你可以在账单设置页面取消订阅。",
+        "createdAt": "2026-06-17T10:01:00.000Z"
+      },
+      "handoff": {
+        "id": "handoff_123",
+        "provider": "chatwoot",
+        "status": "active",
+        "externalConversationId": "91",
+        "updatedAt": "2026-06-17T10:02:00.000Z"
+      },
+      "lastMessageAt": "2026-06-17T10:01:00.000Z",
+      "createdAt": "2026-06-17T10:00:00.000Z",
+      "updatedAt": "2026-06-17T10:01:00.000Z"
     }
-  ]
+  ],
+  "summary": {
+    "total": 12,
+    "filtered": 1,
+    "byStatus": {
+      "open": 8,
+      "pending_ai": 0,
+      "handoff_requested": 1,
+      "handed_off": 2,
+      "closed": 1
+    },
+    "byAssigneeType": {
+      "ai": 8,
+      "human": 3,
+      "none": 1
+    },
+    "handoffStatus": {
+      "requested": 1,
+      "active": 2,
+      "closed": 1,
+      "failed": 0
+    }
+  },
+  "pagination": {
+    "limit": 50,
+    "offset": 0,
+    "returned": 1,
+    "hasMore": false
+  }
 }
 ```
 

@@ -19,7 +19,7 @@
 
 OpenSupportAI gives SaaS products, internal tools, apps, and websites a project-scoped AI support layer with a chat widget, headless SDK, conversation API, knowledge-grounded answers, human handoff, and admin workflows.
 
-The first public release is a v0.1 MVP. It is intentionally small: it is not a full CRM or ticketing suite, and it does not copy Chatwoot, Tiledesk, or Zammad. Instead, OpenSupportAI provides the AI support runtime that can hand conversations to those systems.
+The v0.1 release line is intentionally small: it is not a full CRM or ticketing suite, and it does not copy Chatwoot, Tiledesk, or Zammad. Instead, OpenSupportAI provides the AI support runtime that can hand conversations to those systems.
 
 ### What Works in v0.1
 
@@ -31,7 +31,8 @@ The first public release is a v0.1 MVP. It is intentionally small: it is not a f
 - OpenAI-compatible LLM and embedding client package.
 - Headless JavaScript SDK.
 - Embeddable browser widget with Shadow DOM UI, SSE updates, conversation persistence, source references, and handoff action.
-- React admin console for projects, conversations, knowledge documents, LLM settings, and Chatwoot settings.
+- React admin console for projects, conversation operations, knowledge documents, LLM settings, and Chatwoot settings.
+- Admin conversation operations: status/search filters, summary metrics, contact labels, recent-message previews, message counts, and latest handoff status.
 - React demo app showing a SaaS billing page with the widget embedded.
 - Chatwoot handoff integration: creates contacts/conversations, pushes handoff summaries and transcript messages, stores external IDs, maps public agent replies back into local `human_agent` messages, tests connectivity, retries failed handoffs, and syncs Chatwoot resolved/open status.
 - GitHub Actions CI and a live Chatwoot smoke-test script for release validation.
@@ -136,6 +137,10 @@ For a live local smoke test after the API and Chatwoot are running, set the `CHA
 ```bash
 pnpm smoke:chatwoot
 ```
+
+### Admin Conversation Operations
+
+The admin conversation list supports `status`, `assignee_type`, `q`, `limit`, and `offset` query parameters. Responses include `summary` and `pagination` objects plus enriched conversation items with contact labels, `messageCount`, `lastMessage`, and latest `handoff` status. The admin console uses this to provide status filters, search, refresh, high-level queue metrics, recent-message previews, and failed-handoff visibility.
 
 ### Development Commands
 
@@ -273,7 +278,7 @@ See [docs/RELEASE_CHECKLIST.zh-CN.md](./docs/RELEASE_CHECKLIST.zh-CN.md) for the
 
 OpenSupportAI 是一套开源、可嵌入、LLM-native 的 AI 智能客服运行时。它为 SaaS 产品、内部工具、App 和网站提供按项目隔离的 AI 客服层，包含聊天 Widget、Headless SDK、会话 API、基于知识库的回答、人工转接和管理台工作流。
 
-首个公开版本是 v0.1 MVP。它有意保持小而清晰：不做完整 CRM，不做复杂工单系统，也不复制 Chatwoot、Tiledesk 或 Zammad。OpenSupportAI 专注于 AI 客服运行时，并可以把会话转交给这些客服系统。
+v0.1 版本线有意保持小而清晰：不做完整 CRM，不做复杂工单系统，也不复制 Chatwoot、Tiledesk 或 Zammad。OpenSupportAI 专注于 AI 客服运行时，并可以把会话转交给这些客服系统。
 
 ### v0.1 已实现能力
 
@@ -285,7 +290,8 @@ OpenSupportAI 是一套开源、可嵌入、LLM-native 的 AI 智能客服运行
 - OpenAI-compatible LLM 与 embedding 客户端包。
 - Headless JavaScript SDK。
 - 可嵌入浏览器 Widget：Shadow DOM UI、SSE 更新、会话持久化、source references 和人工转接。
-- React Admin Console：项目、会话、知识库、LLM 设置、Chatwoot 设置。
+- React Admin Console：项目、会话运营、知识库、LLM 设置、Chatwoot 设置。
+- 管理台会话运营：状态/搜索筛选、摘要指标、联系人标签、最近消息预览、消息数和最新 handoff 状态。
 - React Demo App：展示一个嵌入 Widget 的 SaaS 账单页。
 - Chatwoot 人工转接集成：创建 contact/conversation，推送转接摘要和历史消息，保存 external IDs，把公开坐席回复回流为本地 `human_agent` 消息，支持连接测试、失败重试和 Chatwoot resolved/open 状态同步。
 - GitHub Actions CI 与真实 Chatwoot smoke-test 脚本，用于发布校验。
@@ -390,6 +396,10 @@ API 和 Chatwoot 都启动后，可以设置 `deploy/docker-compose/.env.example
 ```bash
 pnpm smoke:chatwoot
 ```
+
+### 管理台会话运营
+
+管理端会话列表支持 `status`、`assignee_type`、`q`、`limit`、`offset` 查询参数。响应会返回 `summary` 和 `pagination`，并在会话项中补充联系人标签、`messageCount`、`lastMessage` 和最新 `handoff` 状态。Admin Console 基于这些数据提供状态筛选、搜索、刷新、队列指标、最近消息预览和失败 handoff 可见性。
 
 ### 开发命令
 

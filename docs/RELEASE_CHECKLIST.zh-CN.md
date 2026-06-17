@@ -8,6 +8,7 @@
 pnpm install
 pnpm exec prisma validate
 pnpm db:generate
+pnpm format:check
 pnpm lint
 pnpm typecheck
 pnpm test
@@ -40,6 +41,7 @@ VITE_API_URL=http://localhost:4000 pnpm --filter @opensupportai/demo-app dev
 - 输入 `怎么取消订阅？` 后能得到基于 demo 知识库的回答。
 - 输入 `我要转人工` 后会话状态进入 `handoff_requested`。
 - 管理台能看到对应 conversation、message 和 knowledge document。
+- 管理台会话列表的状态筛选、搜索、刷新、队列指标、最近消息预览和失败 handoff 计数可正常显示。
 
 ## Docker Compose Smoke Test
 
@@ -101,9 +103,9 @@ git push origin v0.1.0
 补丁版本发布建议：
 
 ```bash
-git tag v0.1.1
-git push origin v0.1.1
-gh release create v0.1.1 --title "OpenSupportAI v0.1.1" --notes-file <release-notes.md>
+git tag v0.1.2
+git push origin v0.1.2
+gh release create v0.1.2 --title "OpenSupportAI v0.1.2" --notes-file docs/releases/v0.1.2.md
 ```
 
 发布说明建议包含：
@@ -114,6 +116,7 @@ gh release create v0.1.1 --title "OpenSupportAI v0.1.1" --notes-file <release-no
 - Chatwoot 是 optional profile 和 adapter，不是内置客服台。
 - LLM provider 已有 OpenAI-compatible package，但 demo orchestrator 默认使用确定性知识库回答。
 - v0.1.1 增加 Chatwoot 连接测试、handoff retry、状态同步、CI 和 smoke-test 脚本。
+- v0.1.2 增加管理台会话运营筛选、摘要指标、最近消息预览和最新 handoff 状态。
 
 ## 当前已知限制
 

@@ -5,7 +5,7 @@ import {
   ChatCircleText,
   Database,
   GearSix,
-  Key,
+  MagnifyingGlass,
   PlugsConnected,
   Plus,
   Robot,
@@ -23,8 +23,37 @@ type Project = {
 type Conversation = {
   id: string;
   status: string;
+  assigneeType: "ai" | "human" | "none";
+  contact?: {
+    id: string;
+    name?: string;
+    email?: string;
+    externalUserId?: string;
+  };
+  messageCount: number;
+  lastMessage?: {
+    id: string;
+    role: string;
+    text: string;
+    createdAt: string;
+  };
+  handoff?: {
+    id: string;
+    provider: string;
+    status: string;
+    externalConversationId?: string;
+    updatedAt: string;
+  };
   lastMessageAt?: string;
   createdAt: string;
+};
+
+type ConversationSummary = {
+  total: number;
+  filtered: number;
+  byStatus: Record<string, number>;
+  byAssigneeType: Record<string, number>;
+  handoffStatus: Record<string, number>;
 };
 
 type KnowledgeDocument = {
@@ -71,6 +100,9 @@ function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState("proj_demo");
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversationSummary, setConversationSummary] = useState<ConversationSummary>();
+  const [conversationStatusFilter, setConversationStatusFilter] = useState("all");
+  const [conversationQuery, setConversationQuery] = useState("");
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<string | undefined>();
   const [messages, setMessages] = useState<Message[]>([]);
@@ -101,7 +133,7 @@ function App() {
         loadChatwootIntegration(activeProjectId)
       ]);
     }
-  }, [activeProjectId, adminToken]);
+  }, [activeProjectId, adminToken, conversationStatusFilter, conversationQuery]);
 
   async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(`${apiUrl}${path}`, {
@@ -133,10 +165,21 @@ function App() {
   }
 
   async function loadConversations(projectId: string) {
-    const payload = await request<{ conversations: Conversation[] }>(
-      `/v1/admin/projects/${projectId}/conversations`
-    );
+    const params = new URLSearchParams({ limit: "50" });
+    if (conversationStatusFilter !== "all") {
+      params.set("status", conversationStatusFilter);
+    }
+    const query = conversationQuery.trim();
+    if (query) {
+      params.set("q", query);
+    }
+
+    const payload = await request<{
+      conversations: Conversation[];
+      summary: ConversationSummary;
+    }>(`/v1/admin/projects/${projectId}/conversations?${params.toString()}`);
     setConversations(payload.conversations);
+    setConversationSummary(payload.summary);
   }
 
   async function loadDocuments(projectId: string) {
@@ -279,6 +322,9 @@ function App() {
           <div>
             <p className="eyebrow">Project</p>
             <h1>{activeProject?.name ?? "No project"}</h1>
+            {activeProject?.publicKey ? (
+              <p className="project-key">{activeProject.publicKey}</p>
+            ) : null}
           </div>
           <select
             value={activeProjectId}
@@ -298,10 +344,19 @@ function App() {
           <Metric
             icon={<ChatCircleText />}
             label="Conversations"
-            value={String(conversations.length)}
+            value={String(conversationSummary?.total ?? conversations.length)}
+          />
+          <Metric
+            icon={<ChatCircleText />}
+            label="Open"
+            value={String(conversationSummary?.byStatus.open ?? 0)}
+          />
+          <Metric
+            icon={<PlugsConnected />}
+            label="Human queue"
+            value={String(conversationSummary?.byAssigneeType.human ?? 0)}
           />
           <Metric icon={<Database />} label="Documents" value={String(documents.length)} />
-          <Metric icon={<Key />} label="Public key" value={activeProject?.publicKey ?? "n/a"} />
         </section>
 
         <section className="split" id="conversations">
@@ -309,17 +364,62 @@ function App() {
             <div className="panel-title">
               <ChatCircleText size={20} />
               <h2>Conversations</h2>
+              <button
+                className="icon-button"
+                title="Refresh conversations"
+                onClick={() => void loadConversations(activeProjectId)}
+              >
+                <ArrowClockwise size={16} />
+              </button>
+            </div>
+            <div className="conversation-tools">
+              <select
+                value={conversationStatusFilter}
+                onChange={(event) => setConversationStatusFilter(event.target.value)}
+              >
+                <option value="all">All status</option>
+                <option value="open">Open</option>
+                <option value="pending_ai">Pending AI</option>
+                <option value="handoff_requested">Handoff requested</option>
+                <option value="handed_off">Handed off</option>
+                <option value="closed">Closed</option>
+              </select>
+              <label>
+                <MagnifyingGlass size={16} />
+                <input
+                  value={conversationQuery}
+                  onChange={(event) => setConversationQuery(event.target.value)}
+                  placeholder="Search conversations"
+                />
+              </label>
+            </div>
+            <div className="list-summary">
+              <span>{conversationSummary?.filtered ?? conversations.length} shown</span>
+              <span>{conversationSummary?.handoffStatus.failed ?? 0} failed handoffs</span>
             </div>
             <div className="list">
               {conversations.length === 0 ? <Empty text="No conversations yet" /> : null}
               {conversations.map((conversation) => (
                 <button
-                  className="row"
+                  className={`row conversation-row ${
+                    selectedConversation === conversation.id ? "selected" : ""
+                  }`}
                   key={conversation.id}
                   onClick={() => void loadConversation(conversation.id)}
                 >
-                  <span>{conversation.id}</span>
-                  <b>{conversation.status}</b>
+                  <span className="row-main">
+                    <strong>{conversationLabel(conversation)}</strong>
+                    <small>{conversation.lastMessage?.text || conversation.id}</small>
+                  </span>
+                  <span className="row-meta">
+                    <b>{conversation.status}</b>
+                    <small>{conversation.messageCount} messages</small>
+                    {conversation.handoff ? (
+                      <small>
+                        {conversation.handoff.provider} {conversation.handoff.status}
+                      </small>
+                    ) : null}
+                  </span>
                 </button>
               ))}
             </div>
@@ -486,6 +586,15 @@ function Metric(props: { icon: React.ReactNode; label: string; value: string }) 
 
 function Empty(props: { text: string }) {
   return <div className="empty">{props.text}</div>;
+}
+
+function conversationLabel(conversation: Conversation): string {
+  return (
+    conversation.contact?.name ??
+    conversation.contact?.email ??
+    conversation.contact?.externalUserId ??
+    conversation.id
+  );
 }
 
 function IntegrationStatus(props: {
