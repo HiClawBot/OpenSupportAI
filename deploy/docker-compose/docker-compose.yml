@@ -1,0 +1,156 @@
+name: opensupportai
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: opensupportai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-opensupportai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opensupportai}
+      POSTGRES_DB: ${POSTGRES_DB:-opensupportai}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: opensupportai-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: opensupportai-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-minioadmin}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ../..
+      dockerfile: services/api/Dockerfile
+    container_name: opensupportai-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    environment:
+      NODE_ENV: development
+      PORT: 4000
+      OPENSUPPORTAI_STORAGE: ${OPENSUPPORTAI_STORAGE:-prisma}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-opensupportai}:${POSTGRES_PASSWORD:-opensupportai}@postgres:5432/${POSTGRES_DB:-opensupportai}
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-minioadmin}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-minioadmin}
+      S3_BUCKET: ${S3_BUCKET:-opensupportai}
+      ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:-admin_demo_key}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-replace_with_32_byte_key}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-replace_me}
+      LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-gpt-4.1-mini}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+    ports:
+      - "4000:4000"
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: services/worker/Dockerfile
+    container_name: opensupportai-worker
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://${POSTGRES_USER:-opensupportai}:${POSTGRES_PASSWORD:-opensupportai}@postgres:5432/${POSTGRES_DB:-opensupportai}
+      REDIS_URL: redis://redis:6379
+
+  admin-console:
+    build:
+      context: ../..
+      dockerfile: apps/admin-console/Dockerfile
+      args:
+        VITE_API_URL: ${API_URL:-http://localhost:4000}
+    container_name: opensupportai-admin-console
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - "3000:3000"
+
+  demo-app:
+    build:
+      context: ../..
+      dockerfile: apps/demo-app/Dockerfile
+      args:
+        VITE_API_URL: ${API_URL:-http://localhost:4000}
+    container_name: opensupportai-demo-app
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - "3001:3001"
+
+  chatwoot:
+    image: chatwoot/chatwoot:latest
+    container_name: opensupportai-chatwoot
+    profiles: ["chatwoot"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      FRONTEND_URL: ${CHATWOOT_BASE_URL:-http://localhost:3008}
+      SECRET_KEY_BASE: replace_with_local_chatwoot_secret
+      POSTGRES_HOST: postgres
+      POSTGRES_DATABASE: ${POSTGRES_DB:-opensupportai}
+      POSTGRES_USERNAME: ${POSTGRES_USER:-opensupportai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opensupportai}
+      REDIS_URL: redis://redis:6379
+      RAILS_ENV: development
+      NODE_ENV: development
+    ports:
+      - "3008:3000"
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:

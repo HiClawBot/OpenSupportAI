@@ -1,0 +1,315 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  projects Project[]
+  apiKeys  ApiKey[]
+
+  @@map("organizations")
+}
+
+model Project {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  name           String
+  publicKey      String   @unique @map("public_key")
+  defaultLocale  String   @default("zh-CN") @map("default_locale")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  inboxes            Inbox[]
+  contacts           Contact[]
+  conversations      Conversation[]
+  messages           Message[]
+  knowledgeSources   KnowledgeSource[]
+  knowledgeDocuments KnowledgeDocument[]
+  knowledgeChunks    KnowledgeChunk[]
+  llmProviders       LlmProvider[]
+  aiRuns             AiRun[]
+  handoffSessions    HandoffSession[]
+  integrationConfigs IntegrationConfig[]
+  webhookEvents      WebhookEvent[]
+  apiKeys            ApiKey[]
+
+  @@index([organizationId])
+  @@map("projects")
+}
+
+model Inbox {
+  id              String   @id @default(cuid())
+  projectId       String   @map("project_id")
+  name            String
+  handoffProvider String?  @map("handoff_provider")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  conversations Conversation[]
+
+  @@index([projectId])
+  @@map("inboxes")
+}
+
+model Contact {
+  id             String   @id @default(cuid())
+  projectId      String   @map("project_id")
+  externalUserId String?  @map("external_user_id")
+  name           String?
+  email          String?
+  avatarUrl      String?  @map("avatar_url")
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  conversations Conversation[]
+
+  @@index([projectId])
+  @@index([projectId, externalUserId])
+  @@index([projectId, email])
+  @@map("contacts")
+}
+
+model Conversation {
+  id            String    @id @default(cuid())
+  projectId     String    @map("project_id")
+  inboxId       String    @map("inbox_id")
+  contactId     String    @map("contact_id")
+  status        String    @default("open")
+  assigneeType  String    @default("ai") @map("assignee_type")
+  lastMessageAt DateTime? @map("last_message_at")
+  metadata      Json      @default("{}")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  project         Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  inbox           Inbox            @relation(fields: [inboxId], references: [id], onDelete: Restrict)
+  contact         Contact          @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  messages        Message[]
+  aiRuns          AiRun[]
+  handoffSessions HandoffSession[]
+
+  @@index([projectId])
+  @@index([projectId, contactId])
+  @@index([projectId, status])
+  @@index([projectId, lastMessageAt])
+  @@map("conversations")
+}
+
+model Message {
+  id             String   @id @default(cuid())
+  conversationId String   @map("conversation_id")
+  projectId      String   @map("project_id")
+  role           String
+  visibility     String   @default("public")
+  contentType    String   @default("text") @map("content_type")
+  content        Json
+  sourceRefs     Json?    @map("source_refs")
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  aiRuns       AiRun[]
+
+  @@index([projectId])
+  @@index([conversationId, createdAt])
+  @@index([projectId, createdAt])
+  @@map("messages")
+}
+
+model KnowledgeSource {
+  id        String   @id @default(cuid())
+  projectId String   @map("project_id")
+  type      String
+  name      String
+  config    Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  project   Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  documents KnowledgeDocument[]
+
+  @@index([projectId])
+  @@map("knowledge_sources")
+}
+
+model KnowledgeDocument {
+  id          String   @id @default(cuid())
+  projectId   String   @map("project_id")
+  sourceId    String?  @map("source_id")
+  title       String
+  sourceType  String   @map("source_type")
+  sourceUri   String?  @map("source_uri")
+  status      String   @default("pending")
+  contentHash String?  @map("content_hash")
+  metadata    Json     @default("{}")
+  error       String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  project Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  source  KnowledgeSource?  @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  chunks  KnowledgeChunk[]
+
+  @@index([projectId, status])
+  @@index([projectId, contentHash])
+  @@index([sourceId])
+  @@map("knowledge_documents")
+}
+
+model KnowledgeChunk {
+  id          String                  @id @default(cuid())
+  projectId   String                  @map("project_id")
+  documentId  String                  @map("document_id")
+  chunkIndex  Int                     @map("chunk_index")
+  content     String
+  embedding   Unsupported("vector(1536)")?
+  tokenCount  Int?                    @map("token_count")
+  metadata    Json                    @default("{}")
+  createdAt   DateTime                @default(now()) @map("created_at")
+
+  project  Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  document KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([documentId])
+  @@index([projectId, documentId])
+  @@map("knowledge_chunks")
+}
+
+model LlmProvider {
+  id              String   @id @default(cuid())
+  projectId       String   @map("project_id")
+  provider        String   @default("openai_compatible")
+  baseUrl         String   @map("base_url")
+  model           String
+  embeddingModel  String?  @map("embedding_model")
+  apiKeyEncrypted String   @map("api_key_encrypted")
+  status          String   @default("active")
+  metadata        Json     @default("{}")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([projectId, status])
+  @@map("llm_providers")
+}
+
+model AiRun {
+  id                String   @id @default(cuid())
+  projectId         String   @map("project_id")
+  conversationId    String   @map("conversation_id")
+  messageId         String?  @map("message_id")
+  provider          String
+  model             String
+  promptVersion     String   @map("prompt_version")
+  inputTokens       Int?     @map("input_tokens")
+  outputTokens      Int?     @map("output_tokens")
+  latencyMs         Int?     @map("latency_ms")
+  retrievedChunkIds Json     @default("[]") @map("retrieved_chunk_ids")
+  confidence        Float?
+  status            String
+  error             String?
+  metadata          Json     @default("{}")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message      Message?     @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, createdAt])
+  @@index([conversationId, createdAt])
+  @@index([messageId])
+  @@index([status])
+  @@map("ai_runs")
+}
+
+model HandoffSession {
+  id                     String   @id @default(cuid())
+  projectId              String   @map("project_id")
+  conversationId         String   @map("conversation_id")
+  provider               String
+  externalContactId      String?  @map("external_contact_id")
+  externalConversationId String?  @map("external_conversation_id")
+  status                 String   @default("requested")
+  reason                 String?
+  metadata               Json     @default("{}")
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([conversationId])
+  @@unique([provider, externalConversationId])
+  @@map("handoff_sessions")
+}
+
+model IntegrationConfig {
+  id              String   @id @default(cuid())
+  projectId       String   @map("project_id")
+  provider        String
+  status          String   @default("active")
+  configEncrypted String   @map("config_encrypted")
+  metadata        Json     @default("{}")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, provider])
+  @@map("integration_configs")
+}
+
+model WebhookEvent {
+  id              String    @id @default(cuid())
+  projectId       String    @map("project_id")
+  provider        String
+  externalEventId String?   @map("external_event_id")
+  payload         Json
+  status          String    @default("received")
+  error           String?
+  createdAt       DateTime  @default(now()) @map("created_at")
+  processedAt     DateTime? @map("processed_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, provider])
+  @@unique([provider, externalEventId])
+  @@index([status, createdAt])
+  @@map("webhook_events")
+}
+
+model ApiKey {
+  id             String    @id @default(cuid())
+  projectId      String?   @map("project_id")
+  organizationId String?   @map("organization_id")
+  name           String
+  keyHash        String    @unique @map("key_hash")
+  scopes         Json      @default("[]")
+  lastUsedAt     DateTime? @map("last_used_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  revokedAt      DateTime? @map("revoked_at")
+
+  project      Project?      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([organizationId])
+  @@map("api_keys")
+}

@@ -1,0 +1,452 @@
+# OpenSupportAI 数据模型 v0.1
+
+## 设计目标
+
+数据模型要支持：
+
+```text
+多租户
+项目级配置
+客服会话
+AI 消息
+人工转接
+知识库 RAG
+LLM 调用日志
+外部集成
+Webhook 幂等
+```
+
+---
+
+## 实体关系
+
+```text
+Organization
+  └── Project
+        ├── Inbox
+        ├── Contact
+        │     └── Conversation
+        │             ├── Message
+        │             ├── AIRun
+        │             └── HandoffSession
+        ├── KnowledgeSource
+        │     └── KnowledgeDocument
+        │             └── KnowledgeChunk
+        ├── LLMProvider
+        ├── IntegrationConfig
+        └── APIKey
+```
+
+---
+
+## organizations
+
+```text
+id              string primary key
+name            string
+created_at      timestamp
+updated_at      timestamp
+```
+
+---
+
+## projects
+
+```text
+id              string primary key
+organization_id string references organizations(id)
+name            string
+public_key      string unique
+default_locale  string default 'zh-CN'
+created_at      timestamp
+updated_at      timestamp
+```
+
+索引：
+
+```text
+organization_id
+public_key unique
+```
+
+---
+
+## inboxes
+
+```text
+id              string primary key
+project_id      string references projects(id)
+name            string
+handoff_provider string nullable
+created_at      timestamp
+updated_at      timestamp
+```
+
+索引：
+
+```text
+project_id
+```
+
+---
+
+## contacts
+
+```text
+id                string primary key
+project_id        string references projects(id)
+external_user_id  string nullable
+name              string nullable
+email             string nullable
+avatar_url        string nullable
+metadata          jsonb
+created_at        timestamp
+updated_at        timestamp
+```
+
+索引：
+
+```text
+project_id
+project_id + external_user_id
+project_id + email
+```
+
+---
+
+## conversations
+
+```text
+id                string primary key
+project_id        string references projects(id)
+inbox_id          string references inboxes(id)
+contact_id        string references contacts(id)
+status            string      -- open / pending_ai / handoff_requested / handed_off / closed
+assignee_type     string      -- ai / human / none
+last_message_at   timestamp nullable
+metadata          jsonb
+created_at        timestamp
+updated_at        timestamp
+```
+
+索引：
+
+```text
+project_id
+project_id + contact_id
+project_id + status
+project_id + last_message_at
+```
+
+---
+
+## messages
+
+```text
+id                string primary key
+conversation_id   string references conversations(id)
+project_id        string references projects(id)
+role              string      -- end_user / ai_agent / human_agent / system / tool
+visibility        string      -- public / internal_note / debug_trace
+content_type      string      -- text / rich_text / file / event
+content           jsonb
+source_refs       jsonb nullable
+metadata          jsonb
+created_at        timestamp
+```
+
+索引：
+
+```text
+project_id
+conversation_id + created_at
+project_id + created_at
+```
+
+注意：`messages` 冗余 `project_id`，用于快速过滤和防跨租户查询。
+
+---
+
+## knowledge_sources
+
+```text
+id                string primary key
+project_id        string references projects(id)
+type              string      -- manual / url / sitemap / upload
+name              string
+config            jsonb
+created_at        timestamp
+updated_at        timestamp
+```
+
+索引：
+
+```text
+project_id
+```
+
+---
+
+## knowledge_documents
+
+```text
+id                string primary key
+project_id        string references projects(id)
+source_id         string nullable references knowledge_sources(id)
+title             string
+source_type       string      -- markdown / text / url / pdf
+source_uri        string nullable
+status            string      -- pending / indexing / indexed / failed
+content_hash      string nullable
+metadata          jsonb
+error             text nullable
+created_at        timestamp
+updated_at        timestamp
+```
+
+索引：
+
+```text
+project_id + status
+project_id + content_hash
+source_id
+```
+
+---
+
+## knowledge_chunks
+
+```text
+id                string primary key
+project_id        string references projects(id)
+document_id       string references knowledge_documents(id)
+chunk_index       integer
+content           text
+embedding         vector
+ token_count       integer nullable
+metadata          jsonb
+created_at        timestamp
+```
+
+索引：
+
+```text
+project_id
+document_id
+project_id + document_id
+vector index on embedding
+```
+
+注意：向量维度取决于 embedding model。实现时应将维度作为配置或 migration 决策。
+
+---
+
+## llm_providers
+
+```text
+id                string primary key
+project_id        string references projects(id)
+provider          string      -- openai_compatible
+base_url          string
+model             string
+embedding_model   string nullable
+api_key_encrypted text
+status            string      -- active / disabled
+metadata          jsonb
+created_at        timestamp
+updated_at        timestamp
+```
+
+索引：
+
+```text
+project_id
+project_id + status
+```
+
+---
+
+## ai_runs
+
+```text
+id                  string primary key
+project_id          string references projects(id)
+conversation_id     string references conversations(id)
+message_id          string nullable references messages(id)
+provider            string
+model               string
+prompt_version      string
+input_tokens        integer nullable
+output_tokens       integer nullable
+latency_ms          integer nullable
+retrieved_chunk_ids jsonb
+confidence          float nullable
+status              string      -- success / failed / skipped / handoff
+error               text nullable
+metadata            jsonb
+created_at          timestamp
+```
+
+索引：
+
+```text
+project_id + created_at
+conversation_id + created_at
+message_id
+status
+```
+
+---
+
+## handoff_sessions
+
+```text
+id                        string primary key
+project_id                string references projects(id)
+conversation_id           string references conversations(id)
+provider                  string      -- chatwoot / tiledesk / zammad / webhook
+external_contact_id       string nullable
+external_conversation_id  string nullable
+status                    string      -- requested / active / closed / failed
+reason                    string nullable
+metadata                  jsonb
+created_at                timestamp
+updated_at                timestamp
+```
+
+索引：
+
+```text
+project_id
+conversation_id
+provider + external_conversation_id unique
+```
+
+---
+
+## integration_configs
+
+```text
+id                string primary key
+project_id        string references projects(id)
+provider          string      -- chatwoot
+status            string      -- active / disabled
+config_encrypted  text
+metadata          jsonb
+created_at        timestamp
+updated_at        timestamp
+```
+
+索引：
+
+```text
+project_id + provider unique
+```
+
+---
+
+## webhook_events
+
+```text
+id                 string primary key
+project_id         string references projects(id)
+provider           string
+external_event_id  string nullable
+payload            jsonb
+status             string      -- received / processed / failed / ignored
+error              text nullable
+created_at         timestamp
+processed_at       timestamp nullable
+```
+
+索引：
+
+```text
+project_id + provider
+provider + external_event_id unique
+status + created_at
+```
+
+---
+
+## api_keys
+
+```text
+id                string primary key
+project_id        string nullable references projects(id)
+organization_id   string nullable references organizations(id)
+name              string
+key_hash          string unique
+scopes            jsonb
+last_used_at      timestamp nullable
+created_at        timestamp
+revoked_at        timestamp nullable
+```
+
+索引：
+
+```text
+key_hash unique
+project_id
+organization_id
+```
+
+---
+
+## 枚举建议
+
+### ConversationStatus
+
+```text
+open
+pending_ai
+handoff_requested
+handed_off
+closed
+```
+
+### MessageRole
+
+```text
+end_user
+ai_agent
+human_agent
+system
+tool
+```
+
+### MessageVisibility
+
+```text
+public
+internal_note
+debug_trace
+```
+
+### DocumentStatus
+
+```text
+pending
+indexing
+indexed
+failed
+```
+
+### HandoffStatus
+
+```text
+requested
+active
+closed
+failed
+```
+
+---
+
+## 安全注意事项
+
+1. `project_id` 应冗余写入消息、chunk、ai_runs、handoff_sessions，减少跨表查询时的安全漏洞。
+2. 外部集成配置必须加密存储。
+3. API key 只保存 hash，不保存明文。
+4. LLM 调用日志不能默认保存完整 prompt，除非管理员显式开启 debug。
+5. debug_trace 不应返回给 end user。

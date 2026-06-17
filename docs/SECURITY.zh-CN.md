@@ -1,0 +1,321 @@
+# OpenSupportAI 安全设计
+
+## 安全目标
+
+OpenSupportAI 处理客服会话、用户资料、知识库、LLM API Key 和外部客服系统 token，必须默认安全。
+
+核心安全目标：
+
+```text
+租户隔离
+密钥保护
+前端不暴露敏感信息
+RAG 不串库
+AI 不越权
+Webhook 可验证
+日志可审计
+敏感信息可脱敏
+```
+
+---
+
+## 威胁模型
+
+### 主要威胁
+
+```text
+跨租户读取 conversation
+跨租户读取 knowledge chunk
+前端泄露 LLM API Key
+伪造 Chatwoot webhook
+Prompt injection 诱导 AI 泄露系统提示词或忽略政策
+AI 调用未授权业务工具
+日志泄露 PII
+Webhook 重放导致重复消息
+外部 provider token 泄露
+```
+
+---
+
+## 租户隔离
+
+所有核心表必须包含 `project_id` 或通过父级强关联到 project。
+
+必须遵守：
+
+```text
+从 auth context 中解析 project_id
+任何 conversation/message/knowledge 查询都带 project_id
+external_id 不可作为唯一授权依据
+adapter webhook 必须通过 project_id + external_conversation_id 联合查找
+```
+
+禁止：
+
+```ts
+findUnique({ where: { id } });
+```
+
+推荐：
+
+```ts
+findFirst({ where: { id, projectId: auth.projectId } });
+```
+
+---
+
+## 密钥管理
+
+### 不允许
+
+```text
+LLM API Key 出现在浏览器代码
+LLM API Key 出现在 Widget 初始化参数
+LLM API Key 明文写入日志
+Integration token 明文返回 Admin GET API
+API key 明文保存到数据库
+```
+
+### 要求
+
+```text
+API key 只保存 hash
+LLM provider key 加密保存
+Chatwoot token 加密保存
+Webhook secret 加密保存
+使用 ENCRYPTION_KEY 做 envelope encryption 或应用级加密
+```
+
+---
+
+## Client API 鉴权
+
+v0.1 支持：
+
+```text
+project public key
+signed user token
+```
+
+Public key 只能用于：
+
+```text
+创建 end-user conversation
+发送 end-user message
+订阅自己的 conversation events
+请求自己的 handoff
+```
+
+不能用于：
+
+```text
+管理知识库
+读取其他用户会话
+配置 LLM
+配置 Chatwoot
+读取 ai_runs debug 信息
+```
+
+---
+
+## Admin API 鉴权
+
+Admin API 需要 admin token 或 session。
+
+权限后续细分：
+
+```text
+owner
+admin
+agent
+developer
+viewer
+```
+
+v0.1 可先简化为单管理员，但接口设计应保留 scopes。
+
+---
+
+## Webhook 安全
+
+Webhook 必须验证：
+
+```text
+project_id 路由参数存在
+provider config 存在
+signature 或 webhook_secret 正确
+external_event_id 幂等
+```
+
+失败时：
+
+```text
+401 invalid signature
+不写 message
+记录安全日志
+```
+
+---
+
+## Prompt Injection 防护
+
+OpenSupportAI 不依赖“提示词能防住所有攻击”的假设。
+
+防护层：
+
+```text
+RAG source grounding
+tool allowlist
+tool permission
+tenant isolation
+system prompt rule
+sensitive intent detection
+human handoff
+logging and eval
+```
+
+AI 不应拥有：
+
+```text
+跨租户数据访问能力
+原始数据库查询能力
+读取密钥能力
+任意 HTTP 请求能力
+默认执行业务操作能力
+```
+
+---
+
+## RAG 安全
+
+要求：
+
+```text
+knowledge_chunks 查询强制 project_id
+source_refs 只暴露 public source 信息
+debug chunk content 不默认暴露给 end user
+上传文档做大小限制
+URL ingestion 做域名 allowlist/denylist
+PDF 解析不执行嵌入脚本
+```
+
+---
+
+## AI 回复安全策略
+
+默认策略：
+
+```text
+无知识命中不回答
+低置信度建议转人工
+退款/账单/隐私/投诉优先转人工
+不编造政策、价格、承诺
+不输出内部系统提示词
+不输出 debug_trace
+```
+
+---
+
+## 日志与隐私
+
+日志应包含：
+
+```text
+request_id
+project_id
+conversation_id
+provider
+model
+latency_ms
+status
+error_code
+```
+
+日志不应默认包含：
+
+```text
+LLM API Key
+Chatwoot token
+用户密码
+完整身份证件号
+完整银行卡号
+敏感附件内容
+```
+
+PII 可选脱敏：
+
+```text
+email hash/mask
+phone mask
+credit card redact
+secret pattern redact
+```
+
+---
+
+## 文件上传安全
+
+v0.1 最低要求：
+
+```text
+限制文件大小
+限制 MIME type
+PDF 只做文本提取
+对象存储路径包含 project_id
+上传文件不直接公开访问
+```
+
+后续增强：
+
+```text
+病毒扫描
+DLP
+OCR 沙箱
+文档权限同步
+```
+
+---
+
+## 速率限制
+
+建议：
+
+```text
+每 project QPS 限制
+每 conversation 消息频率限制
+每 contact 每小时消息限制
+LLM token budget
+Webhook retry 限制
+```
+
+---
+
+## 安全测试清单
+
+```text
+[ ] 跨 project 读取 conversation 被拒绝
+[ ] 跨 project 读取 messages 被拒绝
+[ ] 跨 project 检索 knowledge_chunks 被拒绝
+[ ] public key 不能调用 admin API
+[ ] Widget 初始化不包含 LLM key
+[ ] webhook secret 错误被拒绝
+[ ] 重复 webhook 不重复写 message
+[ ] debug_trace 不返回给 end user
+[ ] integration config GET 不返回明文 secret
+[ ] ai_run 不默认暴露完整 prompt
+```
+
+---
+
+## 安全发布要求
+
+v0.1.0 发布前必须具备：
+
+```text
+SECURITY.md
+漏洞报告邮箱或流程
+依赖扫描
+secret scanning
+基础跨租户测试
+Webhook 签名测试
+```
