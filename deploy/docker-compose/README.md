@@ -54,6 +54,14 @@ docker compose -f deploy/docker-compose/docker-compose.yml --profile chatwoot up
 
 Then configure the Chatwoot base URL, account ID, inbox ID, API token, and webhook secret from the OpenSupportAI admin console.
 
+After Chatwoot is configured, run the live smoke test from the repository root:
+
+```bash
+pnpm smoke:chatwoot
+```
+
+The script reads `.env` through `dotenv`, creates a smoke-test conversation, requests Chatwoot handoff, verifies the stored external conversation ID, simulates an agent reply webhook, and simulates a resolved-status webhook. It requires valid `CHATWOOT_BASE_URL`, `CHATWOOT_ACCOUNT_ID`, `CHATWOOT_INBOX_ID`, `CHATWOOT_API_ACCESS_TOKEN`, and `CHATWOOT_WEBHOOK_SECRET` values.
+
 ## Notes
 
 - The API defaults to Prisma storage in Docker.

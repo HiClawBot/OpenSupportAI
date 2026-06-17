@@ -1,6 +1,6 @@
-# OpenSupportAI v0.1 首版发布清单
+# OpenSupportAI v0.1.x 发布清单
 
-这份清单用于首次公开发布到 GitHub 前的最后检查。
+这份清单用于公开发布到 GitHub 前的最后检查。
 
 ## 必跑检查
 
@@ -13,6 +13,8 @@ pnpm typecheck
 pnpm test
 pnpm build
 ```
+
+GitHub Actions CI 会在 `main`、Pull Request 和 `v*` tag 上执行同一组核心检查。
 
 ## 本地无数据库 Smoke Test
 
@@ -63,6 +65,14 @@ pnpm db:seed
 docker compose -f deploy/docker-compose/docker-compose.yml --profile chatwoot up -d
 ```
 
+配置 Chatwoot account、inbox、API token 和 webhook secret 后，可以执行真实联调 smoke test：
+
+```bash
+pnpm smoke:chatwoot
+```
+
+该脚本会创建测试 conversation、触发 handoff、验证 external conversation id、模拟 Chatwoot 坐席回复 webhook，并模拟 resolved 状态同步。
+
 ## 安全发布检查
 
 - `.env` 没有提交。
@@ -75,7 +85,7 @@ docker compose -f deploy/docker-compose/docker-compose.yml --profile chatwoot up
 - RAG no-hit 策略不编造答案。
 - Chatwoot webhook 有 secret/signature 校验。
 
-## GitHub 首次发布建议
+## GitHub 发布建议
 
 ```bash
 git init
@@ -88,6 +98,14 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
+补丁版本发布建议：
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+gh release create v0.1.1 --title "OpenSupportAI v0.1.1" --notes-file <release-notes.md>
+```
+
 发布说明建议包含：
 
 - v0.1 是可本地运行的 MVP，不是生产级 SaaS。
@@ -95,6 +113,7 @@ git push origin v0.1.0
 - Docker Compose 支持 Postgres/pgvector、Redis、MinIO、API、worker、admin、demo app。
 - Chatwoot 是 optional profile 和 adapter，不是内置客服台。
 - LLM provider 已有 OpenAI-compatible package，但 demo orchestrator 默认使用确定性知识库回答。
+- v0.1.1 增加 Chatwoot 连接测试、handoff retry、状态同步、CI 和 smoke-test 脚本。
 
 ## 当前已知限制
 

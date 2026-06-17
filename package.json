@@ -1,6 +1,6 @@
 {
   "name": "opensupportai",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Open-source, embeddable, LLM-native AI support runtime.",
   "license": "Apache-2.0",
@@ -24,7 +24,8 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "db:seed": "prisma db seed",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "smoke:chatwoot": "node scripts/chatwoot-smoke.mjs"
   },
   "devDependencies": {
     "@eslint/js": "latest",
