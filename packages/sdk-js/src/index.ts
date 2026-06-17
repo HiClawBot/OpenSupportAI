@@ -50,7 +50,7 @@ type ApiSendMessageResponse = {
 
 type ApiRequestHandoffResponse = {
   conversation_id: string;
-  status: "handoff_requested";
+  status: "handoff_requested" | "handed_off";
 };
 
 export class OpenSupportAIClient {

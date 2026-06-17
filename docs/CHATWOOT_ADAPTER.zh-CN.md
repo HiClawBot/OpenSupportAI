@@ -30,12 +30,14 @@ export interface HandoffAdapter {
 
   createOrUpdateContact(input: { projectId: string; contactId: string }): Promise<{
     externalContactId: string;
+    externalContactSourceId?: string;
   }>;
 
   createConversation(input: {
     projectId: string;
     conversationId: string;
     externalContactId: string;
+    externalContactSourceId?: string;
     summary?: string;
   }): Promise<{
     externalConversationId: string;
@@ -90,8 +92,8 @@ GET API 不返回明文
 1. 用户点击转人工或 AI 低置信度触发。
 2. OpenSupportAI 创建 handoff_session(status=requested)。
 3. Adapter 读取 Chatwoot 配置。
-4. Adapter 创建/更新 Chatwoot contact。
-5. Adapter 创建 Chatwoot conversation。
+4. Adapter 创建/更新 Chatwoot contact，并读取 `contact_inboxes[].source_id`。
+5. Adapter 用 `source_id` 创建 Chatwoot conversation。
 6. Adapter 推送会话摘要、历史消息和当前问题。
 7. OpenSupportAI 保存 external_contact_id 和 external_conversation_id。
 8. conversation.status = handed_off。
@@ -130,6 +132,12 @@ end_user
 ```
 
 不要推送 debug_trace。
+
+## Chatwoot API Channel 注意事项
+
+Chatwoot Application API 创建 conversation 时需要 `source_id`、`inbox_id` 和 `contact_id`。
+
+`source_id` 不是 OpenSupportAI 本地 conversation id，而是 Chatwoot contact 在某个 inbox 下的 session identifier。创建 contact 后，Chatwoot 会在响应的 `contact_inboxes[].source_id` 中返回这个值。OpenSupportAI 会优先使用该值创建 Chatwoot conversation；如果旧版响应没有返回 `source_id`，adapter 会回退到本地 conversation id。
 
 ---
 

@@ -166,6 +166,11 @@ export class MemorySupportRepository implements SupportRepository {
     return inboxId ? inboxes.find((inbox) => inbox.id === inboxId) : inboxes[0];
   }
 
+  async findContact(projectId: string, contactId: string): Promise<ContactRecord | undefined> {
+    const contact = this.contacts.get(contactId);
+    return contact?.projectId === projectId ? contact : undefined;
+  }
+
   async upsertContact(projectId: string, input: ContactInput): Promise<ContactRecord> {
     const existing = [...this.contacts.values()].find((contact) => {
       if (contact.projectId !== projectId) {
@@ -427,6 +432,30 @@ export class MemorySupportRepository implements SupportRepository {
     };
     this.handoffSessions.set(session.id, session);
     return session;
+  }
+
+  async updateHandoffSession(input: {
+    id: string;
+    status?: HandoffSessionRecord["status"];
+    externalContactId?: string;
+    externalConversationId?: string;
+    metadata?: JsonRecord;
+  }): Promise<HandoffSessionRecord> {
+    const session = this.handoffSessions.get(input.id);
+    if (!session) {
+      throw new Error(`Handoff session not found: ${input.id}`);
+    }
+
+    const updated: HandoffSessionRecord = {
+      ...session,
+      status: input.status ?? session.status,
+      externalContactId: input.externalContactId ?? session.externalContactId,
+      externalConversationId: input.externalConversationId ?? session.externalConversationId,
+      metadata: input.metadata ?? session.metadata,
+      updatedAt: now()
+    };
+    this.handoffSessions.set(updated.id, updated);
+    return updated;
   }
 
   async upsertIntegrationConfig(input: {

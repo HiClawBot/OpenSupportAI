@@ -10,7 +10,7 @@ export type RequestHandoffInput = {
 
 export type RequestHandoffResponse = {
   conversationId: string;
-  status: "handoff_requested";
+  status: "handoff_requested" | "handed_off";
 };
 
 export type ExternalConversationRef = {

@@ -1,6 +1,11 @@
 import type { ClientEvent, HandoffReason, SourceReference } from "@opensupportai/protocol";
 import type { EventHub } from "./event-hub";
-import type { KnowledgeChunkRecord, MessageRecord, SupportRepository } from "./repositories/types";
+import type {
+  HandoffSessionRecord,
+  KnowledgeChunkRecord,
+  MessageRecord,
+  SupportRepository
+} from "./repositories/types";
 
 export type Orchestrator = {
   respondToUserMessage(input: {
@@ -10,10 +15,32 @@ export type Orchestrator = {
   }): Promise<void>;
 };
 
+export type RequestHandoffHandler = (input: {
+  projectId: string;
+  conversationId: string;
+  reason: HandoffReason;
+  note?: string;
+}) => Promise<HandoffSessionRecord>;
+
 export function createOrchestrator(
   repository: SupportRepository,
-  eventHub: EventHub
+  eventHub: EventHub,
+  options: {
+    requestHandoff?: RequestHandoffHandler;
+  } = {}
 ): Orchestrator {
+  const handoffHandler =
+    options.requestHandoff ??
+    ((input) =>
+      requestHandoff(
+        repository,
+        eventHub,
+        input.projectId,
+        input.conversationId,
+        input.reason,
+        input.note
+      ));
+
   return {
     async respondToUserMessage(input) {
       const text = textFromMessage(input.message);
@@ -32,13 +59,11 @@ export function createOrchestrator(
             reason: "user_requested"
           }
         });
-        await requestHandoff(
-          repository,
-          eventHub,
-          input.projectId,
-          input.conversationId,
-          "user_requested"
-        );
+        await handoffHandler({
+          projectId: input.projectId,
+          conversationId: input.conversationId,
+          reason: "user_requested"
+        });
         return;
       }
 
@@ -136,19 +161,26 @@ export async function requestHandoff(
   conversationId: string,
   reason: HandoffReason,
   note?: string
-): Promise<void> {
-  await repository.createHandoffSession({
+): Promise<HandoffSessionRecord> {
+  const handoffSession = await repository.createHandoffSession({
     projectId,
     conversationId,
     provider: "chatwoot",
     reason,
     metadata: note ? { note } : {}
   });
-  await repository.updateConversationStatus({
+  const conversation = await repository.updateConversationStatus({
     projectId,
     conversationId,
     status: "handoff_requested",
     assigneeType: "human"
+  });
+  eventHub.publish(projectId, conversationId, {
+    event: "conversation.status_changed",
+    data: {
+      conversationId,
+      status: conversation.status
+    }
   });
   eventHub.publish(projectId, conversationId, {
     event: "handoff.requested",
@@ -157,6 +189,7 @@ export async function requestHandoff(
       reason
     }
   });
+  return handoffSession;
 }
 
 function textFromMessage(message: MessageRecord): string {

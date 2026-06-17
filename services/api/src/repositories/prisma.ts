@@ -188,6 +188,16 @@ export class PrismaSupportRepository implements SupportRepository {
     return inbox ? mapInbox(inbox) : undefined;
   }
 
+  async findContact(projectId: string, contactId: string): Promise<ContactRecord | undefined> {
+    const contact = await this.prisma.contact.findFirst({
+      where: {
+        id: contactId,
+        projectId
+      }
+    });
+    return contact ? mapContact(contact) : undefined;
+  }
+
   async upsertContact(projectId: string, input: ContactInput): Promise<ContactRecord> {
     const existing = await this.prisma.contact.findFirst({
       where: {
@@ -488,6 +498,25 @@ export class PrismaSupportRepository implements SupportRepository {
         provider: input.provider,
         reason: input.reason,
         metadata: jsonInput(input.metadata ?? {})
+      }
+    });
+    return mapHandoffSession(session);
+  }
+
+  async updateHandoffSession(input: {
+    id: string;
+    status?: HandoffSessionRecord["status"];
+    externalContactId?: string;
+    externalConversationId?: string;
+    metadata?: JsonRecord;
+  }): Promise<HandoffSessionRecord> {
+    const session = await this.prisma.handoffSession.update({
+      where: { id: input.id },
+      data: {
+        status: input.status,
+        externalContactId: input.externalContactId,
+        externalConversationId: input.externalConversationId,
+        metadata: input.metadata ? jsonInput(input.metadata) : undefined
       }
     });
     return mapHandoffSession(session);

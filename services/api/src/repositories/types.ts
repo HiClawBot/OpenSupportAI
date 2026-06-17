@@ -180,6 +180,7 @@ export type SupportRepository = {
   listProjects(): Promise<ProjectRecord[]>;
   createProject(input: CreateProjectInput): Promise<ProjectRecord>;
   findInbox(projectId: string, inboxId?: string): Promise<InboxRecord | undefined>;
+  findContact(projectId: string, contactId: string): Promise<ContactRecord | undefined>;
   upsertContact(projectId: string, input: ContactInput): Promise<ContactRecord>;
   createConversation(input: {
     projectId: string;
@@ -225,6 +226,13 @@ export type SupportRepository = {
     conversationId: string;
     provider: string;
     reason?: HandoffReason;
+    metadata?: JsonRecord;
+  }): Promise<HandoffSessionRecord>;
+  updateHandoffSession(input: {
+    id: string;
+    status?: HandoffSessionRecord["status"];
+    externalContactId?: string;
+    externalConversationId?: string;
     metadata?: JsonRecord;
   }): Promise<HandoffSessionRecord>;
   upsertIntegrationConfig(input: {

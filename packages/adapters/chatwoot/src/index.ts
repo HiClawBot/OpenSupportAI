@@ -28,12 +28,14 @@ export type CreateContactInput = {
 export type ExternalContactRef = {
   provider: "chatwoot";
   externalContactId: string;
+  externalContactSourceId?: string;
 };
 
 export type CreateConversationInput = {
   projectId: string;
   conversationId: string;
   externalContactId: string;
+  externalContactSourceId?: string;
   summary?: string;
 };
 
@@ -63,28 +65,36 @@ export function createChatwootAdapter(config: ChatwootAdapterConfig): ChatwootHa
   return {
     provider: "chatwoot",
     async createOrUpdateContact(input) {
-      const response = await client.post<{
-        id?: number | string;
-        payload?: { contact?: { id?: number } };
-      }>(`/contacts`, {
-        inbox_id: config.inboxId,
+      const response = await client.post<ChatwootContactResponse>(`/contacts`, {
+        inbox_id: numericString(config.inboxId),
         name: input.name ?? input.externalUserId ?? input.contactId,
         email: input.email,
-        identifier: input.externalUserId ?? input.contactId
+        identifier: input.externalUserId ?? input.contactId,
+        additional_attributes: {
+          opensupportai_project_id: input.projectId,
+          opensupportai_contact_id: input.contactId
+        },
+        custom_attributes: {
+          opensupportai_project_id: input.projectId,
+          opensupportai_contact_id: input.contactId
+        }
       });
-      const contactId = response.payload?.contact?.id ?? response.id;
+      const contactRecord = contactRecordFromResponse(response);
+      const contactId = response.id ?? valueFromRecord(contactRecord, "id");
       if (!contactId) {
         throw new Error("Chatwoot contact response did not include an id");
       }
       return {
         provider: "chatwoot",
-        externalContactId: String(contactId)
+        externalContactId: String(contactId),
+        externalContactSourceId: sourceIdFromContact(contactRecord, config.inboxId)
       };
     },
     async createConversation(input) {
       const response = await client.post<{ id?: number | string }>(`/conversations`, {
-        inbox_id: config.inboxId,
-        contact_id: input.externalContactId,
+        source_id: input.externalContactSourceId ?? input.conversationId,
+        inbox_id: numericString(config.inboxId),
+        contact_id: numericString(input.externalContactId),
         custom_attributes: {
           opensupportai_project_id: input.projectId,
           opensupportai_conversation_id: input.conversationId
@@ -111,7 +121,8 @@ export function createChatwootAdapter(config: ChatwootAdapterConfig): ChatwootHa
       await client.post(`/conversations/${input.externalConversationId}/messages`, {
         content: input.message.text,
         message_type: input.message.role === "end_user" ? "incoming" : "outgoing",
-        private: input.message.role === "system"
+        private: input.message.role === "system",
+        content_type: "text"
       });
     },
     async handleWebhook(input) {
@@ -124,6 +135,13 @@ export function createChatwootAdapter(config: ChatwootAdapterConfig): ChatwootHa
     }
   };
 }
+
+type ChatwootContactResponse = {
+  id?: number | string;
+  source_id?: number | string;
+  payload?: unknown;
+  contact_inboxes?: unknown;
+};
 
 class ChatwootApiClient {
   private readonly fetchImpl: typeof fetch;
@@ -153,6 +171,55 @@ class ChatwootApiClient {
   private url(path: string): string {
     return `${this.config.baseUrl.replace(/\/$/, "")}/api/v1/accounts/${this.config.accountId}${path}`;
   }
+}
+
+function contactRecordFromResponse(response: ChatwootContactResponse): Record<string, unknown> {
+  const payload = response.payload;
+  if (Array.isArray(payload)) {
+    return recordValue(payload[0]) ?? response;
+  }
+
+  const payloadRecord = recordValue(payload);
+  const nestedContact = recordValue(payloadRecord?.["contact"]);
+  return nestedContact ?? payloadRecord ?? response;
+}
+
+function sourceIdFromContact(
+  contact: Record<string, unknown>,
+  inboxId: string
+): string | undefined {
+  const contactInboxes = contact["contact_inboxes"];
+  if (!Array.isArray(contactInboxes)) {
+    return stringValue(contact["source_id"]);
+  }
+
+  const matchingInbox =
+    contactInboxes.find((item) => {
+      const record = recordValue(item);
+      const inbox = recordValue(record?.["inbox"]);
+      const id = stringValue(inbox?.["id"]);
+      return id === inboxId;
+    }) ?? contactInboxes[0];
+
+  return stringValue(recordValue(matchingInbox)?.["source_id"]);
+}
+
+function numericString(value: string): number | string {
+  return /^\d+$/.test(value) ? Number(value) : value;
+}
+
+function valueFromRecord(record: Record<string, unknown>, key: string): unknown {
+  return record[key];
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" || typeof value === "number" ? String(value) : undefined;
 }
 
 function normalizeWebhookPayload(payload: unknown): {

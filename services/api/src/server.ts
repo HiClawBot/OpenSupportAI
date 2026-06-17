@@ -1,5 +1,7 @@
+import { createChatwootAdapter, type ChatwootAdapterConfig } from "@opensupportai/adapter-chatwoot";
 import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import type { ConversationStatus, HandoffReason } from "@opensupportai/protocol";
 import { ZodError } from "zod";
 import { authenticateAdmin, authenticateClient } from "./auth";
 import { type ApiConfig, loadConfig } from "./config";
@@ -9,7 +11,14 @@ import { EventHub, formatSse } from "./event-hub";
 import { createOrchestrator, requestHandoff } from "./orchestrator";
 import { MemorySupportRepository } from "./repositories/memory";
 import { PrismaSupportRepository } from "./repositories/prisma";
-import type { JsonRecord, SupportRepository } from "./repositories/types";
+import type {
+  ContactRecord,
+  ConversationRecord,
+  HandoffSessionRecord,
+  JsonRecord,
+  MessageRecord,
+  SupportRepository
+} from "./repositories/types";
 import {
   chatwootWebhookBodySchema,
   createConversationBodySchema,
@@ -25,6 +34,7 @@ export type BuildAppOptions = {
   config?: ApiConfig;
   repository?: SupportRepository;
   eventHub?: EventHub;
+  chatwootFetch?: typeof fetch;
 };
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
@@ -35,7 +45,22 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       ? new MemorySupportRepository()
       : new PrismaSupportRepository());
   const eventHub = options.eventHub ?? new EventHub();
-  const orchestrator = createOrchestrator(repository, eventHub);
+  const handoffRequester = (input: {
+    projectId: string;
+    conversationId: string;
+    reason: HandoffReason;
+    note?: string;
+  }) =>
+    requestHandoffWithConfiguredProvider({
+      repository,
+      eventHub,
+      config,
+      chatwootFetch: options.chatwootFetch,
+      ...input
+    });
+  const orchestrator = createOrchestrator(repository, eventHub, {
+    requestHandoff: handoffRequester
+  });
   await repository.seedDemo();
 
   const app = Fastify({
@@ -190,10 +215,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       throw notFound("Conversation not found");
     }
 
-    await requestHandoff(repository, eventHub, project.id, conversation.id, body.reason, body.note);
+    const handoffSession = await handoffRequester({
+      projectId: project.id,
+      conversationId: conversation.id,
+      reason: body.reason,
+      note: body.note
+    });
     return {
       conversation_id: conversation.id,
-      status: "handoff_requested"
+      status: clientHandoffStatus(handoffSession)
     };
   });
 
@@ -434,6 +464,288 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
 
   return app;
+}
+
+async function requestHandoffWithConfiguredProvider(input: {
+  repository: SupportRepository;
+  eventHub: EventHub;
+  config: ApiConfig;
+  chatwootFetch?: typeof fetch;
+  projectId: string;
+  conversationId: string;
+  reason: HandoffReason;
+  note?: string;
+}): Promise<HandoffSessionRecord> {
+  const handoffSession = await requestHandoff(
+    input.repository,
+    input.eventHub,
+    input.projectId,
+    input.conversationId,
+    input.reason,
+    input.note
+  );
+
+  const integration = await input.repository.getIntegrationConfig(input.projectId, "chatwoot");
+  if (!integration || integration.status !== "active") {
+    return handoffSession;
+  }
+
+  let externalContactId: string | undefined;
+  let externalContactSourceId: string | undefined;
+  let externalConversationId: string | undefined;
+
+  try {
+    const conversation = await input.repository.findConversation(
+      input.projectId,
+      input.conversationId
+    );
+    if (!conversation) {
+      throw new Error("Conversation not found during Chatwoot handoff");
+    }
+
+    const contact = await input.repository.findContact(input.projectId, conversation.contactId);
+    if (!contact) {
+      throw new Error("Contact not found during Chatwoot handoff");
+    }
+
+    const messages = await input.repository.listMessages(input.projectId, conversation.id);
+    const adapter = createChatwootAdapter(
+      chatwootAdapterConfig(
+        decryptJson(integration.configEncrypted, input.config.encryptionKey),
+        input.chatwootFetch
+      )
+    );
+
+    const externalContact = await adapter.createOrUpdateContact({
+      projectId: input.projectId,
+      contactId: contact.id,
+      name: contact.name,
+      email: contact.email,
+      externalUserId: contact.externalUserId
+    });
+    externalContactId = externalContact.externalContactId;
+    externalContactSourceId = externalContact.externalContactSourceId;
+    const externalConversation = await adapter.createConversation({
+      projectId: input.projectId,
+      conversationId: conversation.id,
+      externalContactId: externalContact.externalContactId,
+      externalContactSourceId: externalContact.externalContactSourceId
+    });
+    externalConversationId = externalConversation.externalConversationId;
+
+    const transcriptMessages = [
+      {
+        role: "system" as const,
+        text: buildHandoffSummary({
+          conversation,
+          contact,
+          messages,
+          reason: input.reason,
+          note: input.note
+        })
+      },
+      ...chatwootTranscriptMessages(messages)
+    ];
+
+    for (const message of transcriptMessages) {
+      await adapter.pushMessage({
+        projectId: input.projectId,
+        externalConversationId: externalConversation.externalConversationId,
+        message
+      });
+    }
+
+    const updatedSession = await input.repository.updateHandoffSession({
+      id: handoffSession.id,
+      status: "active",
+      externalContactId: externalContact.externalContactId,
+      externalConversationId: externalConversation.externalConversationId,
+      metadata: {
+        ...handoffSession.metadata,
+        ...(externalContact.externalContactSourceId
+          ? { external_contact_source_id: externalContact.externalContactSourceId }
+          : {}),
+        handed_off_at: new Date().toISOString()
+      }
+    });
+    const updatedConversation = await input.repository.updateConversationStatus({
+      projectId: input.projectId,
+      conversationId: conversation.id,
+      status: "handed_off",
+      assigneeType: "human"
+    });
+    publishConversationStatus(
+      input.eventHub,
+      input.projectId,
+      conversation.id,
+      updatedConversation.status
+    );
+
+    return updatedSession;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown Chatwoot handoff error";
+    const failedSession = await input.repository.updateHandoffSession({
+      id: handoffSession.id,
+      status: "failed",
+      externalContactId,
+      externalConversationId,
+      metadata: {
+        ...handoffSession.metadata,
+        ...(externalContactSourceId ? { external_contact_source_id: externalContactSourceId } : {}),
+        error: message,
+        failed_at: new Date().toISOString()
+      }
+    });
+
+    input.eventHub.publish(input.projectId, input.conversationId, {
+      event: "error",
+      data: {
+        code: "chatwoot_handoff_failed",
+        message: "Human handoff could not be created in Chatwoot. Please try again later."
+      }
+    });
+
+    return failedSession;
+  }
+}
+
+function chatwootAdapterConfig(
+  configPayload: JsonRecord,
+  fetchImpl?: typeof fetch
+): ChatwootAdapterConfig {
+  const adapterConfig: ChatwootAdapterConfig = {
+    baseUrl: requiredConfigString(configPayload, "base_url"),
+    accountId: requiredConfigString(configPayload, "account_id"),
+    inboxId: requiredConfigString(configPayload, "inbox_id"),
+    apiAccessToken: requiredConfigString(configPayload, "api_access_token")
+  };
+  return fetchImpl ? { ...adapterConfig, fetchImpl } : adapterConfig;
+}
+
+function requiredConfigString(configPayload: JsonRecord, key: string): string {
+  const value = configPayload[key];
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`Chatwoot integration config is missing ${key}`);
+  }
+  return value;
+}
+
+function clientHandoffStatus(
+  handoffSession: HandoffSessionRecord
+): "handoff_requested" | "handed_off" {
+  return handoffSession.status === "active" ? "handed_off" : "handoff_requested";
+}
+
+function buildHandoffSummary(input: {
+  conversation: ConversationRecord;
+  contact: ContactRecord;
+  messages: MessageRecord[];
+  reason: HandoffReason;
+  note?: string;
+}): string {
+  const lines = [
+    "OpenSupportAI handoff summary",
+    `Reason: ${input.reason}`,
+    `Local conversation: ${input.conversation.id}`,
+    `Local contact: ${input.contact.id}`
+  ];
+
+  if (input.contact.name) {
+    lines.push(`Name: ${input.contact.name}`);
+  }
+  if (input.contact.email) {
+    lines.push(`Email: ${input.contact.email}`);
+  }
+  if (input.contact.externalUserId) {
+    lines.push(`External user ID: ${input.contact.externalUserId}`);
+  }
+  if (input.note) {
+    lines.push(`Note: ${input.note}`);
+  }
+
+  const pageUrl = metadataString(input.conversation.metadata, "page_url");
+  if (pageUrl) {
+    lines.push(`Page URL: ${pageUrl}`);
+  }
+
+  const recentMessages = input.messages
+    .filter((message) => message.visibility === "public")
+    .slice(-8);
+  if (recentMessages.length > 0) {
+    lines.push("", "Recent public messages:");
+    for (const message of recentMessages) {
+      lines.push(`${messageRoleLabel(message.role)}: ${truncate(textFromMessage(message), 300)}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function chatwootTranscriptMessages(
+  messages: MessageRecord[]
+): Array<{ role: "end_user" | "ai_agent" | "system"; text: string }> {
+  return messages
+    .filter((message) => message.visibility === "public")
+    .slice(-30)
+    .flatMap((message) => {
+      const text = textFromMessage(message).trim();
+      if (!text) {
+        return [];
+      }
+
+      if (message.role === "end_user" || message.role === "ai_agent" || message.role === "system") {
+        return [
+          {
+            role: message.role,
+            text
+          }
+        ];
+      }
+
+      return [];
+    });
+}
+
+function publishConversationStatus(
+  eventHub: EventHub,
+  projectId: string,
+  conversationId: string,
+  status: ConversationStatus
+): void {
+  eventHub.publish(projectId, conversationId, {
+    event: "conversation.status_changed",
+    data: {
+      conversationId,
+      status
+    }
+  });
+}
+
+function metadataString(metadata: JsonRecord, key: string): string | undefined {
+  const value = metadata[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function textFromMessage(message: MessageRecord): string {
+  const text = message.content["text"];
+  return typeof text === "string" ? text : "";
+}
+
+function messageRoleLabel(role: MessageRecord["role"]): string {
+  if (role === "end_user") {
+    return "User";
+  }
+  if (role === "ai_agent") {
+    return "AI";
+  }
+  if (role === "human_agent") {
+    return "Agent";
+  }
+  return "System";
+}
+
+function truncate(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength - 1)}...` : value;
 }
 
 async function authenticateAdminProject(
