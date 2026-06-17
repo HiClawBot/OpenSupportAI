@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.1.3 - 2026-06-18
+
+English:
+
+- Added in-process fixed-window API rate limiting with configurable `RATE_LIMIT_*` environment variables.
+- Added standard `rate_limited` API errors with rate-limit response headers.
+- Added `pnpm smoke:memory` for local memory-mode end-to-end smoke validation.
+- Improved admin console API error messages by surfacing backend error code, message, and request id.
+- Added favicon links for the admin console and demo app.
+- Updated documentation and release notes for ops hardening.
+
+中文：
+
+- 新增进程内固定窗口 API 限流，支持通过 `RATE_LIMIT_*` 环境变量配置。
+- 新增标准 `rate_limited` API 错误和限流响应头。
+- 新增 `pnpm smoke:memory`，用于本地内存模式端到端 smoke test。
+- 管理台 API 错误提示会显示后端 error code、message 和 request id。
+- Admin Console 和 Demo App 新增 favicon。
+- 更新运维硬化相关文档和 release notes。
+
 ## v0.1.2 - 2026-06-17
 
 English:

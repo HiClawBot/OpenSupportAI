@@ -91,6 +91,14 @@ type ChatwootIntegration = {
   updatedAt?: string;
 };
 
+type ApiErrorPayload = {
+  error?: {
+    code?: string;
+    message?: string;
+    requestId?: string;
+  };
+};
+
 const apiUrl = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
 function App() {
@@ -145,9 +153,23 @@ function App() {
       }
     });
     if (!response.ok) {
-      throw new Error(`Request failed: ${response.status}`);
+      throw new Error(await formatApiError(response));
     }
     return response.json() as Promise<T>;
+  }
+
+  async function formatApiError(response: Response): Promise<string> {
+    try {
+      const payload = (await response.json()) as ApiErrorPayload;
+      if (payload.error?.message) {
+        const code = payload.error.code ? `${payload.error.code}: ` : "";
+        const requestId = payload.error.requestId ? ` (${payload.error.requestId})` : "";
+        return `${code}${payload.error.message}${requestId}`;
+      }
+    } catch {
+      // Fall back to the HTTP status when the response body is not JSON.
+    }
+    return `Request failed: ${response.status}`;
   }
 
   async function loadProjects() {

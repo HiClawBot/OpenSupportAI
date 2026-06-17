@@ -78,6 +78,9 @@ services:
       S3_BUCKET: ${S3_BUCKET:-opensupportai}
       ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:-admin_demo_key}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-replace_with_32_byte_key}
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-120}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
       LLM_API_KEY: ${LLM_API_KEY:-replace_me}
       LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-gpt-4.1-mini}

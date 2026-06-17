@@ -146,6 +146,68 @@ describe("OpenSupportAI API", () => {
     expect(messages.messages.at(-1)?.content.text).toContain("无法根据当前知识库确认");
   });
 
+  it("applies fixed-window rate limits when enabled", async () => {
+    const limitedApp = await buildApp({
+      config: {
+        nodeEnv: "test",
+        port: 0,
+        storageMode: "memory",
+        adminToken: "admin_demo_key",
+        encryptionKey: "test_encryption_key",
+        corsOrigin: true,
+        rateLimitEnabled: true,
+        rateLimitWindowMs: 60_000,
+        rateLimitMax: 2
+      }
+    });
+    await limitedApp.ready();
+
+    try {
+      const headers = {
+        authorization: "Bearer admin_demo_key"
+      };
+
+      expect(
+        (
+          await limitedApp.inject({
+            method: "GET",
+            url: "/health"
+          })
+        ).statusCode
+      ).toBe(200);
+
+      expect(
+        (
+          await limitedApp.inject({
+            method: "GET",
+            url: "/v1/admin/projects",
+            headers
+          })
+        ).statusCode
+      ).toBe(200);
+      expect(
+        (
+          await limitedApp.inject({
+            method: "GET",
+            url: "/v1/admin/projects",
+            headers
+          })
+        ).statusCode
+      ).toBe(200);
+
+      const limitedResponse = await limitedApp.inject({
+        method: "GET",
+        url: "/v1/admin/projects",
+        headers
+      });
+      expect(limitedResponse.statusCode).toBe(429);
+      expect(limitedResponse.headers["x-ratelimit-limit"]).toBe("2");
+      expect(limitedResponse.json<{ error: { code: string } }>().error.code).toBe("rate_limited");
+    } finally {
+      await limitedApp.close();
+    }
+  });
+
   it("handles explicit handoff requests", async () => {
     const conversationResponse = await app.inject({
       method: "POST",

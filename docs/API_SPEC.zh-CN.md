@@ -26,6 +26,30 @@ API Version：
 }
 ```
 
+限流响应头：
+
+```http
+X-RateLimit-Limit: 120
+X-RateLimit-Remaining: 119
+X-RateLimit-Reset-Ms: 60000
+```
+
+超过限流时返回：
+
+```http
+HTTP/1.1 429 Too Many Requests
+```
+
+```json
+{
+  "error": {
+    "code": "rate_limited",
+    "message": "Rate limit exceeded. Try again in 60 seconds.",
+    "request_id": "req_123"
+  }
+}
+```
+
 ---
 
 ## 鉴权

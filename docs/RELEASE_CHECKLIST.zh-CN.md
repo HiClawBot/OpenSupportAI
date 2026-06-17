@@ -13,6 +13,8 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm build
+pnpm smoke:memory -- --help
+pnpm smoke:chatwoot -- --help
 ```
 
 GitHub Actions CI 会在 `main`、Pull Request 和 `v*` tag 上执行同一组核心检查。
@@ -42,6 +44,8 @@ VITE_API_URL=http://localhost:4000 pnpm --filter @opensupportai/demo-app dev
 - 输入 `我要转人工` 后会话状态进入 `handoff_requested`。
 - 管理台能看到对应 conversation、message 和 knowledge document。
 - 管理台会话列表的状态筛选、搜索、刷新、队列指标、最近消息预览和失败 handoff 计数可正常显示。
+- `pnpm smoke:memory` 在内存模式 API 启动后可跑通。
+- 若启用 `RATE_LIMIT_ENABLED=true`，超过阈值时 API 返回 `429/rate_limited`。
 
 ## Docker Compose Smoke Test
 
@@ -103,9 +107,9 @@ git push origin v0.1.0
 补丁版本发布建议：
 
 ```bash
-git tag v0.1.2
-git push origin v0.1.2
-gh release create v0.1.2 --title "OpenSupportAI v0.1.2" --notes-file docs/releases/v0.1.2.md
+git tag v0.1.3
+git push origin v0.1.3
+gh release create v0.1.3 --title "OpenSupportAI v0.1.3" --notes-file docs/releases/v0.1.3.md
 ```
 
 发布说明建议包含：
@@ -117,6 +121,7 @@ gh release create v0.1.2 --title "OpenSupportAI v0.1.2" --notes-file docs/releas
 - LLM provider 已有 OpenAI-compatible package，但 demo orchestrator 默认使用确定性知识库回答。
 - v0.1.1 增加 Chatwoot 连接测试、handoff retry、状态同步、CI 和 smoke-test 脚本。
 - v0.1.2 增加管理台会话运营筛选、摘要指标、最近消息预览和最新 handoff 状态。
+- v0.1.3 增加 API 限流、memory smoke test、管理台错误提示和 favicon polish。
 
 ## 当前已知限制
 

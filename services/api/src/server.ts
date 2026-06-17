@@ -6,7 +6,14 @@ import { ZodError } from "zod";
 import { authenticateAdmin, authenticateClient } from "./auth";
 import { type ApiConfig, loadConfig } from "./config";
 import { decryptJson, encryptJson, hashSecret } from "./crypto";
-import { ApiError, invalidRequest, notFound, toApiErrorResponse, unauthorized } from "./errors";
+import {
+  ApiError,
+  invalidRequest,
+  notFound,
+  rateLimited,
+  toApiErrorResponse,
+  unauthorized
+} from "./errors";
 import { EventHub, formatSse } from "./event-hub";
 import { createOrchestrator, requestHandoff } from "./orchestrator";
 import { MemorySupportRepository } from "./repositories/memory";
@@ -73,6 +80,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await app.register(cors, {
     origin: config.corsOrigin
   });
+  registerRateLimit(app, config);
 
   app.setErrorHandler((error, request, reply) => {
     const requestId = request.id;
@@ -819,6 +827,101 @@ function safeIntegrationResponse(integration: IntegrationConfigRecord): {
     createdAt: integration.createdAt,
     updatedAt: integration.updatedAt
   };
+}
+
+type RateLimitBucket = {
+  windowStart: number;
+  count: number;
+};
+
+function registerRateLimit(app: FastifyInstance, config: ApiConfig): void {
+  const enabled = config.rateLimitEnabled ?? config.nodeEnv !== "test";
+  if (!enabled) {
+    return;
+  }
+
+  const windowMs = positiveNumber(config.rateLimitWindowMs, 60_000);
+  const max = positiveNumber(config.rateLimitMax, 120);
+  const buckets = new Map<string, RateLimitBucket>();
+
+  app.addHook("onRequest", async (request, reply) => {
+    if (isRateLimitExempt(request.url)) {
+      return;
+    }
+
+    const now = Date.now();
+    const key = rateLimitKey(request);
+    const existing = buckets.get(key);
+    const bucket =
+      existing && now - existing.windowStart < windowMs
+        ? existing
+        : {
+            windowStart: now,
+            count: 0
+          };
+    bucket.count += 1;
+    buckets.set(key, bucket);
+
+    const resetMs = Math.max(0, bucket.windowStart + windowMs - now);
+    reply.header("x-ratelimit-limit", String(max));
+    reply.header("x-ratelimit-remaining", String(Math.max(0, max - bucket.count)));
+    reply.header("x-ratelimit-reset-ms", String(resetMs));
+
+    if (bucket.count > max) {
+      throw rateLimited(`Rate limit exceeded. Try again in ${Math.ceil(resetMs / 1000)} seconds.`);
+    }
+
+    if (buckets.size > 10_000) {
+      pruneRateLimitBuckets(buckets, now, windowMs);
+    }
+  });
+}
+
+function isRateLimitExempt(url: string): boolean {
+  return url === "/health" || url === "/v1/health";
+}
+
+function rateLimitKey(request: FastifyRequest): string {
+  const adminToken = headerValue(request, "authorization");
+  if (adminToken) {
+    return `admin:${hashSecret(adminToken)}`;
+  }
+
+  const publicKey = headerValue(request, "x-opensupportai-public-key");
+  if (publicKey) {
+    return `client:${hashSecret(publicKey)}`;
+  }
+
+  const webhookSignature = headerValue(request, "x-opensupportai-signature");
+  if (webhookSignature) {
+    return `webhook:${hashSecret(webhookSignature)}`;
+  }
+
+  return `ip:${request.ip}`;
+}
+
+function headerValue(request: FastifyRequest, name: string): string | undefined {
+  const value = request.headers[name];
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+  return typeof value === "string" ? value : undefined;
+}
+
+function positiveNumber(value: number | undefined, fallback: number): number {
+  return value && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function pruneRateLimitBuckets(
+  buckets: Map<string, RateLimitBucket>,
+  now: number,
+  windowMs: number
+): void {
+  for (const [key, bucket] of buckets) {
+    if (now - bucket.windowStart >= windowMs) {
+      buckets.delete(key);
+    }
+  }
 }
 
 type ListConversationsQuery = {

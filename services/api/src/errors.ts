@@ -28,6 +28,10 @@ export function notFound(message = "Not found"): ApiError {
   return new ApiError("not_found", message, 404);
 }
 
+export function rateLimited(message = "Rate limit exceeded"): ApiError {
+  return new ApiError("rate_limited", message, 429);
+}
+
 export function toApiErrorResponse(error: ApiError, requestId: string): ApiErrorResponse {
   return {
     error: {
