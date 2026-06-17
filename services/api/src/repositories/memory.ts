@@ -9,6 +9,7 @@ import type {
   ContactInput,
   ContactRecord,
   ConversationRecord,
+  ConversationInsightRecord,
   CreateAiRunInput,
   CreateKnowledgeDocumentInput,
   CreateMessageInput,
@@ -58,6 +59,7 @@ export class MemorySupportRepository implements SupportRepository {
   private readonly auditLogs = new Map<string, AuditLogRecord>();
   private readonly toolDefinitions = new Map<string, ToolDefinitionRecord>();
   private readonly toolCalls = new Map<string, ToolCallRecord>();
+  private readonly conversationInsights = new Map<string, ConversationInsightRecord>();
   private readonly asyncJobs = new Map<string, AsyncJobRecord>();
 
   async seedDemo(): Promise<void> {
@@ -837,6 +839,40 @@ export class MemorySupportRepository implements SupportRepository {
       )
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, input.limit ?? 100);
+  }
+
+  async getConversationInsight(input: {
+    projectId: string;
+    conversationId: string;
+  }): Promise<ConversationInsightRecord | undefined> {
+    const insight = this.conversationInsights.get(input.conversationId);
+    return insight?.projectId === input.projectId ? insight : undefined;
+  }
+
+  async upsertConversationInsight(input: {
+    projectId: string;
+    conversationId: string;
+    summary: string;
+    suggestedReplies: string[];
+    tags: string[];
+    metadata?: JsonRecord;
+  }): Promise<ConversationInsightRecord> {
+    await this.requireConversation(input.projectId, input.conversationId);
+    const existing = this.conversationInsights.get(input.conversationId);
+    const timestamp = now();
+    const insight: ConversationInsightRecord = {
+      id: existing?.id ?? id("insight"),
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      summary: input.summary,
+      suggestedReplies: input.suggestedReplies,
+      tags: input.tags,
+      metadata: input.metadata ?? existing?.metadata ?? {},
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    this.conversationInsights.set(input.conversationId, insight);
+    return insight;
   }
 
   async createAsyncJob(input: {

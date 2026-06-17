@@ -215,6 +215,18 @@ export type ToolCallRecord = {
   createdAt: string;
 };
 
+export type ConversationInsightRecord = {
+  id: string;
+  projectId: string;
+  conversationId: string;
+  summary: string;
+  suggestedReplies: string[];
+  tags: string[];
+  metadata: JsonRecord;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type AsyncJobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 export type AsyncJobRecord = {
@@ -436,6 +448,18 @@ export type SupportRepository = {
     conversationId?: string;
     limit?: number;
   }): Promise<ToolCallRecord[]>;
+  getConversationInsight(input: {
+    projectId: string;
+    conversationId: string;
+  }): Promise<ConversationInsightRecord | undefined>;
+  upsertConversationInsight(input: {
+    projectId: string;
+    conversationId: string;
+    summary: string;
+    suggestedReplies: string[];
+    tags: string[];
+    metadata?: JsonRecord;
+  }): Promise<ConversationInsightRecord>;
   createAsyncJob(input: {
     projectId: string;
     type: string;

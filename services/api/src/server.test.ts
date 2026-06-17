@@ -761,6 +761,98 @@ describe("OpenSupportAI API", () => {
     });
   });
 
+  it("generates agent assist insights and handoff analytics", async () => {
+    const conversationResponse = await app.inject({
+      method: "POST",
+      url: "/v1/client/conversations",
+      headers: {
+        "x-opensupportai-public-key": "pk_demo"
+      },
+      payload: {
+        project_id: "proj_demo",
+        inbox_id: "inbox_default",
+        contact: {
+          external_user_id: "assist_user_1",
+          name: "Assist User"
+        }
+      }
+    });
+    const conversation = conversationResponse.json<{ conversation_id: string }>();
+
+    await app.inject({
+      method: "POST",
+      url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
+      headers: {
+        "x-opensupportai-public-key": "pk_demo"
+      },
+      payload: {
+        type: "text",
+        text: "请帮我查订单 ORD-2026-1001，然后我可能需要退款"
+      }
+    });
+
+    await app.inject({
+      method: "POST",
+      url: `/v1/client/conversations/${conversation.conversation_id}/handoff`,
+      headers: {
+        "x-opensupportai-public-key": "pk_demo"
+      },
+      payload: {
+        reason: "user_requested"
+      }
+    });
+
+    const assistResponse = await app.inject({
+      method: "POST",
+      url: `/v1/admin/projects/proj_demo/conversations/${conversation.conversation_id}/assist`,
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(assistResponse.statusCode).toBe(200);
+    const assist = assistResponse.json<{
+      insight: { summary: string; tags: string[]; suggestedReplies: string[] };
+    }>().insight;
+    expect(assist.summary).toContain(conversation.conversation_id);
+    expect(assist.tags).toContain("billing.order");
+    expect(assist.tags).toContain("billing.refund");
+    expect(assist.tags).toContain("handoff.active");
+    expect(assist.tags).toContain("tool.used");
+    expect(assist.suggestedReplies.length).toBeGreaterThan(0);
+
+    const detailResponse = await app.inject({
+      method: "GET",
+      url: `/v1/admin/projects/proj_demo/conversations/${conversation.conversation_id}`,
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(detailResponse.json<{ insight: { tags: string[] } | null }>().insight?.tags).toContain(
+      "billing.order"
+    );
+
+    const analyticsResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/analytics/handoffs",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(analyticsResponse.statusCode).toBe(200);
+    const analytics = analyticsResponse.json<{
+      analytics: {
+        total: number;
+        by_status: Record<string, number>;
+        by_reason: Record<string, number>;
+        by_provider: Record<string, number>;
+      };
+    }>().analytics;
+    expect(analytics.total).toBeGreaterThan(0);
+    expect(analytics.by_status.requested).toBeGreaterThanOrEqual(1);
+    expect(analytics.by_reason.user_requested).toBeGreaterThanOrEqual(1);
+    expect(analytics.by_provider.chatwoot).toBeGreaterThanOrEqual(1);
+  });
+
   it("tests Chatwoot integration connectivity", async () => {
     const chatwootFetch: typeof fetch = async (input) => {
       if (String(input).endsWith("/inboxes")) {

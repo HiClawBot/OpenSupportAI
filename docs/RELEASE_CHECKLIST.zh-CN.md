@@ -1,4 +1,4 @@
-# OpenSupportAI v0.3.x 发布清单
+# OpenSupportAI v0.4.x 发布清单
 
 这份清单用于公开发布到 GitHub 前的最后检查。
 
@@ -56,6 +56,8 @@ VITE_API_URL=http://localhost:4000 pnpm --filter @opensupportai/demo-app dev
 - Widget 中输入 `请帮我查订单 ORD-2026-1001` 会触发 `demo.order_lookup` 并返回订单状态。
 - Widget 中输入 `我的订阅状态是什么？` 会触发 `demo.subscription_lookup` 并返回订阅状态。
 - 管理端 `GET /v1/admin/projects/{project_id}/tool-calls` 可查看工具调用日志。
+- 管理端 `POST /v1/admin/projects/{project_id}/conversations/{conversation_id}/assist` 可生成会话 summary、tags 和 suggested replies。
+- 管理端 `GET /v1/admin/projects/{project_id}/analytics/handoffs` 可返回 handoff status/reason/provider 汇总。
 
 ## Docker Compose Smoke Test
 
@@ -117,9 +119,9 @@ git push origin v0.1.0
 版本发布建议：
 
 ```bash
-git tag v0.3.0
-git push origin v0.3.0
-gh release create v0.3.0 --title "OpenSupportAI v0.3.0" --notes-file docs/releases/v0.3.0.md
+git tag v0.4.0
+git push origin v0.4.0
+gh release create v0.4.0 --title "OpenSupportAI v0.4.0" --notes-file docs/releases/v0.4.0.md
 ```
 
 发布说明建议包含：
@@ -135,6 +137,7 @@ gh release create v0.3.0 --title "OpenSupportAI v0.3.0" --notes-file docs/releas
 - v0.1.4 增加 Prisma async_jobs、管理端 jobs API 和可测试 worker runtime。
 - v0.2.0 增加项目级 API key 管理、审计日志、ops health 和 webhook event retry 调度。
 - v0.3.0 增加业务工具定义、allowlist 启停、tool-call 日志，以及 demo 订单/订阅查询工具。
+- v0.4.0 增加坐席辅助 summary、suggested replies、tags 和 handoff analytics。
 
 ## 当前已知限制
 
@@ -143,4 +146,5 @@ gh release create v0.3.0 --title "OpenSupportAI v0.3.0" --notes-file docs/releas
 - Worker runtime 已有基础 claim/handler/retry 语义，后续仍需接入真实知识库 indexing 和 webhook retry 处理器。
 - v0.2.0 的 webhook retry 已完成管理端调度，实际重放处理器会在后续 worker 迭代中实现。
 - v0.3.0 的 `openapi` tool definition 已具备模型和管理 API，真实外部 HTTP 执行器仍需后续接入；当前自动执行仅限内置只读 demo tools。
+- v0.4.0 的 agent assist 是确定性启发式生成，不调用外部 LLM；后续可替换为可配置的模型生成与评测流程。
 - Docker Compose 启动需要在安装 Docker 的机器上单独验证。

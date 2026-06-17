@@ -16,6 +16,7 @@ import {
   unauthorized
 } from "./errors";
 import { EventHub, formatSse } from "./event-hub";
+import { buildHandoffAnalytics, generateConversationInsight } from "./agent-assist";
 import { createOrchestrator, requestHandoff } from "./orchestrator";
 import { MemorySupportRepository } from "./repositories/memory";
 import { PrismaSupportRepository } from "./repositories/prisma";
@@ -518,10 +519,82 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         projectId,
         conversationId: conversation.id
       }),
+      insight:
+        (await repository.getConversationInsight({
+          projectId,
+          conversationId: conversation.id
+        })) ?? null,
       handoff_sessions: await repository.listHandoffSessions({
         projectId,
         conversationId: conversation.id
       })
+    };
+  });
+
+  app.get("/v1/admin/projects/:projectId/conversations/:conversationId/assist", async (request) => {
+    const params = request.params as { conversationId: string };
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:assist");
+    const conversation = await repository.findConversation(project.id, params.conversationId);
+    if (!conversation) {
+      throw notFound("Conversation not found");
+    }
+    return {
+      insight:
+        (await repository.getConversationInsight({
+          projectId: project.id,
+          conversationId: conversation.id
+        })) ?? null
+    };
+  });
+
+  app.post(
+    "/v1/admin/projects/:projectId/conversations/:conversationId/assist",
+    async (request) => {
+      const params = request.params as { conversationId: string };
+      const { project, identity } = await authenticateAdminProjectIdentity(
+        request,
+        repository,
+        config
+      );
+      requireAdminScope(identity, "admin:assist");
+      const conversation = await repository.findConversation(project.id, params.conversationId);
+      if (!conversation) {
+        throw notFound("Conversation not found");
+      }
+
+      const insight = await generateConversationInsight(repository, {
+        projectId: project.id,
+        conversationId: conversation.id
+      });
+      await recordAudit(repository, request, {
+        project,
+        identity,
+        action: "conversation_assist.generated",
+        targetType: "conversation",
+        targetId: conversation.id,
+        metadata: {
+          tags: insight.tags,
+          suggested_reply_count: insight.suggestedReplies.length
+        }
+      });
+      return { insight };
+    }
+  );
+
+  app.get("/v1/admin/projects/:projectId/analytics/handoffs", async (request) => {
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:assist");
+    return {
+      analytics: await buildHandoffAnalytics(repository, project.id)
     };
   });
 

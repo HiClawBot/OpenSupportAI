@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.4.0 - 2026-06-18
+
+English:
+
+- Added `ConversationInsight` storage for deterministic agent-assist summaries, suggested replies, and tags.
+- Added admin conversation assist APIs to read and generate insights.
+- Added handoff analytics API with project-level counts by status, reason, and provider.
+- Added conversation insight data to admin conversation detail responses.
+- Added tests for insight generation, tags, suggested replies, and handoff analytics.
+
+中文：
+
+- 新增 `ConversationInsight` 存储，用于确定性的坐席辅助摘要、建议回复和标签。
+- 管理端新增会话 assist API，支持读取和生成 insight。
+- 新增 handoff analytics API，按项目统计 status、reason 和 provider。
+- 管理端会话详情响应新增 conversation insight 数据。
+- 新增 insight 生成、标签、建议回复和 handoff analytics 测试。
+
 ## v0.3.0 - 2026-06-18
 
 English:

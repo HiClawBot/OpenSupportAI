@@ -10,6 +10,7 @@ import type {
   AuditLogRecord,
   ContactInput,
   ContactRecord,
+  ConversationInsightRecord,
   ConversationRecord,
   CreateAiRunInput,
   CreateKnowledgeDocumentInput,
@@ -996,6 +997,50 @@ export class PrismaSupportRepository implements SupportRepository {
     return toolCalls.map(mapToolCall);
   }
 
+  async getConversationInsight(input: {
+    projectId: string;
+    conversationId: string;
+  }): Promise<ConversationInsightRecord | undefined> {
+    const insight = await this.prisma.conversationInsight.findFirst({
+      where: {
+        projectId: input.projectId,
+        conversationId: input.conversationId
+      }
+    });
+    return insight ? mapConversationInsight(insight) : undefined;
+  }
+
+  async upsertConversationInsight(input: {
+    projectId: string;
+    conversationId: string;
+    summary: string;
+    suggestedReplies: string[];
+    tags: string[];
+    metadata?: JsonRecord;
+  }): Promise<ConversationInsightRecord> {
+    const insight = await this.prisma.conversationInsight.upsert({
+      where: {
+        conversationId: input.conversationId
+      },
+      update: {
+        summary: input.summary,
+        suggestedReplies: jsonInput(input.suggestedReplies),
+        tags: jsonInput(input.tags),
+        metadata: jsonInput(input.metadata ?? {})
+      },
+      create: {
+        id: id("insight"),
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        summary: input.summary,
+        suggestedReplies: jsonInput(input.suggestedReplies),
+        tags: jsonInput(input.tags),
+        metadata: jsonInput(input.metadata ?? {})
+      }
+    });
+    return mapConversationInsight(insight);
+  }
+
   async createAsyncJob(input: {
     projectId: string;
     type: string;
@@ -1119,6 +1164,9 @@ type PrismaApiKey = Awaited<ReturnType<PrismaClient["apiKey"]["findFirst"]>>;
 type PrismaAuditLog = Awaited<ReturnType<PrismaClient["auditLog"]["findFirst"]>>;
 type PrismaToolDefinition = Awaited<ReturnType<PrismaClient["toolDefinition"]["findFirst"]>>;
 type PrismaToolCall = Awaited<ReturnType<PrismaClient["toolCall"]["findFirst"]>>;
+type PrismaConversationInsight = Awaited<
+  ReturnType<PrismaClient["conversationInsight"]["findFirst"]>
+>;
 type PrismaAsyncJob = Awaited<ReturnType<PrismaClient["asyncJob"]["findFirst"]>>;
 
 function mapProject(project: NonNullable<PrismaProject>): ProjectRecord {
@@ -1357,6 +1405,22 @@ function mapToolCall(toolCall: NonNullable<PrismaToolCall>): ToolCallRecord {
     error: toolCall.error ?? undefined,
     latencyMs: toolCall.latencyMs ?? undefined,
     createdAt: toolCall.createdAt.toISOString()
+  };
+}
+
+function mapConversationInsight(
+  insight: NonNullable<PrismaConversationInsight>
+): ConversationInsightRecord {
+  return {
+    id: insight.id,
+    projectId: insight.projectId,
+    conversationId: insight.conversationId,
+    summary: insight.summary,
+    suggestedReplies: stringArray(insight.suggestedReplies),
+    tags: stringArray(insight.tags),
+    metadata: jsonRecord(insight.metadata),
+    createdAt: insight.createdAt.toISOString(),
+    updatedAt: insight.updatedAt.toISOString()
   };
 }
 

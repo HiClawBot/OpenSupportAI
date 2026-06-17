@@ -1,4 +1,4 @@
-# OpenSupportAI API 规范 v0.3
+# OpenSupportAI API 规范 v0.4
 
 ## 通用约定
 
@@ -852,6 +852,12 @@ GET /v1/admin/projects/{project_id}/conversations/{conversation_id}
   },
   "messages": [],
   "ai_runs": [],
+  "tool_calls": [],
+  "insight": {
+    "summary": "Conversation conv_123 is handed_off with human assignee.",
+    "tags": ["billing.order", "handoff.active"],
+    "suggestedReplies": ["我已经接入，会继续基于前面的对话记录处理。"]
+  },
   "handoff_sessions": [
     {
       "id": "handoff_123",
@@ -863,6 +869,79 @@ GET /v1/admin/projects/{project_id}/conversations/{conversation_id}
       }
     }
   ]
+}
+```
+
+---
+
+### 获取会话 Assist Insight
+
+```http
+GET /v1/admin/projects/{project_id}/conversations/{conversation_id}/assist
+```
+
+响应：
+
+```json
+{
+  "insight": {
+    "id": "insight_123",
+    "projectId": "proj_123",
+    "conversationId": "conv_123",
+    "summary": "Conversation conv_123 is handed_off with human assignee.",
+    "suggestedReplies": ["我已经接入，会继续基于前面的对话记录处理。"],
+    "tags": ["billing.order", "handoff.active", "tool.used"],
+    "metadata": {
+      "message_count": 4,
+      "tool_call_count": 1,
+      "latest_handoff_status": "active"
+    },
+    "createdAt": "2026-06-18T00:00:00.000Z",
+    "updatedAt": "2026-06-18T00:00:00.000Z"
+  }
+}
+```
+
+尚未生成时 `insight` 为 `null`。
+
+---
+
+### 生成会话 Assist Insight
+
+```http
+POST /v1/admin/projects/{project_id}/conversations/{conversation_id}/assist
+```
+
+生成逻辑是确定性的，会基于 messages、handoff sessions 和 tool calls 生成 summary、tags 和 suggested replies。
+
+---
+
+### Handoff Analytics
+
+```http
+GET /v1/admin/projects/{project_id}/analytics/handoffs
+```
+
+响应：
+
+```json
+{
+  "analytics": {
+    "generatedAt": "2026-06-18T00:00:00.000Z",
+    "total": 12,
+    "byStatus": {
+      "requested": 3,
+      "active": 7,
+      "closed": 2
+    },
+    "byReason": {
+      "user_requested": 10,
+      "low_confidence": 2
+    },
+    "byProvider": {
+      "chatwoot": 12
+    }
+  }
 }
 ```
 

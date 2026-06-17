@@ -36,7 +36,8 @@ Organization
         ├── IntegrationConfig
         ├── APIKey
         ├── ToolDefinition
-        └── ToolCall
+        ├── ToolCall
+        └── ConversationInsight
 ```
 
 ---
@@ -422,6 +423,29 @@ created_at        timestamp
 project_id + created_at
 conversation_id + created_at
 tool_slug + created_at
+```
+
+---
+
+## conversation_insights
+
+```text
+id                 string primary key
+project_id         string references projects(id)
+conversation_id    string unique references conversations(id)
+summary            text
+suggested_replies  jsonb
+tags               jsonb
+metadata           jsonb
+created_at         timestamp
+updated_at         timestamp
+```
+
+索引：
+
+```text
+conversation_id unique
+project_id + updated_at
 ```
 
 ---
