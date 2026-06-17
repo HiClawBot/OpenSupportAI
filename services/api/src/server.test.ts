@@ -412,6 +412,210 @@ describe("OpenSupportAI API", () => {
     expect(listed.jobs.some((job) => job.id === created.job.id)).toBe(true);
   });
 
+  it("manages project API keys and records audit logs", async () => {
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/v1/admin/projects/proj_demo/api-keys",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      },
+      payload: {
+        name: "Scoped project key",
+        scopes: ["admin:project"]
+      }
+    });
+
+    expect(createResponse.statusCode).toBe(200);
+    const created = createResponse.json<{
+      key: string;
+      api_key: {
+        id: string;
+        name: string;
+        scopes: string[];
+        keyHash?: string;
+        lastUsedAt?: string;
+      };
+    }>();
+    expect(created.key).toMatch(/^osa_sk_/);
+    expect(created.api_key).toMatchObject({
+      name: "Scoped project key",
+      scopes: ["admin:project"]
+    });
+    expect(created.api_key.keyHash).toBeUndefined();
+
+    const scopedProjectsResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects",
+      headers: {
+        authorization: `Bearer ${created.key}`
+      }
+    });
+    expect(scopedProjectsResponse.statusCode).toBe(200);
+    expect(
+      scopedProjectsResponse
+        .json<{ projects: Array<{ id: string }> }>()
+        .projects.map((project) => project.id)
+    ).toEqual(["proj_demo"]);
+
+    const forbiddenProjectCreateResponse = await app.inject({
+      method: "POST",
+      url: "/v1/admin/projects",
+      headers: {
+        authorization: `Bearer ${created.key}`
+      },
+      payload: {
+        name: "Should not be created"
+      }
+    });
+    expect(forbiddenProjectCreateResponse.statusCode).toBe(403);
+
+    const listResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/api-keys?include_revoked=true",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(listResponse.statusCode).toBe(200);
+    const listed = listResponse.json<{
+      api_keys: Array<{ id: string; keyHash?: string; lastUsedAt?: string }>;
+    }>();
+    const listedCreated = listed.api_keys.find((apiKey) => apiKey.id === created.api_key.id);
+    expect(listedCreated?.keyHash).toBeUndefined();
+    expect(listedCreated?.lastUsedAt).toBeDefined();
+
+    const revokeResponse = await app.inject({
+      method: "DELETE",
+      url: `/v1/admin/projects/proj_demo/api-keys/${created.api_key.id}`,
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(revokeResponse.statusCode).toBe(200);
+    expect(
+      revokeResponse.json<{ api_key: { revokedAt?: string } }>().api_key.revokedAt
+    ).toBeDefined();
+
+    const revokedUseResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects",
+      headers: {
+        authorization: `Bearer ${created.key}`
+      }
+    });
+    expect(revokedUseResponse.statusCode).toBe(401);
+
+    const auditResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/audit-log?action=api_key.created",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(auditResponse.statusCode).toBe(200);
+    const audit = auditResponse.json<{
+      audit_logs: Array<{ action: string; targetId?: string; metadata: Record<string, unknown> }>;
+    }>();
+    expect(audit.audit_logs[0]).toMatchObject({
+      action: "api_key.created",
+      targetId: created.api_key.id
+    });
+    expect(audit.audit_logs[0]?.metadata["name"]).toBe("Scoped project key");
+  });
+
+  it("lists webhook events, schedules retries, and reports ops health", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/v1/admin/projects/proj_demo/integrations/chatwoot",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      },
+      payload: {
+        base_url: "http://localhost:3008",
+        account_id: "1",
+        inbox_id: "1",
+        api_access_token: "chatwoot_token",
+        webhook_secret: "chatwoot_secret",
+        status: "active"
+      }
+    });
+
+    const webhookResponse = await app.inject({
+      method: "POST",
+      url: "/v1/webhooks/chatwoot/proj_demo",
+      headers: {
+        "x-opensupportai-signature": "chatwoot_secret"
+      },
+      payload: {
+        id: "cw_retry_candidate",
+        event: "message_created",
+        message_type: "outgoing",
+        private: false,
+        content: "A message without a local conversation reference"
+      }
+    });
+    expect(webhookResponse.statusCode).toBe(200);
+    expect(webhookResponse.json<{ status: string }>().status).toBe("ignored");
+
+    const eventsResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/webhooks/events?provider=chatwoot&status=ignored",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(eventsResponse.statusCode).toBe(200);
+    const events = eventsResponse.json<{
+      webhook_events: Array<{ id: string; provider: string; status: string }>;
+    }>();
+    const event = events.webhook_events.find(
+      (candidate) => candidate.provider === "chatwoot" && candidate.status === "ignored"
+    );
+    expect(event).toBeDefined();
+
+    const retryResponse = await app.inject({
+      method: "POST",
+      url: `/v1/admin/projects/proj_demo/webhooks/events/${event?.id}/retry`,
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(retryResponse.statusCode).toBe(200);
+    const retry = retryResponse.json<{
+      webhook_event: { status: string };
+      job: { id: string; type: string; status: string };
+    }>();
+    expect(retry.webhook_event.status).toBe("received");
+    expect(retry.job).toMatchObject({
+      type: "webhook.retry",
+      status: "queued"
+    });
+
+    const opsResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/ops/health",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(opsResponse.statusCode).toBe(200);
+    const ops = opsResponse.json<{
+      status: string;
+      checks: { chatwoot: { configured: boolean; status?: string } };
+      counts: {
+        recent_async_jobs: Record<string, number>;
+        recent_webhook_events: Record<string, number>;
+      };
+    }>();
+    expect(ops.status).toBe("ok");
+    expect(ops.checks.chatwoot).toMatchObject({
+      configured: true,
+      status: "active"
+    });
+    expect(ops.counts.recent_async_jobs.queued).toBeGreaterThanOrEqual(1);
+    expect(ops.counts.recent_webhook_events.received).toBeGreaterThanOrEqual(1);
+  });
+
   it("tests Chatwoot integration connectivity", async () => {
     const chatwootFetch: typeof fetch = async (input) => {
       if (String(input).endsWith("/inboxes")) {

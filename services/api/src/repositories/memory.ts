@@ -1,8 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
+  AdminApiKeyLookup,
   AiRunRecord,
+  ApiKeyRecord,
   AsyncJobRecord,
   AsyncJobStatus,
+  AuditLogRecord,
   ContactInput,
   ContactRecord,
   ConversationRecord,
@@ -49,8 +52,9 @@ export class MemorySupportRepository implements SupportRepository {
   private readonly handoffSessions = new Map<string, HandoffSessionRecord>();
   private readonly integrationConfigs = new Map<string, IntegrationConfigRecord>();
   private readonly webhookEvents = new Map<string, WebhookEventRecord>();
+  private readonly apiKeys = new Map<string, ApiKeyRecord>();
+  private readonly auditLogs = new Map<string, AuditLogRecord>();
   private readonly asyncJobs = new Map<string, AsyncJobRecord>();
-  private readonly adminKeyToProject = new Map<string, string>();
 
   async seedDemo(): Promise<void> {
     if (this.projects.has("proj_demo")) {
@@ -75,7 +79,15 @@ export class MemorySupportRepository implements SupportRepository {
       name: "Default Inbox",
       handoffProvider: "chatwoot"
     });
-    this.adminKeyToProject.set(hash("admin_demo_key"), project.id);
+    this.apiKeys.set("key_demo_admin", {
+      id: "key_demo_admin",
+      projectId: project.id,
+      organizationId: project.organizationId,
+      name: "Demo Admin Key",
+      keyHash: hash("admin_demo_key"),
+      scopes: ["admin:*"],
+      createdAt: timestamp
+    });
     this.llmProviders.set("llm_demo", {
       id: "llm_demo",
       projectId: project.id,
@@ -135,8 +147,74 @@ export class MemorySupportRepository implements SupportRepository {
   }
 
   async findProjectByAdminKeyHash(keyHash: string): Promise<ProjectRecord | undefined> {
-    const projectId = this.adminKeyToProject.get(keyHash);
-    return projectId ? this.projects.get(projectId) : undefined;
+    const lookup = await this.findAdminApiKeyByHash(keyHash);
+    return lookup?.project;
+  }
+
+  async findAdminApiKeyByHash(keyHash: string): Promise<AdminApiKeyLookup | undefined> {
+    const apiKey = [...this.apiKeys.values()].find(
+      (candidate) => candidate.keyHash === keyHash && !candidate.revokedAt
+    );
+    if (!apiKey) {
+      return undefined;
+    }
+
+    return {
+      apiKey,
+      project: apiKey.projectId ? this.projects.get(apiKey.projectId) : undefined
+    };
+  }
+
+  async touchApiKeyLastUsed(id: string, timestamp = now()): Promise<void> {
+    const apiKey = this.apiKeys.get(id);
+    if (!apiKey) {
+      return;
+    }
+    this.apiKeys.set(id, {
+      ...apiKey,
+      lastUsedAt: timestamp
+    });
+  }
+
+  async createApiKey(input: {
+    projectId: string;
+    organizationId?: string;
+    name: string;
+    keyHash: string;
+    scopes: string[];
+  }): Promise<ApiKeyRecord> {
+    const project = await this.requireProject(input.projectId);
+    const apiKey: ApiKeyRecord = {
+      id: id("key"),
+      projectId: input.projectId,
+      organizationId: input.organizationId ?? project.organizationId,
+      name: input.name,
+      keyHash: input.keyHash,
+      scopes: input.scopes,
+      createdAt: now()
+    };
+    this.apiKeys.set(apiKey.id, apiKey);
+    return apiKey;
+  }
+
+  async listApiKeys(input: {
+    projectId: string;
+    includeRevoked?: boolean;
+  }): Promise<ApiKeyRecord[]> {
+    return [...this.apiKeys.values()]
+      .filter((apiKey) => apiKey.projectId === input.projectId)
+      .filter((apiKey) => (input.includeRevoked ? true : !apiKey.revokedAt))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async revokeApiKey(input: { projectId: string; id: string }): Promise<ApiKeyRecord> {
+    const apiKey = this.requireApiKey(input.projectId, input.id);
+    const revoked: ApiKeyRecord = {
+      ...apiKey,
+      revokedAt: apiKey.revokedAt ?? now()
+    };
+    this.apiKeys.set(revoked.id, revoked);
+    return revoked;
   }
 
   async listProjects(): Promise<ProjectRecord[]> {
@@ -561,6 +639,28 @@ export class MemorySupportRepository implements SupportRepository {
     return updated;
   }
 
+  async findWebhookEvent(input: {
+    projectId: string;
+    id: string;
+  }): Promise<WebhookEventRecord | undefined> {
+    const event = this.webhookEvents.get(input.id);
+    return event?.projectId === input.projectId ? event : undefined;
+  }
+
+  async listWebhookEvents(input: {
+    projectId: string;
+    provider?: string;
+    status?: WebhookEventRecord["status"];
+    limit?: number;
+  }): Promise<WebhookEventRecord[]> {
+    return [...this.webhookEvents.values()]
+      .filter((event) => event.projectId === input.projectId)
+      .filter((event) => (input.provider ? event.provider === input.provider : true))
+      .filter((event) => (input.status ? event.status === input.status : true))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, input.limit ?? 50);
+  }
+
   async findHandoffByExternalConversation(input: {
     projectId: string;
     provider: string;
@@ -572,6 +672,46 @@ export class MemorySupportRepository implements SupportRepository {
         session.provider === input.provider &&
         session.externalConversationId === input.externalConversationId
     );
+  }
+
+  async createAuditLog(input: {
+    projectId?: string;
+    organizationId?: string;
+    actorType: AuditLogRecord["actorType"];
+    actorId?: string;
+    action: string;
+    targetType?: string;
+    targetId?: string;
+    metadata?: JsonRecord;
+    requestId?: string;
+  }): Promise<AuditLogRecord> {
+    const auditLog: AuditLogRecord = {
+      id: id("audit"),
+      projectId: input.projectId,
+      organizationId: input.organizationId,
+      actorType: input.actorType,
+      actorId: input.actorId,
+      action: input.action,
+      targetType: input.targetType,
+      targetId: input.targetId,
+      metadata: input.metadata ?? {},
+      requestId: input.requestId,
+      createdAt: now()
+    };
+    this.auditLogs.set(auditLog.id, auditLog);
+    return auditLog;
+  }
+
+  async listAuditLogs(input: {
+    projectId: string;
+    action?: string;
+    limit?: number;
+  }): Promise<AuditLogRecord[]> {
+    return [...this.auditLogs.values()]
+      .filter((auditLog) => auditLog.projectId === input.projectId)
+      .filter((auditLog) => (input.action ? auditLog.action === input.action : true))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, input.limit ?? 100);
   }
 
   async createAsyncJob(input: {
@@ -694,6 +834,14 @@ export class MemorySupportRepository implements SupportRepository {
       throw new Error(`Project not found: ${projectId}`);
     }
     return project;
+  }
+
+  private requireApiKey(projectId: string, keyId: string): ApiKeyRecord {
+    const apiKey = this.apiKeys.get(keyId);
+    if (!apiKey || apiKey.projectId !== projectId) {
+      throw new Error(`API key not found: ${keyId}`);
+    }
+    return apiKey;
   }
 
   private requireAsyncJob(jobId: string): AsyncJobRecord {

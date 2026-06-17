@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.2.0 - 2026-06-18
+
+English:
+
+- Added project-scoped API key management APIs for creating, listing, and revoking admin keys.
+- Added API key identity tracking with `lastUsedAt` updates and stricter project-list/project-create permissions.
+- Added `AuditLog` storage and admin audit-log API for key production operations.
+- Added ops health API with project, storage, integration, async-job, webhook-event, and latest-audit status.
+- Added webhook event management APIs to list events and schedule retry jobs.
+- Added tests for API key lifecycle, audit logs, ops health, and webhook retry scheduling.
+
+中文：
+
+- 新增项目级 API key 管理 API，支持创建、列表和撤销 admin key。
+- 新增 API key 身份识别和 `lastUsedAt` 更新，并收紧项目列表/创建权限边界。
+- 新增 `AuditLog` 存储和管理端审计日志 API，覆盖关键生产操作。
+- 新增 ops health API，返回项目、存储、集成、异步任务、webhook event 和最新审计状态。
+- 新增 webhook event 管理 API，支持列表和调度 retry job。
+- 新增 API key 生命周期、审计日志、ops health 和 webhook retry 调度测试。
+
 ## v0.1.4 - 2026-06-18
 
 English:

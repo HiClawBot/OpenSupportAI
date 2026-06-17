@@ -1,4 +1,4 @@
-# OpenSupportAI API 规范 v0.1
+# OpenSupportAI API 规范 v0.2
 
 ## 通用约定
 
@@ -297,7 +297,7 @@ Content-Type: application/json
 ### 配置 LLM Provider
 
 ```http
-POST /v1/admin/projects/{project_id}/llm-providers
+POST /v1/admin/projects/{project_id}/llm
 Content-Type: application/json
 ```
 
@@ -325,6 +325,161 @@ Content-Type: application/json
 ```
 
 API Key 必须加密存储，不可在 GET 响应中返回明文。
+
+---
+
+### 创建 Admin API Key
+
+```http
+POST /v1/admin/projects/{project_id}/api-keys
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "name": "Production automation",
+  "scopes": ["admin:project"]
+}
+```
+
+响应：
+
+```json
+{
+  "api_key": {
+    "id": "key_123",
+    "projectId": "proj_123",
+    "organizationId": "org_123",
+    "name": "Production automation",
+    "scopes": ["admin:project"],
+    "createdAt": "2026-06-18T00:00:00.000Z"
+  },
+  "key": "osa_sk_xxx"
+}
+```
+
+`key` 明文只在创建时返回一次；服务端只保存 hash。项目级 API key 只能访问自己的项目。
+
+---
+
+### 获取 Admin API Key 列表
+
+```http
+GET /v1/admin/projects/{project_id}/api-keys?include_revoked=false
+```
+
+响应不会包含 `keyHash` 或明文 key：
+
+```json
+{
+  "api_keys": [
+    {
+      "id": "key_123",
+      "name": "Production automation",
+      "scopes": ["admin:project"],
+      "lastUsedAt": "2026-06-18T00:05:00.000Z",
+      "createdAt": "2026-06-18T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+### 撤销 Admin API Key
+
+```http
+DELETE /v1/admin/projects/{project_id}/api-keys/{key_id}
+```
+
+响应：
+
+```json
+{
+  "api_key": {
+    "id": "key_123",
+    "name": "Production automation",
+    "revokedAt": "2026-06-18T00:10:00.000Z"
+  }
+}
+```
+
+---
+
+### Ops Health
+
+```http
+GET /v1/admin/projects/{project_id}/ops/health
+```
+
+响应：
+
+```json
+{
+  "status": "ok",
+  "generated_at": "2026-06-18T00:00:00.000Z",
+  "project": {
+    "id": "proj_123",
+    "name": "Demo Project",
+    "defaultLocale": "zh-CN"
+  },
+  "storage": {
+    "mode": "prisma"
+  },
+  "checks": {
+    "repository": "ok",
+    "llm_provider_configured": true,
+    "chatwoot": {
+      "configured": true,
+      "status": "active"
+    }
+  },
+  "counts": {
+    "conversations": {
+      "open": 8
+    },
+    "recent_async_jobs": {
+      "queued": 2
+    },
+    "recent_webhook_events": {
+      "received": 1,
+      "failed": 1
+    }
+  }
+}
+```
+
+---
+
+### 获取审计日志
+
+```http
+GET /v1/admin/projects/{project_id}/audit-log?action=api_key.created&limit=100
+```
+
+响应：
+
+```json
+{
+  "audit_logs": [
+    {
+      "id": "audit_123",
+      "projectId": "proj_123",
+      "actorType": "root_admin",
+      "action": "api_key.created",
+      "targetType": "api_key",
+      "targetId": "key_123",
+      "metadata": {
+        "name": "Production automation"
+      },
+      "requestId": "req_123",
+      "createdAt": "2026-06-18T00:00:00.000Z"
+    }
+  ]
+}
+```
 
 ---
 
@@ -657,6 +812,79 @@ GET /v1/admin/projects/{project_id}/jobs?status=queued&type=knowledge.index&limi
   ]
 }
 ```
+
+---
+
+### 获取 Webhook Event 列表
+
+```http
+GET /v1/admin/projects/{project_id}/webhooks/events?provider=chatwoot&status=failed&limit=50
+```
+
+查询参数：
+
+| 参数       | 说明                                                 |
+| ---------- | ---------------------------------------------------- |
+| `provider` | 可选。例如 `chatwoot`。                              |
+| `status`   | 可选。`received`、`processed`、`failed`、`ignored`。 |
+| `limit`    | 可选。默认 `50`，最大 `100`。                        |
+
+响应：
+
+```json
+{
+  "webhook_events": [
+    {
+      "id": "webhook_123",
+      "projectId": "proj_123",
+      "provider": "chatwoot",
+      "externalEventId": "cw_123",
+      "status": "failed",
+      "error": "No local conversation reference",
+      "createdAt": "2026-06-18T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+### 调度 Webhook Event Retry
+
+```http
+POST /v1/admin/projects/{project_id}/webhooks/events/{event_id}/retry
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "run_at": "2026-06-18T00:05:00.000Z"
+}
+```
+
+响应：
+
+```json
+{
+  "webhook_event": {
+    "id": "webhook_123",
+    "status": "received"
+  },
+  "job": {
+    "id": "job_123",
+    "type": "webhook.retry",
+    "status": "queued",
+    "payload": {
+      "webhook_event_id": "webhook_123",
+      "provider": "chatwoot"
+    }
+  }
+}
+```
+
+已 `processed` 的 webhook event 不需要 retry，会返回 `invalid_request`。
 
 ---
 

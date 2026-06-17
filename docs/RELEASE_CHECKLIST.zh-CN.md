@@ -1,4 +1,4 @@
-# OpenSupportAI v0.1.x 发布清单
+# OpenSupportAI v0.2.x 发布清单
 
 这份清单用于公开发布到 GitHub 前的最后检查。
 
@@ -47,6 +47,11 @@ VITE_API_URL=http://localhost:4000 pnpm --filter @opensupportai/demo-app dev
 - `pnpm smoke:memory` 在内存模式 API 启动后可跑通。
 - 若启用 `RATE_LIMIT_ENABLED=true`，超过阈值时 API 返回 `429/rate_limited`。
 - 管理端 `GET/POST /v1/admin/projects/{project_id}/jobs` 可创建和列出 async jobs。
+- 管理端 `GET/POST/DELETE /v1/admin/projects/{project_id}/api-keys` 可创建、列出和撤销项目级 API key，响应不暴露 key hash。
+- 使用新建的项目级 API key 访问 `/v1/admin/projects` 只返回自己的项目，撤销后无法继续认证。
+- 管理端 `GET /v1/admin/projects/{project_id}/ops/health` 返回 `status: ok`。
+- 管理端 `GET /v1/admin/projects/{project_id}/audit-log` 能看到关键写操作。
+- 管理端 `GET /v1/admin/projects/{project_id}/webhooks/events` 可查看 webhook event，retry 端点会创建 `webhook.retry` async job。
 
 ## Docker Compose Smoke Test
 
@@ -105,12 +110,12 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-补丁版本发布建议：
+版本发布建议：
 
 ```bash
-git tag v0.1.4
-git push origin v0.1.4
-gh release create v0.1.4 --title "OpenSupportAI v0.1.4" --notes-file docs/releases/v0.1.4.md
+git tag v0.2.0
+git push origin v0.2.0
+gh release create v0.2.0 --title "OpenSupportAI v0.2.0" --notes-file docs/releases/v0.2.0.md
 ```
 
 发布说明建议包含：
@@ -124,10 +129,12 @@ gh release create v0.1.4 --title "OpenSupportAI v0.1.4" --notes-file docs/releas
 - v0.1.2 增加管理台会话运营筛选、摘要指标、最近消息预览和最新 handoff 状态。
 - v0.1.3 增加 API 限流、memory smoke test、管理台错误提示和 favicon polish。
 - v0.1.4 增加 Prisma async_jobs、管理端 jobs API 和可测试 worker runtime。
+- v0.2.0 增加项目级 API key 管理、审计日志、ops health 和 webhook event retry 调度。
 
 ## 当前已知限制
 
 - Widget 当前产物是 ESM-first，不是 legacy UMD 全局脚本。
 - PDF/URL 知识源在文档中作为方向保留，v0.1 API 主要支持直接提交 markdown/text 内容。
 - Worker runtime 已有基础 claim/handler/retry 语义，后续仍需接入真实知识库 indexing 和 webhook retry 处理器。
+- v0.2.0 的 webhook retry 已完成管理端调度，实际重放处理器会在后续 worker 迭代中实现。
 - Docker Compose 启动需要在安装 Docker 的机器上单独验证。

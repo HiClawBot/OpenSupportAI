@@ -3,11 +3,12 @@ import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import type { ConversationStatus, HandoffReason } from "@opensupportai/protocol";
 import { ZodError } from "zod";
-import { authenticateAdmin, authenticateClient } from "./auth";
+import { authenticateAdminIdentity, authenticateClient, type AdminIdentity } from "./auth";
 import { type ApiConfig, loadConfig } from "./config";
 import { decryptJson, encryptJson, hashSecret } from "./crypto";
 import {
   ApiError,
+  forbidden,
   invalidRequest,
   notFound,
   rateLimited,
@@ -19,23 +20,31 @@ import { createOrchestrator, requestHandoff } from "./orchestrator";
 import { MemorySupportRepository } from "./repositories/memory";
 import { PrismaSupportRepository } from "./repositories/prisma";
 import type {
+  ApiKeyRecord,
+  AuditLogRecord,
   ContactRecord,
   ConversationRecord,
   HandoffSessionRecord,
   IntegrationConfigRecord,
   JsonRecord,
   MessageRecord,
+  ProjectRecord,
   SupportRepository
 } from "./repositories/types";
 import {
   chatwootWebhookBodySchema,
+  createApiKeyBodySchema,
   createAsyncJobBodySchema,
   createConversationBodySchema,
   createKnowledgeDocumentBodySchema,
   createProjectBodySchema,
+  listApiKeysQuerySchema,
+  listAuditLogsQuerySchema,
   listAsyncJobsQuerySchema,
   listConversationsQuerySchema,
+  listWebhookEventsQuerySchema,
   requestHandoffBodySchema,
+  retryWebhookEventBodySchema,
   sendMessageBodySchema,
   upsertChatwootIntegrationBodySchema,
   upsertLlmProviderBodySchema
@@ -240,20 +249,140 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
 
   app.get("/v1/admin/projects", async (request) => {
-    await authenticateAdmin(request, repository, config);
+    const identity = await authenticateAdminIdentity(request, repository, config);
     return {
-      projects: await repository.listProjects()
+      projects: identity.project ? [identity.project] : await repository.listProjects()
     };
   });
 
   app.post("/v1/admin/projects", async (request) => {
-    await authenticateAdmin(request, repository, config);
+    const identity = await authenticateAdminIdentity(request, repository, config);
+    requireRootAdmin(identity);
     const body = createProjectBodySchema.parse(request.body);
     const project = await repository.createProject({
       name: body.name,
       defaultLocale: body.default_locale
     });
+    await recordAudit(repository, request, {
+      project,
+      identity,
+      action: "project.created",
+      targetType: "project",
+      targetId: project.id,
+      metadata: {
+        name: project.name,
+        default_locale: project.defaultLocale
+      }
+    });
     return { project };
+  });
+
+  app.get("/v1/admin/projects/:projectId/ops/health", async (request) => {
+    const { project } = await authenticateAdminProjectIdentity(request, repository, config);
+    return buildOpsHealth(repository, project, config);
+  });
+
+  app.get("/v1/admin/projects/:projectId/api-keys", async (request) => {
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:keys");
+    const query = listApiKeysQuerySchema.parse(request.query);
+    return {
+      api_keys: (
+        await repository.listApiKeys({
+          projectId: project.id,
+          includeRevoked: query.include_revoked
+        })
+      ).map(safeApiKeyResponse)
+    };
+  });
+
+  app.post("/v1/admin/projects/:projectId/api-keys", async (request) => {
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:keys");
+    const body = createApiKeyBodySchema.parse(request.body);
+    const secret = generateApiKeySecret();
+    const apiKey = await repository.createApiKey({
+      projectId: project.id,
+      organizationId: project.organizationId,
+      name: body.name,
+      keyHash: hashSecret(secret),
+      scopes: body.scopes
+    });
+    await recordAudit(repository, request, {
+      project,
+      identity,
+      action: "api_key.created",
+      targetType: "api_key",
+      targetId: apiKey.id,
+      metadata: {
+        name: apiKey.name,
+        scopes: apiKey.scopes
+      }
+    });
+    return {
+      api_key: safeApiKeyResponse(apiKey),
+      key: secret
+    };
+  });
+
+  app.delete("/v1/admin/projects/:projectId/api-keys/:keyId", async (request) => {
+    const params = request.params as { keyId: string };
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:keys");
+    const existingApiKey = (
+      await repository.listApiKeys({
+        projectId: project.id,
+        includeRevoked: true
+      })
+    ).find((apiKey) => apiKey.id === params.keyId);
+    if (!existingApiKey) {
+      throw notFound("API key not found");
+    }
+
+    const apiKey = await repository.revokeApiKey({
+      projectId: project.id,
+      id: params.keyId
+    });
+    await recordAudit(repository, request, {
+      project,
+      identity,
+      action: "api_key.revoked",
+      targetType: "api_key",
+      targetId: apiKey.id,
+      metadata: {
+        name: apiKey.name
+      }
+    });
+    return { api_key: safeApiKeyResponse(apiKey) };
+  });
+
+  app.get("/v1/admin/projects/:projectId/audit-log", async (request) => {
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:audit");
+    const query = listAuditLogsQuerySchema.parse(request.query);
+    return {
+      audit_logs: await repository.listAuditLogs({
+        projectId: project.id,
+        action: query.action,
+        limit: query.limit
+      })
+    };
   });
 
   app.get("/v1/admin/projects/:projectId/conversations", async (request) => {
@@ -294,16 +423,100 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
 
   app.post("/v1/admin/projects/:projectId/jobs", async (request) => {
-    const projectId = await authenticateAdminProject(request, repository, config);
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:jobs");
     const body = createAsyncJobBodySchema.parse(request.body);
     const job = await repository.createAsyncJob({
-      projectId,
+      projectId: project.id,
       type: body.type,
       payload: body.payload,
       runAt: body.run_at,
       maxAttempts: body.max_attempts
     });
+    await recordAudit(repository, request, {
+      project,
+      identity,
+      action: "async_job.created",
+      targetType: "async_job",
+      targetId: job.id,
+      metadata: {
+        type: job.type,
+        run_at: job.runAt
+      }
+    });
     return { job };
+  });
+
+  app.get("/v1/admin/projects/:projectId/webhooks/events", async (request) => {
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:webhooks");
+    const query = listWebhookEventsQuerySchema.parse(request.query);
+    return {
+      webhook_events: await repository.listWebhookEvents({
+        projectId: project.id,
+        provider: query.provider,
+        status: query.status,
+        limit: query.limit
+      })
+    };
+  });
+
+  app.post("/v1/admin/projects/:projectId/webhooks/events/:eventId/retry", async (request) => {
+    const params = request.params as { eventId: string };
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:webhooks");
+    const body = retryWebhookEventBodySchema.parse(request.body ?? {});
+    const event = await repository.findWebhookEvent({
+      projectId: project.id,
+      id: params.eventId
+    });
+    if (!event) {
+      throw notFound("Webhook event not found");
+    }
+    if (event.status === "processed") {
+      throw invalidRequest("Processed webhook events do not need retry");
+    }
+
+    const job = await repository.createAsyncJob({
+      projectId: project.id,
+      type: "webhook.retry",
+      payload: {
+        webhook_event_id: event.id,
+        provider: event.provider
+      },
+      runAt: body.run_at
+    });
+    const updatedEvent = await repository.markWebhookEvent({
+      id: event.id,
+      status: "received"
+    });
+    await recordAudit(repository, request, {
+      project,
+      identity,
+      action: "webhook.retry_scheduled",
+      targetType: "webhook_event",
+      targetId: event.id,
+      metadata: {
+        provider: event.provider,
+        job_id: job.id
+      }
+    });
+    return {
+      webhook_event: updatedEvent,
+      job
+    };
   });
 
   app.get("/v1/admin/projects/:projectId/knowledge/documents", async (request) => {
@@ -314,14 +527,29 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
 
   app.post("/v1/admin/projects/:projectId/knowledge/documents", async (request) => {
-    const projectId = await authenticateAdminProject(request, repository, config);
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
     const body = createKnowledgeDocumentBodySchema.parse(request.body);
-    const document = await repository.createKnowledgeDocument(projectId, {
+    const document = await repository.createKnowledgeDocument(project.id, {
       title: body.title,
       sourceType: body.source_type,
       content: body.content,
       sourceUri: body.source_uri,
       metadata: body.metadata
+    });
+    await recordAudit(repository, request, {
+      project,
+      identity,
+      action: "knowledge_document.created",
+      targetType: "knowledge_document",
+      targetId: document.id,
+      metadata: {
+        title: document.title,
+        source_type: document.sourceType
+      }
     });
     return { document };
   });
@@ -341,16 +569,32 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
 
   app.post("/v1/admin/projects/:projectId/llm", async (request) => {
-    const projectId = await authenticateAdminProject(request, repository, config);
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
     const body = upsertLlmProviderBodySchema.parse(request.body);
     const provider = await repository.upsertLlmProvider({
-      projectId,
+      projectId: project.id,
       provider: body.provider,
       baseUrl: body.base_url,
       model: body.model,
       embeddingModel: body.embedding_model,
       apiKeyEncrypted: encryptJson({ api_key: body.api_key }, config.encryptionKey),
       status: body.status
+    });
+    await recordAudit(repository, request, {
+      project,
+      identity,
+      action: "llm_provider.upserted",
+      targetType: "llm_provider",
+      targetId: provider.id,
+      metadata: {
+        provider: provider.provider,
+        model: provider.model,
+        status: provider.status
+      }
     });
     return {
       provider: {
@@ -381,10 +625,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
 
   app.post("/v1/admin/projects/:projectId/integrations/chatwoot", async (request) => {
-    const projectId = await authenticateAdminProject(request, repository, config);
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
     const body = upsertChatwootIntegrationBodySchema.parse(request.body);
     const integration = await repository.upsertIntegrationConfig({
-      projectId,
+      projectId: project.id,
       provider: "chatwoot",
       status: body.status,
       configEncrypted: encryptJson(
@@ -403,6 +651,19 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         inbox_id: body.inbox_id
       }
     });
+    await recordAudit(repository, request, {
+      project,
+      identity,
+      action: "integration.chatwoot.upserted",
+      targetType: "integration_config",
+      targetId: integration.id,
+      metadata: {
+        provider: integration.provider,
+        status: integration.status,
+        account_id: body.account_id,
+        inbox_id: body.inbox_id
+      }
+    });
     return {
       integration: {
         id: integration.id,
@@ -416,8 +677,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
 
   app.post("/v1/admin/projects/:projectId/integrations/chatwoot/test", async (request) => {
-    const projectId = await authenticateAdminProject(request, repository, config);
-    const integration = await repository.getIntegrationConfig(projectId, "chatwoot");
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    const integration = await repository.getIntegrationConfig(project.id, "chatwoot");
     if (!integration) {
       throw notFound("Chatwoot integration not configured");
     }
@@ -434,7 +699,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       const metadataWithoutLastError = { ...integration.metadata };
       delete metadataWithoutLastError["last_test_error"];
       const updated = await repository.upsertIntegrationConfig({
-        projectId,
+        projectId: project.id,
         provider: "chatwoot",
         status: integration.status,
         configEncrypted: integration.configEncrypted,
@@ -445,6 +710,17 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           ...(result.inboxName ? { last_test_inbox_name: result.inboxName } : {})
         }
       });
+      await recordAudit(repository, request, {
+        project,
+        identity,
+        action: "integration.chatwoot.tested",
+        targetType: "integration_config",
+        targetId: updated.id,
+        metadata: {
+          ok: true,
+          inbox_name: result.inboxName
+        }
+      });
       return {
         ok: true,
         result,
@@ -453,7 +729,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown Chatwoot test error";
       const updated = await repository.upsertIntegrationConfig({
-        projectId,
+        projectId: project.id,
         provider: "chatwoot",
         status: integration.status,
         configEncrypted: integration.configEncrypted,
@@ -462,6 +738,17 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           last_tested_at: testedAt,
           last_test_ok: false,
           last_test_error: message
+        }
+      });
+      await recordAudit(repository, request, {
+        project,
+        identity,
+        action: "integration.chatwoot.tested",
+        targetType: "integration_config",
+        targetId: updated.id,
+        metadata: {
+          ok: false,
+          error: message
         }
       });
       return {
@@ -474,9 +761,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   app.post("/v1/admin/projects/:projectId/handoffs/:handoffId/retry", async (request) => {
     const params = request.params as { projectId: string; handoffId: string };
-    const projectId = await authenticateAdminProject(request, repository, config);
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
     const handoffSession = await repository.findHandoffSession({
-      projectId,
+      projectId: project.id,
       id: params.handoffId
     });
     if (!handoffSession) {
@@ -492,6 +783,17 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       config,
       chatwootFetch: options.chatwootFetch,
       handoffSession
+    });
+    await recordAudit(repository, request, {
+      project,
+      identity,
+      action: "handoff.retried",
+      targetType: "handoff_session",
+      targetId: handoffSession.id,
+      metadata: {
+        provider: handoffSession.provider,
+        status: retriedSession.status
+      }
     });
     return {
       handoff_session: retriedSession,
@@ -855,6 +1157,132 @@ function safeIntegrationResponse(integration: IntegrationConfigRecord): {
     createdAt: integration.createdAt,
     updatedAt: integration.updatedAt
   };
+}
+
+function safeApiKeyResponse(apiKey: ApiKeyRecord): Omit<ApiKeyRecord, "keyHash"> {
+  const { keyHash: _keyHash, ...safeApiKey } = apiKey;
+  return safeApiKey;
+}
+
+function generateApiKeySecret(): string {
+  return `osa_sk_${crypto.randomUUID().replaceAll("-", "")}${crypto
+    .randomUUID()
+    .replaceAll("-", "")
+    .slice(0, 16)}`;
+}
+
+function requireRootAdmin(identity: AdminIdentity): void {
+  if (identity.actorType !== "root_admin") {
+    throw forbidden("Only the root admin token can perform this operation");
+  }
+}
+
+function requireAdminScope(identity: AdminIdentity, scope: string): void {
+  if (
+    identity.actorType === "root_admin" ||
+    identity.scopes.includes("admin:*") ||
+    identity.scopes.includes(scope)
+  ) {
+    return;
+  }
+
+  throw forbidden(`Admin API key is missing required scope: ${scope}`);
+}
+
+async function recordAudit(
+  repository: SupportRepository,
+  request: FastifyRequest,
+  input: {
+    project: ProjectRecord;
+    identity: AdminIdentity;
+    action: string;
+    targetType?: string;
+    targetId?: string;
+    metadata?: JsonRecord;
+  }
+): Promise<void> {
+  try {
+    await repository.createAuditLog({
+      projectId: input.project.id,
+      organizationId: input.project.organizationId,
+      actorType: input.identity.actorType,
+      actorId: input.identity.actorId,
+      action: input.action,
+      targetType: input.targetType,
+      targetId: input.targetId,
+      metadata: input.metadata,
+      requestId: request.id
+    });
+  } catch (error) {
+    request.log.warn({ err: error }, "Failed to write audit log");
+  }
+}
+
+async function buildOpsHealth(
+  repository: SupportRepository,
+  project: ProjectRecord,
+  config: ApiConfig
+): Promise<{
+  status: "ok";
+  generated_at: string;
+  project: Pick<ProjectRecord, "id" | "name" | "defaultLocale">;
+  storage: { mode: ApiConfig["storageMode"] };
+  checks: {
+    repository: "ok";
+    llm_provider_configured: boolean;
+    chatwoot: { configured: boolean; status?: IntegrationConfigRecord["status"] };
+  };
+  counts: {
+    conversations: Record<string, number>;
+    recent_async_jobs: Record<string, number>;
+    recent_webhook_events: Record<string, number>;
+  };
+  latest_audit_log?: AuditLogRecord;
+}> {
+  const [conversations, llmProvider, chatwootIntegration, jobs, webhookEvents, auditLogs] =
+    await Promise.all([
+      repository.listConversations(project.id),
+      repository.getActiveLlmProvider(project.id),
+      repository.getIntegrationConfig(project.id, "chatwoot"),
+      repository.listAsyncJobs({ projectId: project.id, limit: 100 }),
+      repository.listWebhookEvents({ projectId: project.id, limit: 100 }),
+      repository.listAuditLogs({ projectId: project.id, limit: 1 })
+    ]);
+
+  return {
+    status: "ok",
+    generated_at: new Date().toISOString(),
+    project: {
+      id: project.id,
+      name: project.name,
+      defaultLocale: project.defaultLocale
+    },
+    storage: {
+      mode: config.storageMode
+    },
+    checks: {
+      repository: "ok",
+      llm_provider_configured: Boolean(llmProvider),
+      chatwoot: {
+        configured: Boolean(chatwootIntegration),
+        status: chatwootIntegration?.status
+      }
+    },
+    counts: {
+      conversations: countBy(conversations, (conversation) => conversation.status),
+      recent_async_jobs: countBy(jobs, (job) => job.status),
+      recent_webhook_events: countBy(webhookEvents, (event) => event.status)
+    },
+    latest_audit_log: auditLogs[0]
+  };
+}
+
+function countBy<T>(items: T[], keyForItem: (item: T) => string): Record<string, number> {
+  return items.reduce<Record<string, number>>((counts, item) => {
+    const key = keyForItem(item);
+    counts[key] = (counts[key] ?? 0) + 1;
+    return counts;
+  }, {});
 }
 
 type RateLimitBucket = {
@@ -1419,16 +1847,24 @@ async function authenticateAdminProject(
   repository: SupportRepository,
   config: ApiConfig
 ): Promise<string> {
+  return (await authenticateAdminProjectIdentity(request, repository, config)).project.id;
+}
+
+async function authenticateAdminProjectIdentity(
+  request: FastifyRequest,
+  repository: SupportRepository,
+  config: ApiConfig
+): Promise<{ project: ProjectRecord; identity: AdminIdentity }> {
   const params = request.params as { projectId: string };
-  const adminProject = await authenticateAdmin(request, repository, config);
-  if (adminProject && adminProject.id !== params.projectId) {
+  const identity = await authenticateAdminIdentity(request, repository, config);
+  if (identity.project && identity.project.id !== params.projectId) {
     throw unauthorized("Admin token cannot access this project");
   }
   const project = await repository.findProjectById(params.projectId);
   if (!project) {
     throw notFound("Project not found");
   }
-  return project.id;
+  return { project, identity };
 }
 
 function writeSseHeaders(reply: FastifyReply): void {

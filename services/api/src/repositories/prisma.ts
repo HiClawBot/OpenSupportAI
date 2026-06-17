@@ -2,9 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { chunkText, scoreChunk, tokenize } from "../knowledge-text";
 import type {
+  AdminApiKeyLookup,
   AiRunRecord,
+  ApiKeyRecord,
   AsyncJobRecord,
   AsyncJobStatus,
+  AuditLogRecord,
   ContactInput,
   ContactRecord,
   ConversationRecord,
@@ -137,6 +140,11 @@ export class PrismaSupportRepository implements SupportRepository {
   }
 
   async findProjectByAdminKeyHash(keyHash: string): Promise<ProjectRecord | undefined> {
+    const lookup = await this.findAdminApiKeyByHash(keyHash);
+    return lookup?.project;
+  }
+
+  async findAdminApiKeyByHash(keyHash: string): Promise<AdminApiKeyLookup | undefined> {
     const apiKey = await this.prisma.apiKey.findFirst({
       where: {
         keyHash,
@@ -147,7 +155,72 @@ export class PrismaSupportRepository implements SupportRepository {
         project: true
       }
     });
-    return apiKey?.project ? mapProject(apiKey.project) : undefined;
+    return apiKey
+      ? {
+          apiKey: mapApiKey(apiKey),
+          project: apiKey.project ? mapProject(apiKey.project) : undefined
+        }
+      : undefined;
+  }
+
+  async touchApiKeyLastUsed(id: string, timestamp?: string): Promise<void> {
+    await this.prisma.apiKey.updateMany({
+      where: { id },
+      data: {
+        lastUsedAt: timestamp ? new Date(timestamp) : new Date()
+      }
+    });
+  }
+
+  async createApiKey(input: {
+    projectId: string;
+    organizationId?: string;
+    name: string;
+    keyHash: string;
+    scopes: string[];
+  }): Promise<ApiKeyRecord> {
+    const project = await this.prisma.project.findUniqueOrThrow({ where: { id: input.projectId } });
+    const apiKey = await this.prisma.apiKey.create({
+      data: {
+        id: id("key"),
+        projectId: input.projectId,
+        organizationId: input.organizationId ?? project.organizationId,
+        name: input.name,
+        keyHash: input.keyHash,
+        scopes: input.scopes
+      }
+    });
+    return mapApiKey(apiKey);
+  }
+
+  async listApiKeys(input: {
+    projectId: string;
+    includeRevoked?: boolean;
+  }): Promise<ApiKeyRecord[]> {
+    const apiKeys = await this.prisma.apiKey.findMany({
+      where: {
+        projectId: input.projectId,
+        ...(input.includeRevoked ? {} : { revokedAt: null })
+      },
+      orderBy: { createdAt: "desc" }
+    });
+    return apiKeys.map(mapApiKey);
+  }
+
+  async revokeApiKey(input: { projectId: string; id: string }): Promise<ApiKeyRecord> {
+    const apiKeys = await this.prisma.apiKey.updateManyAndReturn({
+      where: {
+        id: input.id,
+        projectId: input.projectId
+      },
+      data: {
+        revokedAt: new Date()
+      }
+    });
+    if (!apiKeys[0]) {
+      throw new Error(`API key not found: ${input.id}`);
+    }
+    return mapApiKey(apiKeys[0]);
   }
 
   async listProjects(): Promise<ProjectRecord[]> {
@@ -645,6 +718,37 @@ export class PrismaSupportRepository implements SupportRepository {
     return mapWebhookEvent(event);
   }
 
+  async findWebhookEvent(input: {
+    projectId: string;
+    id: string;
+  }): Promise<WebhookEventRecord | undefined> {
+    const event = await this.prisma.webhookEvent.findFirst({
+      where: {
+        id: input.id,
+        projectId: input.projectId
+      }
+    });
+    return event ? mapWebhookEvent(event) : undefined;
+  }
+
+  async listWebhookEvents(input: {
+    projectId: string;
+    provider?: string;
+    status?: WebhookEventRecord["status"];
+    limit?: number;
+  }): Promise<WebhookEventRecord[]> {
+    const events = await this.prisma.webhookEvent.findMany({
+      where: {
+        projectId: input.projectId,
+        ...(input.provider ? { provider: input.provider } : {}),
+        ...(input.status ? { status: input.status } : {})
+      },
+      take: input.limit ?? 50,
+      orderBy: { createdAt: "desc" }
+    });
+    return events.map(mapWebhookEvent);
+  }
+
   async findHandoffByExternalConversation(input: {
     projectId: string;
     provider: string;
@@ -658,6 +762,50 @@ export class PrismaSupportRepository implements SupportRepository {
       }
     });
     return session ? mapHandoffSession(session) : undefined;
+  }
+
+  async createAuditLog(input: {
+    projectId?: string;
+    organizationId?: string;
+    actorType: AuditLogRecord["actorType"];
+    actorId?: string;
+    action: string;
+    targetType?: string;
+    targetId?: string;
+    metadata?: JsonRecord;
+    requestId?: string;
+  }): Promise<AuditLogRecord> {
+    const auditLog = await this.prisma.auditLog.create({
+      data: {
+        id: id("audit"),
+        projectId: input.projectId,
+        organizationId: input.organizationId,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        action: input.action,
+        targetType: input.targetType,
+        targetId: input.targetId,
+        metadata: jsonInput(input.metadata ?? {}),
+        requestId: input.requestId
+      }
+    });
+    return mapAuditLog(auditLog);
+  }
+
+  async listAuditLogs(input: {
+    projectId: string;
+    action?: string;
+    limit?: number;
+  }): Promise<AuditLogRecord[]> {
+    const auditLogs = await this.prisma.auditLog.findMany({
+      where: {
+        projectId: input.projectId,
+        ...(input.action ? { action: input.action } : {})
+      },
+      take: input.limit ?? 100,
+      orderBy: { createdAt: "desc" }
+    });
+    return auditLogs.map(mapAuditLog);
   }
 
   async createAsyncJob(input: {
@@ -779,6 +927,8 @@ type PrismaAiRun = Awaited<ReturnType<PrismaClient["aiRun"]["findFirst"]>>;
 type PrismaHandoffSession = Awaited<ReturnType<PrismaClient["handoffSession"]["findFirst"]>>;
 type PrismaIntegrationConfig = Awaited<ReturnType<PrismaClient["integrationConfig"]["findFirst"]>>;
 type PrismaWebhookEvent = Awaited<ReturnType<PrismaClient["webhookEvent"]["findFirst"]>>;
+type PrismaApiKey = Awaited<ReturnType<PrismaClient["apiKey"]["findFirst"]>>;
+type PrismaAuditLog = Awaited<ReturnType<PrismaClient["auditLog"]["findFirst"]>>;
 type PrismaAsyncJob = Awaited<ReturnType<PrismaClient["asyncJob"]["findFirst"]>>;
 
 function mapProject(project: NonNullable<PrismaProject>): ProjectRecord {
@@ -951,6 +1101,36 @@ function mapWebhookEvent(event: NonNullable<PrismaWebhookEvent>): WebhookEventRe
     error: event.error ?? undefined,
     createdAt: event.createdAt.toISOString(),
     processedAt: iso(event.processedAt)
+  };
+}
+
+function mapApiKey(apiKey: NonNullable<PrismaApiKey>): ApiKeyRecord {
+  return {
+    id: apiKey.id,
+    projectId: apiKey.projectId ?? undefined,
+    organizationId: apiKey.organizationId ?? undefined,
+    name: apiKey.name,
+    keyHash: apiKey.keyHash,
+    scopes: stringArray(apiKey.scopes),
+    lastUsedAt: iso(apiKey.lastUsedAt),
+    createdAt: apiKey.createdAt.toISOString(),
+    revokedAt: iso(apiKey.revokedAt)
+  };
+}
+
+function mapAuditLog(auditLog: NonNullable<PrismaAuditLog>): AuditLogRecord {
+  return {
+    id: auditLog.id,
+    projectId: auditLog.projectId ?? undefined,
+    organizationId: auditLog.organizationId ?? undefined,
+    actorType: auditLog.actorType as AuditLogRecord["actorType"],
+    actorId: auditLog.actorId ?? undefined,
+    action: auditLog.action,
+    targetType: auditLog.targetType ?? undefined,
+    targetId: auditLog.targetId ?? undefined,
+    metadata: jsonRecord(auditLog.metadata),
+    requestId: auditLog.requestId ?? undefined,
+    createdAt: auditLog.createdAt.toISOString()
   };
 }
 

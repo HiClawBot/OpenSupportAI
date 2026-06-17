@@ -33,6 +33,15 @@ export const createProjectBodySchema = z.object({
   default_locale: z.string().min(2).max(16).default("zh-CN")
 });
 
+export const listApiKeysQuerySchema = z.object({
+  include_revoked: z.coerce.boolean().default(false)
+});
+
+export const createApiKeyBodySchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  scopes: z.array(z.string().trim().min(1).max(80)).min(1).max(20).default(["admin:project"])
+});
+
 export const createKnowledgeDocumentBodySchema = z.object({
   title: z.string().min(1).max(200),
   source_type: z.enum(["markdown", "text", "url", "pdf"]).default("markdown"),
@@ -60,6 +69,21 @@ export const createAsyncJobBodySchema = z.object({
   payload: metadataSchema.optional(),
   run_at: z.string().datetime().optional(),
   max_attempts: z.number().int().min(1).max(10).default(3)
+});
+
+export const listWebhookEventsQuerySchema = z.object({
+  provider: z.string().trim().min(1).max(80).optional(),
+  status: z.enum(["received", "processed", "failed", "ignored"]).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50)
+});
+
+export const retryWebhookEventBodySchema = z.object({
+  run_at: z.string().datetime().optional()
+});
+
+export const listAuditLogsQuerySchema = z.object({
+  action: z.string().trim().min(1).max(120).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(100)
 });
 
 export const upsertLlmProviderBodySchema = z.object({

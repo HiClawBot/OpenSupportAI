@@ -4,6 +4,13 @@ import { forbidden, unauthorized } from "./errors";
 import { hashSecret } from "./crypto";
 import type { ProjectRecord, SupportRepository } from "./repositories/types";
 
+export type AdminIdentity = {
+  actorType: "root_admin" | "api_key";
+  actorId?: string;
+  project?: ProjectRecord;
+  scopes: string[];
+};
+
 export async function authenticateClient(
   request: FastifyRequest,
   repository: SupportRepository,
@@ -35,21 +42,38 @@ export async function authenticateAdmin(
   repository: SupportRepository,
   config: ApiConfig
 ): Promise<ProjectRecord | undefined> {
+  return (await authenticateAdminIdentity(request, repository, config)).project;
+}
+
+export async function authenticateAdminIdentity(
+  request: FastifyRequest,
+  repository: SupportRepository,
+  config: ApiConfig
+): Promise<AdminIdentity> {
   const token = bearerToken(request);
   if (!token) {
     throw unauthorized("Missing admin bearer token");
   }
 
   if (token === config.adminToken) {
-    return undefined;
+    return {
+      actorType: "root_admin",
+      scopes: ["admin:*"]
+    };
   }
 
-  const project = await repository.findProjectByAdminKeyHash(hashSecret(token));
-  if (!project) {
+  const lookup = await repository.findAdminApiKeyByHash(hashSecret(token));
+  if (!lookup?.project) {
     throw unauthorized("Invalid admin bearer token");
   }
 
-  return project;
+  await repository.touchApiKeyLastUsed(lookup.apiKey.id);
+  return {
+    actorType: "api_key",
+    actorId: lookup.apiKey.id,
+    project: lookup.project,
+    scopes: lookup.apiKey.scopes
+  };
 }
 
 function bearerToken(request: FastifyRequest): string | undefined {

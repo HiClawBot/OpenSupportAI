@@ -149,6 +149,37 @@ export type WebhookEventRecord = {
   processedAt?: string;
 };
 
+export type ApiKeyRecord = {
+  id: string;
+  projectId?: string;
+  organizationId?: string;
+  name: string;
+  keyHash: string;
+  scopes: string[];
+  lastUsedAt?: string;
+  createdAt: string;
+  revokedAt?: string;
+};
+
+export type AdminApiKeyLookup = {
+  apiKey: ApiKeyRecord;
+  project?: ProjectRecord;
+};
+
+export type AuditLogRecord = {
+  id: string;
+  projectId?: string;
+  organizationId?: string;
+  actorType: "root_admin" | "api_key" | "system";
+  actorId?: string;
+  action: string;
+  targetType?: string;
+  targetId?: string;
+  metadata: JsonRecord;
+  requestId?: string;
+  createdAt: string;
+};
+
 export type AsyncJobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 export type AsyncJobRecord = {
@@ -196,6 +227,17 @@ export type SupportRepository = {
   findProjectByPublicKey(publicKey: string): Promise<ProjectRecord | undefined>;
   findProjectById(projectId: string): Promise<ProjectRecord | undefined>;
   findProjectByAdminKeyHash(keyHash: string): Promise<ProjectRecord | undefined>;
+  findAdminApiKeyByHash(keyHash: string): Promise<AdminApiKeyLookup | undefined>;
+  touchApiKeyLastUsed(id: string, timestamp?: string): Promise<void>;
+  createApiKey(input: {
+    projectId: string;
+    organizationId?: string;
+    name: string;
+    keyHash: string;
+    scopes: string[];
+  }): Promise<ApiKeyRecord>;
+  listApiKeys(input: { projectId: string; includeRevoked?: boolean }): Promise<ApiKeyRecord[]>;
+  revokeApiKey(input: { projectId: string; id: string }): Promise<ApiKeyRecord>;
   listProjects(): Promise<ProjectRecord[]>;
   createProject(input: CreateProjectInput): Promise<ProjectRecord>;
   findInbox(projectId: string, inboxId?: string): Promise<InboxRecord | undefined>;
@@ -284,11 +326,37 @@ export type SupportRepository = {
     status: WebhookEventRecord["status"];
     error?: string;
   }): Promise<WebhookEventRecord>;
+  findWebhookEvent(input: {
+    projectId: string;
+    id: string;
+  }): Promise<WebhookEventRecord | undefined>;
+  listWebhookEvents(input: {
+    projectId: string;
+    provider?: string;
+    status?: WebhookEventRecord["status"];
+    limit?: number;
+  }): Promise<WebhookEventRecord[]>;
   findHandoffByExternalConversation(input: {
     projectId: string;
     provider: string;
     externalConversationId: string;
   }): Promise<HandoffSessionRecord | undefined>;
+  createAuditLog(input: {
+    projectId?: string;
+    organizationId?: string;
+    actorType: AuditLogRecord["actorType"];
+    actorId?: string;
+    action: string;
+    targetType?: string;
+    targetId?: string;
+    metadata?: JsonRecord;
+    requestId?: string;
+  }): Promise<AuditLogRecord>;
+  listAuditLogs(input: {
+    projectId: string;
+    action?: string;
+    limit?: number;
+  }): Promise<AuditLogRecord[]>;
   createAsyncJob(input: {
     projectId: string;
     type: string;
