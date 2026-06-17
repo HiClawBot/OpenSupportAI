@@ -41,6 +41,7 @@ model Project {
   integrationConfigs IntegrationConfig[]
   webhookEvents      WebhookEvent[]
   apiKeys            ApiKey[]
+  asyncJobs          AsyncJob[]
 
   @@index([organizationId])
   @@map("projects")
@@ -312,4 +313,28 @@ model ApiKey {
   @@index([projectId])
   @@index([organizationId])
   @@map("api_keys")
+}
+
+model AsyncJob {
+  id          String    @id @default(cuid())
+  projectId   String    @map("project_id")
+  type        String
+  status      String    @default("queued")
+  payload     Json      @default("{}")
+  result      Json?
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(3) @map("max_attempts")
+  runAt       DateTime  @default(now()) @map("run_at")
+  lockedBy    String?   @map("locked_by")
+  lockedAt    DateTime? @map("locked_at")
+  error       String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, status])
+  @@index([status, runAt])
+  @@index([type, status])
+  @@map("async_jobs")
 }

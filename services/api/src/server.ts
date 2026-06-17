@@ -29,9 +29,11 @@ import type {
 } from "./repositories/types";
 import {
   chatwootWebhookBodySchema,
+  createAsyncJobBodySchema,
   createConversationBodySchema,
   createKnowledgeDocumentBodySchema,
   createProjectBodySchema,
+  listAsyncJobsQuerySchema,
   listConversationsQuerySchema,
   requestHandoffBodySchema,
   sendMessageBodySchema,
@@ -276,6 +278,32 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         conversationId: conversation.id
       })
     };
+  });
+
+  app.get("/v1/admin/projects/:projectId/jobs", async (request) => {
+    const projectId = await authenticateAdminProject(request, repository, config);
+    const query = listAsyncJobsQuerySchema.parse(request.query);
+    return {
+      jobs: await repository.listAsyncJobs({
+        projectId,
+        status: query.status,
+        type: query.type,
+        limit: query.limit
+      })
+    };
+  });
+
+  app.post("/v1/admin/projects/:projectId/jobs", async (request) => {
+    const projectId = await authenticateAdminProject(request, repository, config);
+    const body = createAsyncJobBodySchema.parse(request.body);
+    const job = await repository.createAsyncJob({
+      projectId,
+      type: body.type,
+      payload: body.payload,
+      runAt: body.run_at,
+      maxAttempts: body.max_attempts
+    });
+    return { job };
   });
 
   app.get("/v1/admin/projects/:projectId/knowledge/documents", async (request) => {

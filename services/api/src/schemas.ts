@@ -49,6 +49,19 @@ export const listConversationsQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0)
 });
 
+export const listAsyncJobsQuerySchema = z.object({
+  status: z.enum(["queued", "running", "completed", "failed", "cancelled"]).optional(),
+  type: z.string().trim().min(1).max(120).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50)
+});
+
+export const createAsyncJobBodySchema = z.object({
+  type: z.string().trim().min(1).max(120),
+  payload: metadataSchema.optional(),
+  run_at: z.string().datetime().optional(),
+  max_attempts: z.number().int().min(1).max(10).default(3)
+});
+
 export const upsertLlmProviderBodySchema = z.object({
   provider: z.literal("openai_compatible").default("openai_compatible"),
   base_url: z.string().min(1),

@@ -149,6 +149,25 @@ export type WebhookEventRecord = {
   processedAt?: string;
 };
 
+export type AsyncJobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export type AsyncJobRecord = {
+  id: string;
+  projectId: string;
+  type: string;
+  status: AsyncJobStatus;
+  payload: JsonRecord;
+  result?: JsonRecord;
+  attempts: number;
+  maxAttempts: number;
+  runAt: string;
+  lockedBy?: string;
+  lockedAt?: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type CreateMessageInput = {
   role: MessageRole;
   text: string;
@@ -270,4 +289,24 @@ export type SupportRepository = {
     provider: string;
     externalConversationId: string;
   }): Promise<HandoffSessionRecord | undefined>;
+  createAsyncJob(input: {
+    projectId: string;
+    type: string;
+    payload?: JsonRecord;
+    runAt?: string;
+    maxAttempts?: number;
+  }): Promise<AsyncJobRecord>;
+  listAsyncJobs(input: {
+    projectId: string;
+    status?: AsyncJobStatus;
+    type?: string;
+    limit?: number;
+  }): Promise<AsyncJobRecord[]>;
+  claimNextAsyncJob(input: {
+    workerId: string;
+    types?: string[];
+    now?: string;
+  }): Promise<AsyncJobRecord | undefined>;
+  completeAsyncJob(input: { id: string; result?: JsonRecord }): Promise<AsyncJobRecord>;
+  failAsyncJob(input: { id: string; error: string; retryAt?: string }): Promise<AsyncJobRecord>;
 };

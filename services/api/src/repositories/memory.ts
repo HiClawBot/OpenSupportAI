@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
   AiRunRecord,
+  AsyncJobRecord,
+  AsyncJobStatus,
   ContactInput,
   ContactRecord,
   ConversationRecord,
@@ -47,6 +49,7 @@ export class MemorySupportRepository implements SupportRepository {
   private readonly handoffSessions = new Map<string, HandoffSessionRecord>();
   private readonly integrationConfigs = new Map<string, IntegrationConfigRecord>();
   private readonly webhookEvents = new Map<string, WebhookEventRecord>();
+  private readonly asyncJobs = new Map<string, AsyncJobRecord>();
   private readonly adminKeyToProject = new Map<string, string>();
 
   async seedDemo(): Promise<void> {
@@ -571,6 +574,109 @@ export class MemorySupportRepository implements SupportRepository {
     );
   }
 
+  async createAsyncJob(input: {
+    projectId: string;
+    type: string;
+    payload?: JsonRecord;
+    runAt?: string;
+    maxAttempts?: number;
+  }): Promise<AsyncJobRecord> {
+    await this.requireProject(input.projectId);
+    const timestamp = now();
+    const job: AsyncJobRecord = {
+      id: id("job"),
+      projectId: input.projectId,
+      type: input.type,
+      status: "queued",
+      payload: input.payload ?? {},
+      attempts: 0,
+      maxAttempts: input.maxAttempts ?? 3,
+      runAt: input.runAt ?? timestamp,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    this.asyncJobs.set(job.id, job);
+    return job;
+  }
+
+  async listAsyncJobs(input: {
+    projectId: string;
+    status?: AsyncJobStatus;
+    type?: string;
+    limit?: number;
+  }): Promise<AsyncJobRecord[]> {
+    return [...this.asyncJobs.values()]
+      .filter((job) => job.projectId === input.projectId)
+      .filter((job) => (input.status ? job.status === input.status : true))
+      .filter((job) => (input.type ? job.type === input.type : true))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, input.limit ?? 50);
+  }
+
+  async claimNextAsyncJob(input: {
+    workerId: string;
+    types?: string[];
+    now?: string;
+  }): Promise<AsyncJobRecord | undefined> {
+    const timestamp = input.now ?? now();
+    const job = [...this.asyncJobs.values()]
+      .filter((candidate) => candidate.status === "queued")
+      .filter((candidate) => candidate.runAt <= timestamp)
+      .filter((candidate) => (input.types?.length ? input.types.includes(candidate.type) : true))
+      .sort((a, b) => a.runAt.localeCompare(b.runAt) || a.createdAt.localeCompare(b.createdAt))[0];
+    if (!job) {
+      return undefined;
+    }
+
+    const updated: AsyncJobRecord = {
+      ...job,
+      status: "running",
+      attempts: job.attempts + 1,
+      lockedBy: input.workerId,
+      lockedAt: timestamp,
+      updatedAt: timestamp
+    };
+    this.asyncJobs.set(updated.id, updated);
+    return updated;
+  }
+
+  async completeAsyncJob(input: { id: string; result?: JsonRecord }): Promise<AsyncJobRecord> {
+    const job = this.requireAsyncJob(input.id);
+    const timestamp = now();
+    const updated: AsyncJobRecord = {
+      ...job,
+      status: "completed",
+      result: input.result ?? {},
+      lockedBy: undefined,
+      lockedAt: undefined,
+      error: undefined,
+      updatedAt: timestamp
+    };
+    this.asyncJobs.set(updated.id, updated);
+    return updated;
+  }
+
+  async failAsyncJob(input: {
+    id: string;
+    error: string;
+    retryAt?: string;
+  }): Promise<AsyncJobRecord> {
+    const job = this.requireAsyncJob(input.id);
+    const timestamp = now();
+    const shouldRetry = Boolean(input.retryAt) && job.attempts < job.maxAttempts;
+    const updated: AsyncJobRecord = {
+      ...job,
+      status: shouldRetry ? "queued" : "failed",
+      runAt: shouldRetry ? (input.retryAt ?? job.runAt) : job.runAt,
+      lockedBy: undefined,
+      lockedAt: undefined,
+      error: input.error,
+      updatedAt: timestamp
+    };
+    this.asyncJobs.set(updated.id, updated);
+    return updated;
+  }
+
   private async requireConversation(
     projectId: string,
     conversationId: string
@@ -580,5 +686,21 @@ export class MemorySupportRepository implements SupportRepository {
       throw new Error(`Conversation not found: ${conversationId}`);
     }
     return conversation;
+  }
+
+  private async requireProject(projectId: string): Promise<ProjectRecord> {
+    const project = await this.findProjectById(projectId);
+    if (!project) {
+      throw new Error(`Project not found: ${projectId}`);
+    }
+    return project;
+  }
+
+  private requireAsyncJob(jobId: string): AsyncJobRecord {
+    const job = this.asyncJobs.get(jobId);
+    if (!job) {
+      throw new Error(`Async job not found: ${jobId}`);
+    }
+    return job;
   }
 }

@@ -364,6 +364,54 @@ describe("OpenSupportAI API", () => {
     expect(handoffList.summary.handoffStatus.requested).toBeGreaterThanOrEqual(1);
   });
 
+  it("creates and lists async jobs for admin operations", async () => {
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/v1/admin/projects/proj_demo/jobs",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      },
+      payload: {
+        type: "knowledge.index",
+        payload: {
+          document_id: "doc_demo_billing"
+        },
+        max_attempts: 2
+      }
+    });
+
+    expect(createResponse.statusCode).toBe(200);
+    const created = createResponse.json<{
+      job: {
+        id: string;
+        type: string;
+        status: string;
+        attempts: number;
+        maxAttempts: number;
+      };
+    }>();
+    expect(created.job).toMatchObject({
+      type: "knowledge.index",
+      status: "queued",
+      attempts: 0,
+      maxAttempts: 2
+    });
+
+    const listResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/jobs?status=queued&type=knowledge.index",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+
+    expect(listResponse.statusCode).toBe(200);
+    const listed = listResponse.json<{
+      jobs: Array<{ id: string; type: string; status: string }>;
+    }>();
+    expect(listed.jobs.some((job) => job.id === created.job.id)).toBe(true);
+  });
+
   it("tests Chatwoot integration connectivity", async () => {
     const chatwootFetch: typeof fetch = async (input) => {
       if (String(input).endsWith("/inboxes")) {

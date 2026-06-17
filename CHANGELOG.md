@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.1.4 - 2026-06-18
+
+English:
+
+- Added `AsyncJob` storage to Prisma with migration support.
+- Added repository job APIs for create, list, claim, complete, and fail/retry flows.
+- Added admin jobs API for listing and creating project-scoped async jobs.
+- Replaced the worker placeholder with a tested worker runtime that claims jobs, dispatches handlers, completes successful jobs, and schedules retries on failures.
+- Added tests for admin job APIs and worker runtime behavior.
+
+中文：
+
+- Prisma 新增 `AsyncJob` 存储和 migration。
+- Repository 新增任务创建、列表、claim、完成、失败/重试 API。
+- 管理端新增项目级 async jobs 列表和创建 API。
+- Worker 从占位进程升级为可测试的运行时：claim job、分发 handler、完成成功任务、失败后安排 retry。
+- 新增管理端 jobs API 和 worker runtime 测试。
+
 ## v0.1.3 - 2026-06-18
 
 English:

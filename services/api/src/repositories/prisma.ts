@@ -3,6 +3,8 @@ import { Prisma, PrismaClient } from "@prisma/client";
 import { chunkText, scoreChunk, tokenize } from "../knowledge-text";
 import type {
   AiRunRecord,
+  AsyncJobRecord,
+  AsyncJobStatus,
   ContactInput,
   ContactRecord,
   ConversationRecord,
@@ -657,6 +659,112 @@ export class PrismaSupportRepository implements SupportRepository {
     });
     return session ? mapHandoffSession(session) : undefined;
   }
+
+  async createAsyncJob(input: {
+    projectId: string;
+    type: string;
+    payload?: JsonRecord;
+    runAt?: string;
+    maxAttempts?: number;
+  }): Promise<AsyncJobRecord> {
+    const job = await this.prisma.asyncJob.create({
+      data: {
+        id: id("job"),
+        projectId: input.projectId,
+        type: input.type,
+        payload: jsonInput(input.payload ?? {}),
+        runAt: input.runAt ? new Date(input.runAt) : undefined,
+        maxAttempts: input.maxAttempts ?? 3
+      }
+    });
+    return mapAsyncJob(job);
+  }
+
+  async listAsyncJobs(input: {
+    projectId: string;
+    status?: AsyncJobStatus;
+    type?: string;
+    limit?: number;
+  }): Promise<AsyncJobRecord[]> {
+    const jobs = await this.prisma.asyncJob.findMany({
+      where: {
+        projectId: input.projectId,
+        ...(input.status ? { status: input.status } : {}),
+        ...(input.type ? { type: input.type } : {})
+      },
+      take: input.limit ?? 50,
+      orderBy: { createdAt: "desc" }
+    });
+    return jobs.map(mapAsyncJob);
+  }
+
+  async claimNextAsyncJob(input: {
+    workerId: string;
+    types?: string[];
+    now?: string;
+  }): Promise<AsyncJobRecord | undefined> {
+    const nowValue = input.now ? new Date(input.now) : new Date();
+    const job = await this.prisma.asyncJob.findFirst({
+      where: {
+        status: "queued",
+        runAt: { lte: nowValue },
+        ...(input.types?.length ? { type: { in: input.types } } : {})
+      },
+      orderBy: [{ runAt: "asc" }, { createdAt: "asc" }]
+    });
+    if (!job) {
+      return undefined;
+    }
+
+    const updated = await this.prisma.asyncJob.update({
+      where: { id: job.id },
+      data: {
+        status: "running",
+        attempts: { increment: 1 },
+        lockedBy: input.workerId,
+        lockedAt: nowValue
+      }
+    });
+    return mapAsyncJob(updated);
+  }
+
+  async completeAsyncJob(input: { id: string; result?: JsonRecord }): Promise<AsyncJobRecord> {
+    const job = await this.prisma.asyncJob.update({
+      where: { id: input.id },
+      data: {
+        status: "completed",
+        result: jsonInput(input.result ?? {}),
+        lockedBy: null,
+        lockedAt: null,
+        error: null
+      }
+    });
+    return mapAsyncJob(job);
+  }
+
+  async failAsyncJob(input: {
+    id: string;
+    error: string;
+    retryAt?: string;
+  }): Promise<AsyncJobRecord> {
+    const existing = await this.prisma.asyncJob.findUnique({ where: { id: input.id } });
+    if (!existing) {
+      throw new Error(`Async job not found: ${input.id}`);
+    }
+
+    const shouldRetry = Boolean(input.retryAt) && existing.attempts < existing.maxAttempts;
+    const job = await this.prisma.asyncJob.update({
+      where: { id: input.id },
+      data: {
+        status: shouldRetry ? "queued" : "failed",
+        runAt: shouldRetry && input.retryAt ? new Date(input.retryAt) : existing.runAt,
+        lockedBy: null,
+        lockedAt: null,
+        error: input.error
+      }
+    });
+    return mapAsyncJob(job);
+  }
 }
 
 type PrismaProject = Awaited<ReturnType<PrismaClient["project"]["findFirst"]>>;
@@ -671,6 +779,7 @@ type PrismaAiRun = Awaited<ReturnType<PrismaClient["aiRun"]["findFirst"]>>;
 type PrismaHandoffSession = Awaited<ReturnType<PrismaClient["handoffSession"]["findFirst"]>>;
 type PrismaIntegrationConfig = Awaited<ReturnType<PrismaClient["integrationConfig"]["findFirst"]>>;
 type PrismaWebhookEvent = Awaited<ReturnType<PrismaClient["webhookEvent"]["findFirst"]>>;
+type PrismaAsyncJob = Awaited<ReturnType<PrismaClient["asyncJob"]["findFirst"]>>;
 
 function mapProject(project: NonNullable<PrismaProject>): ProjectRecord {
   return {
@@ -842,5 +951,24 @@ function mapWebhookEvent(event: NonNullable<PrismaWebhookEvent>): WebhookEventRe
     error: event.error ?? undefined,
     createdAt: event.createdAt.toISOString(),
     processedAt: iso(event.processedAt)
+  };
+}
+
+function mapAsyncJob(job: NonNullable<PrismaAsyncJob>): AsyncJobRecord {
+  return {
+    id: job.id,
+    projectId: job.projectId,
+    type: job.type,
+    status: job.status as AsyncJobStatus,
+    payload: jsonRecord(job.payload),
+    result: job.result ? jsonRecord(job.result) : undefined,
+    attempts: job.attempts,
+    maxAttempts: job.maxAttempts,
+    runAt: job.runAt.toISOString(),
+    lockedBy: job.lockedBy ?? undefined,
+    lockedAt: iso(job.lockedAt),
+    error: job.error ?? undefined,
+    createdAt: job.createdAt.toISOString(),
+    updatedAt: job.updatedAt.toISOString()
   };
 }

@@ -585,6 +585,81 @@ GET /v1/admin/projects/{project_id}/conversations/{conversation_id}
 
 ---
 
+### 创建异步任务
+
+```http
+POST /v1/admin/projects/{project_id}/jobs
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "type": "knowledge.index",
+  "payload": {
+    "document_id": "doc_123"
+  },
+  "run_at": "2026-06-18T00:00:00.000Z",
+  "max_attempts": 3
+}
+```
+
+响应：
+
+```json
+{
+  "job": {
+    "id": "job_123",
+    "projectId": "proj_123",
+    "type": "knowledge.index",
+    "status": "queued",
+    "payload": {
+      "document_id": "doc_123"
+    },
+    "attempts": 0,
+    "maxAttempts": 3,
+    "runAt": "2026-06-18T00:00:00.000Z",
+    "createdAt": "2026-06-18T00:00:00.000Z",
+    "updatedAt": "2026-06-18T00:00:00.000Z"
+  }
+}
+```
+
+---
+
+### 获取异步任务列表
+
+```http
+GET /v1/admin/projects/{project_id}/jobs?status=queued&type=knowledge.index&limit=50
+```
+
+查询参数：
+
+| 参数     | 说明                                                            |
+| -------- | --------------------------------------------------------------- |
+| `status` | 可选。`queued`、`running`、`completed`、`failed`、`cancelled`。 |
+| `type`   | 可选。任务类型，例如 `knowledge.index`、`webhook.retry`。       |
+| `limit`  | 可选。默认 `50`，最大 `100`。                                   |
+
+响应：
+
+```json
+{
+  "jobs": [
+    {
+      "id": "job_123",
+      "type": "knowledge.index",
+      "status": "queued",
+      "attempts": 0,
+      "maxAttempts": 3
+    }
+  ]
+}
+```
+
+---
+
 ## Webhook API
 
 ### Chatwoot Webhook
