@@ -79,7 +79,8 @@ docs/
 The public website is a static React/Vite app in `apps/site`, designed for GitHub Pages:
 
 ```text
-Website: https://hiclawbot.github.io/OpenSupportAI/
+English: https://hiclawbot.github.io/OpenSupportAI/?lang=en
+Chinese: https://hiclawbot.github.io/OpenSupportAI/?lang=zh
 Source:  apps/site
 Deploy:  .github/workflows/pages.yml
 ```
@@ -475,9 +476,10 @@ docs/
 公开官网是位于 `apps/site` 的静态 React/Vite 应用，面向 GitHub Pages 发布：
 
 ```text
-Website: https://hiclawbot.github.io/OpenSupportAI/
-Source:  apps/site
-Deploy:  .github/workflows/pages.yml
+英文版: https://hiclawbot.github.io/OpenSupportAI/?lang=en
+中文版: https://hiclawbot.github.io/OpenSupportAI/?lang=zh
+源码:   apps/site
+部署:   .github/workflows/pages.yml
 ```
 
 站点内置可交互的 Scenario Lab，用于展示 OpenSupportAI 如何建模客服脚本、模拟知识库检索/工具调用/人工转接路径、评分薄弱点，并生成下一轮知识库或工具配置补丁。默认模式完全在浏览器本地运行，不依赖后端。页面也支持可选的 OpenAI-compatible LLM 模式；Provider 设置只保存在当前浏览器中。如果涉及 CORS、审计或密钥管理，建议接入你自己的代理 endpoint，而不是把密钥硬编码到仓库或前端代码里。

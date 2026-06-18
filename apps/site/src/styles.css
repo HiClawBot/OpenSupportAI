@@ -93,7 +93,8 @@ a {
   font-size: 14px;
 }
 
-.topbar nav a {
+.topbar nav a,
+.topbar nav button {
   min-height: 36px;
   display: inline-flex;
   align-items: center;
@@ -101,15 +102,22 @@ a {
   border: 1px solid transparent;
   border-radius: 8px;
   padding: 0 10px;
+  background: transparent;
+  color: inherit;
   transition:
     border-color 180ms ease,
     background 180ms ease,
     transform 180ms ease;
 }
 
-.topbar nav a:hover {
+.topbar nav a:hover,
+.topbar nav button:hover {
   border-color: #d8ddd6;
   background: rgba(255, 255, 255, 0.68);
+}
+
+.language-action {
+  font-weight: 700;
 }
 
 .topbar nav a:active,
