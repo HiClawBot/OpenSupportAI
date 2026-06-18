@@ -5,6 +5,8 @@
 ## 主要文件
 
 - README.md：GitHub 首页 README
+- apps/site：GitHub Pages 官网与 Scenario Lab
+- .github/workflows/pages.yml：GitHub Pages 自动部署工作流
 - docs/WHITEPAPER.zh-CN.md：白皮书
 - docs/CONSTRUCTION.zh-CN.md：施工文档
 - docs/CODEX_TASKS.zh-CN.md：Codex 开发任务清单
