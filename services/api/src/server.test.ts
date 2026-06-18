@@ -1854,4 +1854,51 @@ describe("OpenSupportAI API", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json<{ document: { status: string } }>().document.status).toBe("indexed");
   });
+
+  it("schedules knowledge document reindex jobs", async () => {
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/v1/admin/projects/proj_demo/knowledge/documents",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      },
+      payload: {
+        title: "重建索引测试",
+        source_type: "markdown",
+        content: "用户可以在安全设置中修改登录邮箱。",
+        metadata: {
+          locale: "zh-CN"
+        }
+      }
+    });
+    const created = createResponse.json<{ document: { id: string } }>();
+
+    const reindexResponse = await app.inject({
+      method: "POST",
+      url: `/v1/admin/projects/proj_demo/knowledge/documents/${created.document.id}/reindex`,
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      },
+      payload: {}
+    });
+
+    expect(reindexResponse.statusCode).toBe(200);
+    const reindex = reindexResponse.json<{
+      document: { id: string; status: string; metadata: Record<string, unknown> };
+      job: { type: string; status: string; payload: Record<string, unknown> };
+    }>();
+    expect(reindex.document).toMatchObject({
+      id: created.document.id,
+      status: "pending"
+    });
+    expect(reindex.document.metadata.last_index_job_id).toBeTruthy();
+    expect(reindex.job).toMatchObject({
+      type: "knowledge.index",
+      status: "queued",
+      payload: {
+        project_id: "proj_demo",
+        document_id: created.document.id
+      }
+    });
+  });
 });

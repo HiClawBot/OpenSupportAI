@@ -463,6 +463,7 @@ export class PrismaSupportRepository implements SupportRepository {
     input: CreateKnowledgeDocumentInput
   ): Promise<KnowledgeDocumentRecord> {
     const chunks = chunkText(input.content);
+    const timestamp = new Date().toISOString();
     const document = await this.prisma.knowledgeDocument.create({
       data: {
         id: id("doc"),
@@ -470,8 +471,14 @@ export class PrismaSupportRepository implements SupportRepository {
         title: input.title,
         sourceType: input.sourceType,
         sourceUri: input.sourceUri,
+        content: input.content,
         status: "indexed",
-        metadata: jsonInput(input.metadata ?? {}),
+        contentHash: hash(input.content),
+        metadata: jsonInput({
+          ...(input.metadata ?? {}),
+          chunk_count: chunks.length,
+          indexed_at: timestamp
+        }),
         chunks: {
           create: chunks.map((content, index) => ({
             id: id("chunk"),
@@ -496,6 +503,40 @@ export class PrismaSupportRepository implements SupportRepository {
       orderBy: { createdAt: "desc" }
     });
     return documents.map(mapKnowledgeDocument);
+  }
+
+  async findKnowledgeDocument(
+    projectId: string,
+    documentId: string
+  ): Promise<KnowledgeDocumentRecord | undefined> {
+    const document = await this.prisma.knowledgeDocument.findFirst({
+      where: { id: documentId, projectId }
+    });
+    return document ? mapKnowledgeDocument(document) : undefined;
+  }
+
+  async updateKnowledgeDocumentIndexState(input: {
+    projectId: string;
+    documentId: string;
+    status: KnowledgeDocumentRecord["status"];
+    metadata?: JsonRecord;
+    error?: string;
+  }): Promise<KnowledgeDocumentRecord> {
+    const existing = await this.prisma.knowledgeDocument.findFirst({
+      where: { id: input.documentId, projectId: input.projectId }
+    });
+    if (!existing) {
+      throw new Error(`Knowledge document not found: ${input.documentId}`);
+    }
+    const document = await this.prisma.knowledgeDocument.update({
+      where: { id: existing.id },
+      data: {
+        status: input.status,
+        metadata: input.metadata === undefined ? undefined : jsonInput(input.metadata),
+        error: input.error ?? null
+      }
+    });
+    return mapKnowledgeDocument(document);
   }
 
   async retrieveKnowledge(
@@ -1245,7 +1286,9 @@ function mapKnowledgeDocument(
     sourceType: document.sourceType as KnowledgeDocumentRecord["sourceType"],
     sourceUri: document.sourceUri ?? undefined,
     status: document.status as KnowledgeDocumentRecord["status"],
+    contentHash: document.contentHash ?? undefined,
     metadata: jsonRecord(document.metadata),
+    error: document.error ?? undefined,
     createdAt: document.createdAt.toISOString(),
     updatedAt: document.updatedAt.toISOString()
   };

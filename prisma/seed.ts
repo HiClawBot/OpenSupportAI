@@ -104,11 +104,18 @@ async function main(): Promise<void> {
     }
   });
 
+  const demoKnowledgeContent = [
+    "用户可以在账单设置页面取消订阅。取消订阅后，当前计费周期仍然可以继续使用；周期结束后不会再次扣费。",
+    "退款问题需要人工审核。用户可以提供订单号和付款邮箱，客服会根据当前政策确认是否符合退款条件。"
+  ].join("\n\n");
   const document = await prisma.knowledgeDocument.upsert({
     where: { id: "doc_demo_billing" },
     update: {
       title: "账单和订阅 FAQ",
-      status: "indexed"
+      status: "indexed",
+      content: demoKnowledgeContent,
+      contentHash: hashSecret(demoKnowledgeContent),
+      error: null
     },
     create: {
       id: "doc_demo_billing",
@@ -116,10 +123,13 @@ async function main(): Promise<void> {
       sourceId: source.id,
       title: "账单和订阅 FAQ",
       sourceType: "markdown",
+      content: demoKnowledgeContent,
       status: "indexed",
+      contentHash: hashSecret(demoKnowledgeContent),
       metadata: {
         locale: "zh-CN",
-        tags: ["billing", "subscription"]
+        tags: ["billing", "subscription"],
+        chunk_count: 2
       }
     }
   });

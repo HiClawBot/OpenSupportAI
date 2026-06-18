@@ -218,6 +218,7 @@ source_id         string nullable references knowledge_sources(id)
 title             string
 source_type       string      -- markdown / text / url / pdf
 source_uri        string nullable
+content           text        -- v0.7 起保存原文，用于 worker reindex
 status            string      -- pending / indexing / indexed / failed
 content_hash      string nullable
 metadata          jsonb

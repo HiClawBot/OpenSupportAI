@@ -1,6 +1,6 @@
 {
   "name": "@opensupportai/worker",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,6 +11,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@opensupportai/protocol": "workspace:*"
+    "@opensupportai/protocol": "workspace:*",
+    "@opensupportai/rag": "workspace:*",
+    "@prisma/client": "^7.8.0"
   }
 }

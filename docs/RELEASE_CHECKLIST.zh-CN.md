@@ -1,4 +1,4 @@
-# OpenSupportAI v0.6.x 发布清单
+# OpenSupportAI v0.7.x 发布清单
 
 这份清单用于公开发布到 GitHub 前的最后检查。
 
@@ -47,6 +47,9 @@ VITE_API_URL=http://localhost:4000 pnpm --filter @opensupportai/demo-app dev
 - 无知识命中时 API 仍拒绝编造答案，并建议转人工。
 - 输入 `我要转人工` 后会话状态进入 `handoff_requested`。
 - 管理台能看到对应 conversation、message 和 knowledge document。
+- 管理台 knowledge document 列表能看到 status、chunk count、error/source 摘要，并可触发 reindex。
+- 管理端 `POST /v1/admin/projects/{project_id}/knowledge/documents/{document_id}/reindex` 会创建 `knowledge.index` async job，并将文档状态标记为 `pending`。
+- Worker 的 `knowledge.index` handler 会把文档标记为 `indexing`、重建 chunks，并最终标记为 `indexed` 或 `failed`。
 - 管理台会话列表的状态筛选、搜索、刷新、队列指标、最近消息预览和失败 handoff 计数可正常显示。
 - `pnpm smoke:memory` 在内存模式 API 启动后可跑通。
 - 若启用 `RATE_LIMIT_ENABLED=true`，超过阈值时 API 返回 `429/rate_limited`。
@@ -168,6 +171,14 @@ git push origin v0.6.0
 gh release create v0.6.0 --title "OpenSupportAI v0.6.0" --notes-file docs/releases/v0.6.0.md
 ```
 
+v0.7.0：
+
+```bash
+git tag v0.7.0
+git push origin v0.7.0
+gh release create v0.7.0 --title "OpenSupportAI v0.7.0" --notes-file docs/releases/v0.7.0.md
+```
+
 发布说明建议包含：
 
 - v0.1 是可本地运行的 MVP，不是生产级 SaaS。
@@ -186,17 +197,18 @@ gh release create v0.6.0 --title "OpenSupportAI v0.6.0" --notes-file docs/releas
 - v0.5.1 增加 generic webhook secret 配置、项目级 event 幂等、channel metadata 管理端可见性和负向 smoke 覆盖。
 - v0.5.2 增加 Admin Console Operations 区域，覆盖 ops health、channel diagnostics、generic webhook 配置、API keys、audit logs、jobs、webhook events 和 tool-call logs，并升级 GitHub Actions action 版本线。
 - v0.6.0 将 OpenAI-compatible LLM client 接入 orchestrator 的 grounded answer path：知识命中时可调用真实 provider 生成回答，并保留 demo/no-provider/error 的确定性回退和 no-hit refusal。
+- v0.7.0 增加 knowledge document 原文存储、content hash、reindex API/Admin UI，以及真实 `knowledge.index` worker handler，可重建知识块并记录 indexed/failed 状态。
 
 ## 当前已知限制
 
 - Widget 当前产物是 ESM-first，不是 legacy UMD 全局脚本。
 - PDF/URL 知识源在文档中作为方向保留，v0.1 API 主要支持直接提交 markdown/text 内容。
-- Worker runtime 已有基础 claim/handler/retry 语义，后续仍需接入真实知识库 indexing 和 webhook retry 处理器。
+- Worker runtime 已有基础 claim/handler/retry 语义，v0.7.0 已接入真实知识库 indexing handler；`webhook.retry` 实际重放处理器仍需后续实现。
 - v0.2.0 的 webhook retry 已完成管理端调度，实际重放处理器会在后续 worker 迭代中实现。
 - v0.3.0 的 `openapi` tool definition 已具备模型和管理 API，真实外部 HTTP 执行器仍需后续接入；当前自动执行仅限内置只读 demo tools。
 - v0.4.0 的 agent assist 是确定性启发式生成，不调用外部 LLM；后续可替换为可配置的模型生成与评测流程。
 - v0.5.0 的 Slack/email/Telegram 是 adapter 契约 stub；当前可真实本地验证的是 generic webhook adapter。
 - v0.5.1 只强化 generic webhook 安全和可观测性；还没有接入真实 Slack/Email/Telegram provider API。
-- v0.6.0 已新增 LLM-backed grounded answer path，但 retrieval 仍以 keyword scoring 为主，embedding/vector retrieval 仍待 v0.7 生产知识库管线实现。
-- v0.6.0 尚未新增真实 worker handler、真实 Slack/Email/Telegram provider API 或 OpenAPI tool executor。
+- v0.7.0 已新增知识库重建索引 worker handler，但 retrieval 仍以 keyword scoring 为主；embedding/vector retrieval 仍需后续实现。
+- v0.7.0 尚未新增真实 Slack/Email/Telegram provider API 或 OpenAPI tool executor。
 - Docker Compose 启动需要在安装 Docker 的机器上单独验证。

@@ -50,6 +50,10 @@ export const createKnowledgeDocumentBodySchema = z.object({
   metadata: metadataSchema.optional()
 });
 
+export const reindexKnowledgeDocumentBodySchema = z.object({
+  run_at: z.string().datetime().optional()
+});
+
 export const listConversationsQuerySchema = z.object({
   status: z.enum(["open", "pending_ai", "handoff_requested", "handed_off", "closed"]).optional(),
   assignee_type: z.enum(["ai", "human", "none"]).optional(),

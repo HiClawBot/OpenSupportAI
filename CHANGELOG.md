@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.7.0 - 2026-06-18
+
+English:
+
+- Added stored knowledge document content and content hashes so indexing can be repeated from persisted data.
+- Added a knowledge document reindex API that queues `knowledge.index` async jobs and moves documents back to `pending`.
+- Added a real `knowledge.index` worker handler that marks documents `indexing`, rebuilds chunks, and records `indexed` or `failed` status.
+- Added admin console reindex actions plus knowledge document source, chunk-count, and error visibility.
+- Updated protocol, data model docs, API docs, release checklist, and package versions for `0.7.0`.
+
+中文：
+
+- Knowledge document 新增原文内容和 content hash 持久化，支持从已保存数据重复索引。
+- 新增 knowledge document reindex API，可创建 `knowledge.index` async job，并将文档状态切回 `pending`。
+- 新增真实 `knowledge.index` worker handler：标记 `indexing`、重建 chunks，并记录 `indexed` 或 `failed` 状态。
+- Admin Console 新增 reindex 操作，并展示 knowledge document source、chunk count 和 error。
+- 更新 protocol、数据模型文档、API 文档、发布清单和 package versions 到 `0.7.0`。
+
 ## v0.6.0 - 2026-06-18
 
 English:

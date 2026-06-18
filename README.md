@@ -19,24 +19,24 @@
 
 OpenSupportAI gives SaaS products, internal tools, apps, and websites a project-scoped AI support layer with a chat widget, headless SDK, conversation API, knowledge-grounded answers, human handoff, and admin workflows.
 
-The v0.6 release line is still intentionally focused: it is not a full CRM or ticketing suite, and it does not copy Chatwoot, Tiledesk, or Zammad. Instead, OpenSupportAI provides the AI support runtime that can receive messages from channels, generate knowledge-grounded answers, and hand conversations to those systems.
+The v0.7 release line is still intentionally focused: it is not a full CRM or ticketing suite, and it does not copy Chatwoot, Tiledesk, or Zammad. Instead, OpenSupportAI provides the AI support runtime that can receive messages from channels, index support knowledge, generate knowledge-grounded answers, and hand conversations to those systems.
 
-### What Works in v0.6
+### What Works in v0.7
 
 - Fastify API with health, client conversation, message, SSE events, handoff, admin, knowledge, LLM config, Chatwoot config, and webhook endpoints.
-- Prisma schema and migration for PostgreSQL with pgvector-backed knowledge chunks.
+- Prisma schema and migrations for PostgreSQL with stored knowledge document content, content hashes, status/error metadata, and pgvector-ready knowledge chunks.
 - In-memory demo storage for instant local development without Docker or a database.
 - Seeded demo project: `proj_demo`, public key `pk_demo`, default inbox `inbox_default`, admin token `admin_demo_key`.
 - LLM-backed grounded answer generation through configured OpenAI-compatible providers, with deterministic fallback for demo/no-provider/error paths and a no-hit no-hallucination refusal.
 - OpenAI-compatible LLM and embedding client package.
 - Headless JavaScript SDK.
 - Embeddable browser widget with Shadow DOM UI, SSE updates, conversation persistence, source references, and handoff action.
-- React admin console for projects, conversation operations, knowledge documents, LLM settings, Chatwoot settings, channel operations, admin API keys, audit logs, async jobs, webhook events, and tool-call logs.
+- React admin console for projects, conversation operations, knowledge documents and reindexing, LLM settings, Chatwoot settings, channel operations, admin API keys, audit logs, async jobs, webhook events, and tool-call logs.
 - Admin conversation operations: status/search filters, summary metrics, contact labels, recent-message previews, message counts, and latest handoff status.
 - React demo app showing a SaaS billing page with the widget embedded.
 - Chatwoot handoff integration: creates contacts/conversations, pushes handoff summaries and transcript messages, stores external IDs, maps public agent replies back into local `human_agent` messages, tests connectivity, retries failed handoffs, and syncs Chatwoot resolved/open status.
 - Configurable in-process API rate limiting with standard `rate_limited` errors and `x-ratelimit-*` headers.
-- Async-job foundation with Prisma-backed job storage, admin jobs API, and a tested worker runtime.
+- Async-job foundation with Prisma-backed job storage, admin jobs API, a tested worker runtime, and a real `knowledge.index` worker handler for rebuilding knowledge chunks.
 - Production foundation APIs and admin console views for project-scoped admin API keys, audit logs, ops health, async jobs, webhook events, and retry scheduling.
 - Business tool foundation with allowlisted tool definitions, tool-call logs, and deterministic demo order/subscription lookup tools.
 - Agent-assist foundation with deterministic conversation summaries, suggested replies, tags, and handoff analytics.
@@ -151,6 +151,12 @@ pnpm smoke:chatwoot
 Configure an OpenAI-compatible provider from the admin console or `POST /v1/admin/projects/{project_id}/llm`. When a user question retrieves matching knowledge chunks, v0.6 sends the question and snippets to the configured provider and records provider/model/prompt/token metadata in `ai_runs`.
 
 If no provider is configured, the provider is `demo://local`, the model request fails, or the model returns an empty answer, OpenSupportAI falls back to the deterministic grounded answer path. If retrieval finds no relevant chunks, the assistant still refuses to invent an answer and suggests human handoff.
+
+### Knowledge Indexing Pipeline
+
+v0.7 stores the original knowledge document content, content hash, index status, index errors, and chunk-count metadata. Admins can reindex a document from the console or by calling `POST /v1/admin/projects/{project_id}/knowledge/documents/{document_id}/reindex`.
+
+Reindexing creates a `knowledge.index` async job. The worker marks the document `indexing`, rebuilds all chunks from stored content, then marks it `indexed` or `failed` with an error message. The current retrieval path still uses deterministic keyword scoring, while the schema remains pgvector-ready for a future embedding/vector retrieval pass.
 
 ### Multi-Channel Adapters
 
@@ -366,24 +372,24 @@ See [docs/RELEASE_CHECKLIST.zh-CN.md](./docs/RELEASE_CHECKLIST.zh-CN.md) for the
 
 OpenSupportAI 是一套开源、可嵌入、LLM-native 的 AI 智能客服运行时。它为 SaaS 产品、内部工具、App 和网站提供按项目隔离的 AI 客服层，包含聊天 Widget、Headless SDK、会话 API、基于知识库的回答、人工转接和管理台工作流。
 
-v0.6 版本线仍然保持聚焦：不做完整 CRM，不做复杂工单系统，也不复制 Chatwoot、Tiledesk 或 Zammad。OpenSupportAI 专注于 AI 客服运行时，可以从不同渠道接收消息，生成基于知识库的回答，并把会话转交给这些客服系统。
+v0.7 版本线仍然保持聚焦：不做完整 CRM，不做复杂工单系统，也不复制 Chatwoot、Tiledesk 或 Zammad。OpenSupportAI 专注于 AI 客服运行时，可以从不同渠道接收消息，索引客服知识库，生成基于知识库的回答，并把会话转交给这些客服系统。
 
-### v0.6 已实现能力
+### v0.7 已实现能力
 
 - Fastify API：健康检查、客户端会话、消息、SSE 事件、人工转接、管理端、知识库、LLM 配置、Chatwoot 配置和 webhook。
-- Prisma schema 与 migration，支持 PostgreSQL + pgvector 知识块模型。
+- Prisma schema 与 migrations，支持保存 knowledge document 原文、content hash、索引状态/错误 metadata，以及 pgvector-ready 的知识块模型。
 - 内存模式 demo，无需 Docker 或数据库即可本地跑通。
 - 内置 demo 项目：`proj_demo`，public key `pk_demo`，默认 inbox `inbox_default`，admin token `admin_demo_key`。
 - 通过已配置的 OpenAI-compatible provider 生成基于知识库的回答；demo、未配置 provider 或模型失败时会回退到确定性回答；无知识命中时仍拒绝编造并建议转人工。
 - OpenAI-compatible LLM 与 embedding 客户端包。
 - Headless JavaScript SDK。
 - 可嵌入浏览器 Widget：Shadow DOM UI、SSE 更新、会话持久化、source references 和人工转接。
-- React Admin Console：项目、会话运营、知识库、LLM 设置、Chatwoot 设置、渠道运维、admin API key、审计日志、异步任务、webhook event 和 tool-call 日志。
+- React Admin Console：项目、会话运营、知识库与 reindex 操作、LLM 设置、Chatwoot 设置、渠道运维、admin API key、审计日志、异步任务、webhook event 和 tool-call 日志。
 - 管理台会话运营：状态/搜索筛选、摘要指标、联系人标签、最近消息预览、消息数和最新 handoff 状态。
 - React Demo App：展示一个嵌入 Widget 的 SaaS 账单页。
 - Chatwoot 人工转接集成：创建 contact/conversation，推送转接摘要和历史消息，保存 external IDs，把公开坐席回复回流为本地 `human_agent` 消息，支持连接测试、失败重试和 Chatwoot resolved/open 状态同步。
 - 可配置的进程内 API 限流，提供标准 `rate_limited` 错误和 `x-ratelimit-*` 响应头。
-- 异步任务基础：Prisma job 存储、管理端 jobs API 和可测试的 worker runtime。
+- 异步任务基础：Prisma job 存储、管理端 jobs API、可测试的 worker runtime，以及真实的 `knowledge.index` worker handler，可重建知识块。
 - 生产基础 API 和管理台视图：项目级 admin API key、审计日志、ops health、async jobs、webhook events 和 retry 调度。
 - 业务工具基础：allowlist 工具定义、tool-call 日志，以及确定性的 demo 订单/订阅查询工具。
 - 坐席辅助基础：确定性的会话摘要、建议回复、标签和 handoff analytics。
@@ -498,6 +504,12 @@ pnpm smoke:chatwoot
 可以在 Admin Console 或 `POST /v1/admin/projects/{project_id}/llm` 配置 OpenAI-compatible provider。当用户问题检索到匹配的知识块时，v0.6 会把问题和知识片段发送给已配置的 provider，并在 `ai_runs` 中记录 provider、model、prompt、token 等元数据。
 
 如果未配置 provider、provider 是 `demo://local`、模型请求失败，或模型返回空内容，OpenSupportAI 会回退到确定性的知识库回答路径。如果检索没有找到相关知识块，助手仍会拒绝编造答案并建议转人工。
+
+### 知识库索引管线
+
+v0.7 会保存 knowledge document 的原始内容、content hash、索引状态、索引错误和 chunk count metadata。管理员可以在 Admin Console 中重建索引，也可以调用 `POST /v1/admin/projects/{project_id}/knowledge/documents/{document_id}/reindex`。
+
+Reindex 会创建 `knowledge.index` async job。Worker 会把文档标记为 `indexing`，用已保存的原文重建全部 chunks，然后将文档标记为 `indexed` 或带错误信息的 `failed`。当前 retrieval 仍使用确定性的 keyword scoring；schema 继续保留 pgvector-ready 字段，供后续 embedding/vector retrieval 迭代使用。
 
 ### 多渠道 Adapter
 

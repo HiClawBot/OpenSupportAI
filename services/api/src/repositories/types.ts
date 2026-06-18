@@ -68,7 +68,9 @@ export type KnowledgeDocumentRecord = {
   sourceType: "markdown" | "text" | "url" | "pdf";
   sourceUri?: string;
   status: "pending" | "indexing" | "indexed" | "failed";
+  contentHash?: string;
   metadata: JsonRecord;
+  error?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -318,6 +320,17 @@ export type SupportRepository = {
     input: CreateKnowledgeDocumentInput
   ): Promise<KnowledgeDocumentRecord>;
   listKnowledgeDocuments(projectId: string): Promise<KnowledgeDocumentRecord[]>;
+  findKnowledgeDocument(
+    projectId: string,
+    documentId: string
+  ): Promise<KnowledgeDocumentRecord | undefined>;
+  updateKnowledgeDocumentIndexState(input: {
+    projectId: string;
+    documentId: string;
+    status: KnowledgeDocumentRecord["status"];
+    metadata?: JsonRecord;
+    error?: string;
+  }): Promise<KnowledgeDocumentRecord>;
   retrieveKnowledge(
     projectId: string,
     query: string,

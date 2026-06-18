@@ -1,4 +1,4 @@
-# OpenSupportAI API 规范 v0.6.0
+# OpenSupportAI API 规范 v0.7.0
 
 ## 通用约定
 
@@ -857,10 +857,68 @@ Content-Type: application/json
 
 ```json
 {
-  "document_id": "doc_123",
-  "status": "pending"
+  "document": {
+    "id": "doc_123",
+    "projectId": "proj_123",
+    "title": "取消订阅说明",
+    "sourceType": "markdown",
+    "status": "indexed",
+    "contentHash": "sha256_hex",
+    "metadata": {
+      "locale": "zh-CN",
+      "tags": ["billing", "subscription"],
+      "chunk_count": 1
+    },
+    "createdAt": "2026-06-18T10:00:00.000Z",
+    "updatedAt": "2026-06-18T10:00:00.000Z"
+  }
 }
 ```
+
+---
+
+### 重建知识文档索引
+
+```http
+POST /v1/admin/projects/{project_id}/knowledge/documents/{document_id}/reindex
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "run_at": "2026-06-18T10:10:00.000Z"
+}
+```
+
+`run_at` 可选；省略时立即入队。
+
+响应：
+
+```json
+{
+  "document": {
+    "id": "doc_123",
+    "status": "pending",
+    "metadata": {
+      "last_index_job_id": "job_123",
+      "index_requested_at": "2026-06-18T10:00:00.000Z"
+    }
+  },
+  "job": {
+    "id": "job_123",
+    "type": "knowledge.index",
+    "status": "queued",
+    "payload": {
+      "project_id": "proj_123",
+      "document_id": "doc_123"
+    }
+  }
+}
+```
+
+Worker 处理 `knowledge.index` 后会将文档标记为 `indexing`，重建全部 chunks，然后标记为 `indexed`；如果原文为空或处理失败，会标记为 `failed` 并写入 `error`。
 
 ---
 
@@ -878,9 +936,16 @@ GET /v1/admin/projects/{project_id}/knowledge/documents
     {
       "id": "doc_123",
       "title": "取消订阅说明",
-      "source_type": "markdown",
+      "sourceType": "markdown",
+      "sourceUri": "https://example.com/billing",
       "status": "indexed",
-      "created_at": "2026-06-17T10:00:00.000Z"
+      "contentHash": "sha256_hex",
+      "metadata": {
+        "chunk_count": 3,
+        "indexed_at": "2026-06-18T10:00:00.000Z"
+      },
+      "createdAt": "2026-06-17T10:00:00.000Z",
+      "updatedAt": "2026-06-18T10:00:00.000Z"
     }
   ]
 }

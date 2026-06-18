@@ -49,6 +49,7 @@ export class MemorySupportRepository implements SupportRepository {
   private readonly conversations = new Map<string, ConversationRecord>();
   private readonly messages = new Map<string, MessageRecord>();
   private readonly knowledgeDocuments = new Map<string, KnowledgeDocumentRecord>();
+  private readonly knowledgeDocumentContent = new Map<string, string>();
   private readonly knowledgeChunks = new Map<string, KnowledgeChunkRecord>();
   private readonly llmProviders = new Map<string, LlmProviderRecord>();
   private readonly aiRuns = new Map<string, AiRunRecord>();
@@ -109,17 +110,23 @@ export class MemorySupportRepository implements SupportRepository {
       this.toolDefinitions.set(tool.id, tool);
     }
 
+    const demoKnowledgeContent = [
+      "用户可以在账单设置页面取消订阅。取消订阅后，当前计费周期仍然可以继续使用；周期结束后不会再次扣费。",
+      "退款问题需要人工审核。用户可以提供订单号和付款邮箱，客服会根据当前政策确认是否符合退款条件。"
+    ].join("\n\n");
     const document: KnowledgeDocumentRecord = {
       id: "doc_demo_billing",
       projectId: project.id,
       title: "账单和订阅 FAQ",
       sourceType: "markdown",
       status: "indexed",
-      metadata: { locale: "zh-CN" },
+      contentHash: hash(demoKnowledgeContent),
+      metadata: { locale: "zh-CN", chunk_count: 2 },
       createdAt: timestamp,
       updatedAt: timestamp
     };
     this.knowledgeDocuments.set(document.id, document);
+    this.knowledgeDocumentContent.set(document.id, demoKnowledgeContent);
 
     for (const chunk of [
       {
@@ -397,6 +404,7 @@ export class MemorySupportRepository implements SupportRepository {
     input: CreateKnowledgeDocumentInput
   ): Promise<KnowledgeDocumentRecord> {
     const timestamp = now();
+    const chunks = chunkText(input.content);
     const document: KnowledgeDocumentRecord = {
       id: id("doc"),
       projectId,
@@ -404,13 +412,18 @@ export class MemorySupportRepository implements SupportRepository {
       sourceType: input.sourceType,
       sourceUri: input.sourceUri,
       status: "indexed",
-      metadata: input.metadata ?? {},
+      contentHash: hash(input.content),
+      metadata: {
+        ...(input.metadata ?? {}),
+        chunk_count: chunks.length,
+        indexed_at: timestamp
+      },
       createdAt: timestamp,
       updatedAt: timestamp
     };
     this.knowledgeDocuments.set(document.id, document);
+    this.knowledgeDocumentContent.set(document.id, input.content);
 
-    const chunks = chunkText(input.content);
     chunks.forEach((content, index) => {
       const chunk: KnowledgeChunkRecord = {
         id: id("chunk"),
@@ -434,6 +447,36 @@ export class MemorySupportRepository implements SupportRepository {
     return [...this.knowledgeDocuments.values()]
       .filter((document) => document.projectId === projectId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async findKnowledgeDocument(
+    projectId: string,
+    documentId: string
+  ): Promise<KnowledgeDocumentRecord | undefined> {
+    const document = this.knowledgeDocuments.get(documentId);
+    return document?.projectId === projectId ? document : undefined;
+  }
+
+  async updateKnowledgeDocumentIndexState(input: {
+    projectId: string;
+    documentId: string;
+    status: KnowledgeDocumentRecord["status"];
+    metadata?: JsonRecord;
+    error?: string;
+  }): Promise<KnowledgeDocumentRecord> {
+    const document = await this.findKnowledgeDocument(input.projectId, input.documentId);
+    if (!document) {
+      throw new Error(`Knowledge document not found: ${input.documentId}`);
+    }
+    const updated: KnowledgeDocumentRecord = {
+      ...document,
+      status: input.status,
+      metadata: input.metadata ?? document.metadata,
+      error: input.error,
+      updatedAt: now()
+    };
+    this.knowledgeDocuments.set(updated.id, updated);
+    return updated;
   }
 
   async retrieveKnowledge(

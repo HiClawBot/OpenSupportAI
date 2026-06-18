@@ -77,7 +77,11 @@ type KnowledgeDocument = {
   title: string;
   status: string;
   sourceType: string;
+  sourceUri?: string;
+  metadata: Record<string, unknown>;
+  error?: string;
   createdAt: string;
+  updatedAt: string;
 };
 
 type Message = {
@@ -422,6 +426,17 @@ function App() {
       })
     });
     await loadDocuments(activeProjectId);
+  }
+
+  async function reindexDocument(documentId: string) {
+    await request(
+      `/v1/admin/projects/${activeProjectId}/knowledge/documents/${documentId}/reindex`,
+      {
+        method: "POST",
+        body: JSON.stringify({})
+      }
+    );
+    await Promise.all([loadDocuments(activeProjectId), loadOperations(activeProjectId)]);
   }
 
   async function saveLlm(form: FormData) {
@@ -822,8 +837,24 @@ function App() {
             <div className="list">
               {documents.map((document) => (
                 <div className="row static" key={document.id}>
-                  <span>{document.title}</span>
-                  <b>{document.status}</b>
+                  <span className="row-main">
+                    <strong>{document.title}</strong>
+                    <small>
+                      {document.sourceUri ?? document.sourceType} · {formatDate(document.updatedAt)}
+                    </small>
+                    {document.error ? <small>{document.error}</small> : null}
+                  </span>
+                  <span className="row-meta">
+                    <b>{document.status}</b>
+                    <small>{knowledgeChunkCount(document.metadata)} chunks</small>
+                  </span>
+                  <button
+                    className="secondary"
+                    type="button"
+                    onClick={() => void reindexDocument(document.id)}
+                  >
+                    <ArrowClockwise size={16} /> Reindex
+                  </button>
                 </div>
               ))}
             </div>
@@ -1267,6 +1298,11 @@ function countSummary(counts: Record<string, number>): string {
     return "0";
   }
   return entries.map(([key, value]) => `${key} ${value}`).join(", ");
+}
+
+function knowledgeChunkCount(metadata: Record<string, unknown>): number {
+  const value = metadata["chunk_count"];
+  return typeof value === "number" ? value : 0;
 }
 
 function formatDate(value: string): string {

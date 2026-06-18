@@ -64,6 +64,7 @@ import {
   listToolCallsQuerySchema,
   listToolsQuerySchema,
   listWebhookEventsQuerySchema,
+  reindexKnowledgeDocumentBodySchema,
   requestHandoffBodySchema,
   retryWebhookEventBodySchema,
   sendMessageBodySchema,
@@ -979,6 +980,56 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     });
     return { document };
   });
+
+  app.post(
+    "/v1/admin/projects/:projectId/knowledge/documents/:documentId/reindex",
+    async (request) => {
+      const { project, identity } = await authenticateAdminProjectIdentity(
+        request,
+        repository,
+        config
+      );
+      const params = request.params as { documentId: string };
+      const body = reindexKnowledgeDocumentBodySchema.parse(request.body ?? {});
+      const existing = await repository.findKnowledgeDocument(project.id, params.documentId);
+      if (!existing) {
+        throw notFound("Knowledge document not found");
+      }
+
+      const job = await repository.createAsyncJob({
+        projectId: project.id,
+        type: "knowledge.index",
+        payload: {
+          project_id: project.id,
+          document_id: existing.id
+        },
+        runAt: body.run_at,
+        maxAttempts: 3
+      });
+      const document = await repository.updateKnowledgeDocumentIndexState({
+        projectId: project.id,
+        documentId: existing.id,
+        status: "pending",
+        metadata: {
+          ...existing.metadata,
+          last_index_job_id: job.id,
+          index_requested_at: new Date().toISOString()
+        }
+      });
+      await recordAudit(repository, request, {
+        project,
+        identity,
+        action: "knowledge_document.reindex_scheduled",
+        targetType: "knowledge_document",
+        targetId: document.id,
+        metadata: {
+          job_id: job.id,
+          title: document.title
+        }
+      });
+      return { document, job };
+    }
+  );
 
   app.get("/v1/admin/projects/:projectId/llm", async (request) => {
     const projectId = await authenticateAdminProject(request, repository, config);

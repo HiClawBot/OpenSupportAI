@@ -161,6 +161,7 @@ model KnowledgeDocument {
   title       String
   sourceType  String   @map("source_type")
   sourceUri   String?  @map("source_uri")
+  content     String   @default("")
   status      String   @default("pending")
   contentHash String?  @map("content_hash")
   metadata    Json     @default("{}")

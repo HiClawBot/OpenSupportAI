@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  createKnowledgeIndexHandler,
   createWorkerRuntime,
   workerRuntimeConfig,
+  type KnowledgeIndexDocument,
+  type KnowledgeIndexStore,
   type WorkerJob,
   type WorkerJobQueue
 } from "./index";
@@ -128,4 +131,114 @@ describe("worker runtime", () => {
       error: "No handler registered for job type: unknown.job"
     });
   });
+
+  it("indexes knowledge document jobs by rebuilding chunks", async () => {
+    const document: KnowledgeIndexDocument = {
+      id: "doc_1",
+      projectId: "proj_1",
+      title: "Billing FAQ",
+      sourceUri: "https://example.test/billing",
+      content: "Cancel from billing settings.\n\nRefunds require manual review.",
+      metadata: { locale: "en" }
+    };
+    const store = createKnowledgeStore([document]);
+    const queue = createQueue([
+      {
+        id: "job_4",
+        type: "knowledge.index",
+        status: "running",
+        payload: { project_id: "proj_1", document_id: "doc_1" },
+        attempts: 1,
+        maxAttempts: 3
+      }
+    ]);
+    const runtime = createWorkerRuntime({
+      queue,
+      handlers: {
+        "knowledge.index": createKnowledgeIndexHandler(store)
+      },
+      config: {
+        workerId: "worker_test"
+      }
+    });
+
+    await expect(runtime.runOnce()).resolves.toBe("processed");
+    expect(store.states).toEqual(["indexing", "indexed"]);
+    expect(store.chunks).toHaveLength(1);
+    expect(store.chunks[0]?.metadata).toMatchObject({
+      title: "Billing FAQ",
+      source_uri: "https://example.test/billing"
+    });
+    expect(queue.completed[0]?.result).toMatchObject({
+      indexed_document_id: "doc_1",
+      chunk_count: 1
+    });
+  });
+
+  it("marks empty knowledge documents as failed", async () => {
+    const document: KnowledgeIndexDocument = {
+      id: "doc_empty",
+      projectId: "proj_1",
+      title: "Empty FAQ",
+      content: " ",
+      metadata: {}
+    };
+    const store = createKnowledgeStore([document]);
+    const queue = createQueue([
+      {
+        id: "job_5",
+        type: "knowledge.index",
+        status: "running",
+        payload: { project_id: "proj_1", document_id: "doc_empty" },
+        attempts: 1,
+        maxAttempts: 1
+      }
+    ]);
+    const runtime = createWorkerRuntime({
+      queue,
+      handlers: {
+        "knowledge.index": createKnowledgeIndexHandler(store)
+      },
+      config: {
+        workerId: "worker_test"
+      }
+    });
+
+    await expect(runtime.runOnce()).resolves.toBe("processed");
+    expect(store.states).toEqual(["indexing", "failed"]);
+    expect(queue.failed[0]).toMatchObject({
+      id: "job_5",
+      error: "Knowledge document content is empty"
+    });
+  });
 });
+
+function createKnowledgeStore(documents: KnowledgeIndexDocument[]): KnowledgeIndexStore & {
+  chunks: Array<{ content: string; metadata: Record<string, unknown> }>;
+  states: string[];
+} {
+  const documentsById = new Map(documents.map((document) => [document.id, document]));
+  const chunks: Array<{ content: string; metadata: Record<string, unknown> }> = [];
+  const states: string[] = [];
+
+  return {
+    chunks,
+    states,
+    async getDocument(input) {
+      const document = documentsById.get(input.documentId);
+      return document?.projectId === input.projectId ? document : undefined;
+    },
+    async markIndexing() {
+      states.push("indexing");
+    },
+    async replaceChunks(input) {
+      chunks.splice(0, chunks.length, ...input.chunks);
+    },
+    async markIndexed() {
+      states.push("indexed");
+    },
+    async markFailed() {
+      states.push("failed");
+    }
+  };
+}

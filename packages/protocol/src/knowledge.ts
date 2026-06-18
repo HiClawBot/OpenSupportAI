@@ -7,7 +7,11 @@ export type KnowledgeDocument = {
   projectId: string;
   title: string;
   sourceType: "markdown" | "text" | "url" | "pdf";
+  sourceUri?: string;
   status: KnowledgeDocumentStatus;
+  contentHash?: string;
+  metadata: Record<string, unknown>;
+  error?: string;
   createdAt: string;
   updatedAt: string;
 };
