@@ -1,6 +1,6 @@
 {
   "name": "opensupportai",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": true,
   "description": "Open-source, embeddable, LLM-native AI support runtime.",
   "license": "Apache-2.0",

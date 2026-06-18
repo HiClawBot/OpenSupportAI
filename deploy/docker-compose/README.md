@@ -44,6 +44,17 @@ Public key:  pk_demo
 Inbox ID:    inbox_default
 ```
 
+## Validate
+
+After the stack is healthy and migrations/seeds have completed, run the local smoke checks from the repository root:
+
+```bash
+API_URL=http://localhost:4000 pnpm smoke:memory
+API_URL=http://localhost:4000 pnpm smoke:channels
+```
+
+The admin console Operations area exposes ops health, channel adapter diagnostics, generic webhook configuration, admin API keys, audit logs, async jobs, webhook events, and tool-call logs for the selected project.
+
 ## Chatwoot
 
 Chatwoot is optional and runs behind a Compose profile:
@@ -66,4 +77,6 @@ The script reads `.env` through `dotenv`, creates a smoke-test conversation, req
 
 - The API defaults to Prisma storage in Docker.
 - For no-database local development, use `OPENSUPPORTAI_STORAGE=memory` with the API dev server instead.
-- Replace all default secrets before using this stack beyond local development.
+- Replace all default secrets before using this stack beyond local development: `ADMIN_API_TOKEN`, `ENCRYPTION_KEY`, PostgreSQL credentials, MinIO credentials, LLM API keys, Chatwoot API tokens, and webhook secrets.
+- Put the API and frontends behind TLS and a production reverse proxy before exposing them publicly.
+- Back up PostgreSQL and MinIO before running migrations on real data.

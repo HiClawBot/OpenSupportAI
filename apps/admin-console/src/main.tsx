@@ -3,13 +3,21 @@ import { createRoot } from "react-dom/client";
 import {
   ArrowClockwise,
   ChatCircleText,
+  Clock,
+  Copy,
   Database,
   GearSix,
+  Key,
   MagnifyingGlass,
   PlugsConnected,
   Plus,
+  Pulse,
   Robot,
-  UploadSimple
+  ShieldCheck,
+  Terminal,
+  Trash,
+  UploadSimple,
+  WebhooksLogo
 } from "@phosphor-icons/react";
 import "./styles.css";
 
@@ -43,6 +51,14 @@ type Conversation = {
     status: string;
     externalConversationId?: string;
     updatedAt: string;
+  };
+  channel?: {
+    provider?: string;
+    externalConversationId?: string;
+    externalEventId?: string;
+    externalUserId?: string;
+    source?: string;
+    receivedAt?: string;
   };
   lastMessageAt?: string;
   createdAt: string;
@@ -91,6 +107,103 @@ type ChatwootIntegration = {
   updatedAt?: string;
 };
 
+type GenericWebhookChannel = ChatwootIntegration & {
+  provider: string;
+};
+
+type ChannelAdapter = {
+  provider: string;
+  name: string;
+  status: string;
+  capabilities: string[];
+  configurationKeys: string[];
+  notes?: string;
+};
+
+type ChannelAdapterTestResult = {
+  provider: string;
+  ok: boolean;
+  status: string;
+  message?: string;
+};
+
+type ApiKey = {
+  id: string;
+  name: string;
+  scopes: string[];
+  lastUsedAt?: string;
+  createdAt: string;
+  revokedAt?: string;
+};
+
+type AuditLog = {
+  id: string;
+  actorType: string;
+  actorId?: string;
+  action: string;
+  targetType?: string;
+  targetId?: string;
+  metadata: Record<string, unknown>;
+  requestId?: string;
+  createdAt: string;
+};
+
+type AsyncJob = {
+  id: string;
+  type: string;
+  status: string;
+  payload: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  attempts: number;
+  maxAttempts: number;
+  runAt: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type WebhookEvent = {
+  id: string;
+  provider: string;
+  externalEventId?: string;
+  payload: Record<string, unknown>;
+  status: string;
+  error?: string;
+  createdAt: string;
+  processedAt?: string;
+};
+
+type ToolCall = {
+  id: string;
+  conversationId?: string;
+  toolSlug: string;
+  status: string;
+  input: Record<string, unknown>;
+  output?: Record<string, unknown>;
+  error?: string;
+  latencyMs?: number;
+  createdAt: string;
+};
+
+type OpsHealth = {
+  status: string;
+  generated_at: string;
+  storage: { mode: string };
+  checks: {
+    repository: string;
+    llm_provider_configured: boolean;
+    chatwoot: { configured: boolean; status?: string };
+  };
+  counts: {
+    conversations: Record<string, number>;
+    recent_async_jobs: Record<string, number>;
+    recent_webhook_events: Record<string, number>;
+    tools: Record<string, number>;
+    recent_tool_calls: Record<string, number>;
+  };
+  latest_audit_log?: AuditLog;
+};
+
 type ApiErrorPayload = {
   error?: {
     code?: string;
@@ -117,6 +230,20 @@ function App() {
   const [handoffSessions, setHandoffSessions] = useState<HandoffSession[]>([]);
   const [chatwootIntegration, setChatwootIntegration] = useState<ChatwootIntegration | undefined>();
   const [chatwootStatus, setChatwootStatus] = useState<string | undefined>();
+  const [genericWebhookChannel, setGenericWebhookChannel] = useState<
+    GenericWebhookChannel | undefined
+  >();
+  const [genericWebhookStatus, setGenericWebhookStatus] = useState<string | undefined>();
+  const [channelAdapters, setChannelAdapters] = useState<ChannelAdapter[]>([]);
+  const [channelTestStatus, setChannelTestStatus] = useState<Record<string, string>>({});
+  const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
+  const [newApiKeySecret, setNewApiKeySecret] = useState<string | undefined>();
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [jobs, setJobs] = useState<AsyncJob[]>([]);
+  const [webhookEvents, setWebhookEvents] = useState<WebhookEvent[]>([]);
+  const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
+  const [opsHealth, setOpsHealth] = useState<OpsHealth | undefined>();
+  const [operationsError, setOperationsError] = useState<string | undefined>();
   const [status, setStatus] = useState("Loading");
   const [error, setError] = useState<string | undefined>();
 
@@ -138,7 +265,8 @@ function App() {
       void Promise.all([
         loadConversations(activeProjectId),
         loadDocuments(activeProjectId),
-        loadChatwootIntegration(activeProjectId)
+        loadChatwootIntegration(activeProjectId),
+        loadOperations(activeProjectId)
       ]);
     }
   }, [activeProjectId, adminToken, conversationStatusFilter, conversationQuery]);
@@ -216,6 +344,52 @@ function App() {
       `/v1/admin/projects/${projectId}/integrations/chatwoot`
     );
     setChatwootIntegration(payload.integration ?? undefined);
+  }
+
+  async function loadOperations(projectId: string) {
+    try {
+      setOperationsError(undefined);
+      const [
+        healthPayload,
+        adaptersPayload,
+        genericPayload,
+        apiKeysPayload,
+        auditPayload,
+        jobsPayload,
+        webhookPayload,
+        toolCallsPayload
+      ] = await Promise.all([
+        request<OpsHealth>(`/v1/admin/projects/${projectId}/ops/health`),
+        request<{ adapters: ChannelAdapter[] }>(
+          `/v1/admin/projects/${projectId}/channels/adapters`
+        ),
+        request<{ channel: GenericWebhookChannel | null }>(
+          `/v1/admin/projects/${projectId}/channels/generic-webhook`
+        ),
+        request<{ api_keys: ApiKey[] }>(
+          `/v1/admin/projects/${projectId}/api-keys?include_revoked=true`
+        ),
+        request<{ audit_logs: AuditLog[] }>(`/v1/admin/projects/${projectId}/audit-log?limit=20`),
+        request<{ jobs: AsyncJob[] }>(`/v1/admin/projects/${projectId}/jobs?limit=20`),
+        request<{ webhook_events: WebhookEvent[] }>(
+          `/v1/admin/projects/${projectId}/webhooks/events?limit=20`
+        ),
+        request<{ tool_calls: ToolCall[] }>(`/v1/admin/projects/${projectId}/tool-calls?limit=20`)
+      ]);
+
+      setOpsHealth(healthPayload);
+      setChannelAdapters(adaptersPayload.adapters);
+      setGenericWebhookChannel(genericPayload.channel ?? undefined);
+      setApiKeys(apiKeysPayload.api_keys);
+      setAuditLogs(auditPayload.audit_logs);
+      setJobs(jobsPayload.jobs);
+      setWebhookEvents(webhookPayload.webhook_events);
+      setToolCalls(toolCallsPayload.tool_calls);
+    } catch (loadError) {
+      setOperationsError(
+        loadError instanceof Error ? loadError.message : "Unable to load operations data"
+      );
+    }
   }
 
   async function loadConversation(conversationId: string) {
@@ -301,6 +475,129 @@ function App() {
     );
   }
 
+  async function saveGenericWebhook(form: FormData) {
+    const webhookSecret = String(form.get("webhook_secret") ?? "").trim();
+    if (!webhookSecret) {
+      setGenericWebhookStatus("Webhook secret is required");
+      return;
+    }
+
+    try {
+      setGenericWebhookStatus("Saving generic webhook");
+      const payload = await request<{ channel: GenericWebhookChannel }>(
+        `/v1/admin/projects/${activeProjectId}/channels/generic-webhook`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            webhook_secret: webhookSecret,
+            secret_header:
+              String(form.get("secret_header") ?? "").trim() || "x-opensupportai-webhook-secret",
+            status: String(form.get("status") ?? "active")
+          })
+        }
+      );
+      setGenericWebhookChannel(payload.channel);
+      setGenericWebhookStatus("Generic webhook saved");
+      await loadOperations(activeProjectId);
+    } catch (saveError) {
+      setGenericWebhookStatus(
+        saveError instanceof Error ? saveError.message : "Unable to save generic webhook"
+      );
+    }
+  }
+
+  async function testChannelAdapter(provider: string) {
+    try {
+      setChannelTestStatus((current) => ({ ...current, [provider]: "Testing" }));
+      const payload = await request<{ result: ChannelAdapterTestResult }>(
+        `/v1/admin/projects/${activeProjectId}/channels/adapters/${provider}/test`,
+        {
+          method: "POST",
+          body: JSON.stringify({})
+        }
+      );
+      setChannelTestStatus((current) => ({
+        ...current,
+        [provider]: `${payload.result.status}${payload.result.message ? `: ${payload.result.message}` : ""}`
+      }));
+      await loadOperations(activeProjectId);
+    } catch (testError) {
+      setChannelTestStatus((current) => ({
+        ...current,
+        [provider]: testError instanceof Error ? testError.message : "Adapter test failed"
+      }));
+    }
+  }
+
+  async function createApiKey(form: FormData) {
+    try {
+      setNewApiKeySecret(undefined);
+      const payload = await request<{ api_key: ApiKey; key: string }>(
+        `/v1/admin/projects/${activeProjectId}/api-keys`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            name: String(form.get("name") ?? "").trim(),
+            scopes: parseScopes(String(form.get("scopes") ?? "admin:project"))
+          })
+        }
+      );
+      setNewApiKeySecret(payload.key);
+      await loadOperations(activeProjectId);
+    } catch (createError) {
+      setOperationsError(
+        createError instanceof Error ? createError.message : "Unable to create key"
+      );
+    }
+  }
+
+  async function revokeApiKey(keyId: string) {
+    try {
+      await request(`/v1/admin/projects/${activeProjectId}/api-keys/${keyId}`, {
+        method: "DELETE"
+      });
+      await loadOperations(activeProjectId);
+    } catch (revokeError) {
+      setOperationsError(
+        revokeError instanceof Error ? revokeError.message : "Unable to revoke key"
+      );
+    }
+  }
+
+  async function createJob(form: FormData) {
+    try {
+      await request(`/v1/admin/projects/${activeProjectId}/jobs`, {
+        method: "POST",
+        body: JSON.stringify({
+          type: String(form.get("type") ?? "webhook.retry").trim(),
+          payload: jsonRecordFromText(String(form.get("payload") ?? "{}")),
+          max_attempts: Number(form.get("max_attempts") ?? 3)
+        })
+      });
+      await loadOperations(activeProjectId);
+    } catch (jobError) {
+      setOperationsError(jobError instanceof Error ? jobError.message : "Unable to create job");
+    }
+  }
+
+  async function retryWebhookEvent(eventId: string) {
+    try {
+      await request(`/v1/admin/projects/${activeProjectId}/webhooks/events/${eventId}/retry`, {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+      await loadOperations(activeProjectId);
+    } catch (retryError) {
+      setOperationsError(
+        retryError instanceof Error ? retryError.message : "Unable to schedule webhook retry"
+      );
+    }
+  }
+
+  async function copyText(value: string) {
+    await navigator.clipboard.writeText(value);
+  }
+
   async function retryHandoff(handoffId: string) {
     await request(`/v1/admin/projects/${activeProjectId}/handoffs/${handoffId}/retry`, {
       method: "POST",
@@ -324,7 +621,11 @@ function App() {
         </div>
         <label className="field">
           <span>Admin token</span>
-          <input value={adminToken} onChange={(event) => setAdminToken(event.target.value)} />
+          <input
+            autoComplete="current-password"
+            value={adminToken}
+            onChange={(event) => setAdminToken(event.target.value)}
+          />
         </label>
         <nav>
           <a href="#conversations">
@@ -335,6 +636,9 @@ function App() {
           </a>
           <a href="#settings">
             <GearSix size={18} /> Settings
+          </a>
+          <a href="#operations">
+            <Pulse size={18} /> Operations
           </a>
         </nav>
       </aside>
@@ -441,6 +745,9 @@ function App() {
                         {conversation.handoff.provider} {conversation.handoff.status}
                       </small>
                     ) : null}
+                    {conversation.channel?.provider ? (
+                      <small>{conversation.channel.provider}</small>
+                    ) : null}
                   </span>
                 </button>
               ))}
@@ -543,7 +850,12 @@ function App() {
             </label>
             <label className="field">
               <span>API key</span>
-              <input name="api_key" type="password" defaultValue="demo" />
+              <input
+                name="api_key"
+                type="password"
+                autoComplete="current-password"
+                defaultValue="demo"
+              />
             </label>
             <button className="primary">Save LLM</button>
           </form>
@@ -569,11 +881,11 @@ function App() {
             </div>
             <label className="field">
               <span>API token</span>
-              <input name="api_access_token" type="password" />
+              <input name="api_access_token" type="password" autoComplete="current-password" />
             </label>
             <label className="field">
               <span>Webhook secret</span>
-              <input name="webhook_secret" type="password" />
+              <input name="webhook_secret" type="password" autoComplete="new-password" />
             </label>
             <div className="actions">
               <button className="primary">Save Chatwoot</button>
@@ -583,6 +895,303 @@ function App() {
             </div>
             <IntegrationStatus integration={chatwootIntegration} status={chatwootStatus} />
           </form>
+        </section>
+
+        <section className="operations" id="operations">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">Operations</p>
+              <h2>Runtime controls</h2>
+            </div>
+            <button className="secondary" onClick={() => void loadOperations(activeProjectId)}>
+              <ArrowClockwise size={16} /> Refresh
+            </button>
+          </div>
+          {operationsError ? <div className="notice">{operationsError}</div> : null}
+
+          <section className="split">
+            <div className="panel">
+              <div className="panel-title">
+                <Pulse size={20} />
+                <h2>Ops health</h2>
+              </div>
+              {opsHealth ? (
+                <div className="status-grid">
+                  <StatusItem label="Storage" value={opsHealth.storage.mode} />
+                  <StatusItem label="Repository" value={opsHealth.checks.repository} />
+                  <StatusItem
+                    label="LLM configured"
+                    value={opsHealth.checks.llm_provider_configured ? "yes" : "no"}
+                  />
+                  <StatusItem
+                    label="Chatwoot"
+                    value={
+                      opsHealth.checks.chatwoot.configured
+                        ? (opsHealth.checks.chatwoot.status ?? "configured")
+                        : "not configured"
+                    }
+                  />
+                  <StatusItem
+                    label="Async jobs"
+                    value={countSummary(opsHealth.counts.recent_async_jobs)}
+                  />
+                  <StatusItem
+                    label="Webhook events"
+                    value={countSummary(opsHealth.counts.recent_webhook_events)}
+                  />
+                </div>
+              ) : (
+                <Empty text="Operations health has not loaded" />
+              )}
+            </div>
+
+            <div className="panel">
+              <div className="panel-title">
+                <WebhooksLogo size={20} />
+                <h2>Channel adapters</h2>
+              </div>
+              <div className="list">
+                {channelAdapters.map((adapter) => (
+                  <div className="row adapter-row" key={adapter.provider}>
+                    <span className="row-main">
+                      <strong>{adapter.name}</strong>
+                      <small>{adapter.notes ?? adapter.provider}</small>
+                      {channelTestStatus[adapter.provider] ? (
+                        <small>{channelTestStatus[adapter.provider]}</small>
+                      ) : null}
+                    </span>
+                    <span className="row-meta">
+                      <b>{adapter.status}</b>
+                      <button
+                        className="secondary compact"
+                        onClick={() => void testChannelAdapter(adapter.provider)}
+                      >
+                        Test
+                      </button>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          <section className="split">
+            <form className="panel form" action={(form) => void saveGenericWebhook(form)}>
+              <div className="panel-title">
+                <WebhooksLogo size={20} />
+                <h2>Generic webhook</h2>
+              </div>
+              <div className="status-grid slim">
+                <StatusItem
+                  label="Status"
+                  value={genericWebhookChannel?.status ?? "not configured"}
+                />
+                <StatusItem
+                  label="Secret header"
+                  value={metadataString(genericWebhookChannel?.metadata, "secret_header") ?? "-"}
+                />
+              </div>
+              <label className="field">
+                <span>Webhook secret</span>
+                <input
+                  name="webhook_secret"
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder="At least 8 characters"
+                />
+              </label>
+              <label className="field">
+                <span>Secret header</span>
+                <input
+                  name="secret_header"
+                  defaultValue={
+                    metadataString(genericWebhookChannel?.metadata, "secret_header") ??
+                    "x-opensupportai-webhook-secret"
+                  }
+                />
+              </label>
+              <label className="field">
+                <span>Status</span>
+                <select name="status" defaultValue={genericWebhookChannel?.status ?? "active"}>
+                  <option value="active">Active</option>
+                  <option value="disabled">Disabled</option>
+                </select>
+              </label>
+              <button className="primary">Save webhook channel</button>
+              {genericWebhookStatus ? (
+                <div className="integration-status">{genericWebhookStatus}</div>
+              ) : null}
+            </form>
+
+            <form className="panel form" action={(form) => void createApiKey(form)}>
+              <div className="panel-title">
+                <Key size={20} />
+                <h2>Admin API keys</h2>
+              </div>
+              <label className="field">
+                <span>Name</span>
+                <input name="name" placeholder="Production automation" />
+              </label>
+              <label className="field">
+                <span>Scopes</span>
+                <input name="scopes" defaultValue="admin:project,admin:webhooks" />
+              </label>
+              <button className="primary">
+                <Key size={16} /> Create key
+              </button>
+              {newApiKeySecret ? (
+                <div className="secret-box">
+                  <code>{newApiKeySecret}</code>
+                  <button
+                    className="icon-button"
+                    type="button"
+                    title="Copy API key"
+                    onClick={() => void copyText(newApiKeySecret)}
+                  >
+                    <Copy size={16} />
+                  </button>
+                </div>
+              ) : null}
+              <div className="list">
+                {apiKeys.map((apiKey) => (
+                  <div className="row" key={apiKey.id}>
+                    <span className="row-main">
+                      <strong>{apiKey.name}</strong>
+                      <small>{apiKey.scopes.join(", ")}</small>
+                      {apiKey.lastUsedAt ? (
+                        <small>Used {formatDate(apiKey.lastUsedAt)}</small>
+                      ) : null}
+                    </span>
+                    <span className="row-meta">
+                      <b>{apiKey.revokedAt ? "revoked" : "active"}</b>
+                      {!apiKey.revokedAt ? (
+                        <button
+                          className="secondary compact danger"
+                          type="button"
+                          onClick={() => void revokeApiKey(apiKey.id)}
+                        >
+                          <Trash size={14} /> Revoke
+                        </button>
+                      ) : null}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </form>
+          </section>
+
+          <section className="split">
+            <div className="panel">
+              <div className="panel-title">
+                <Clock size={20} />
+                <h2>Jobs</h2>
+              </div>
+              <form className="inline-form" action={(form) => void createJob(form)}>
+                <input name="type" defaultValue="webhook.retry" />
+                <input name="max_attempts" type="number" min="1" max="10" defaultValue="3" />
+                <textarea name="payload" rows={3} defaultValue="{}" />
+                <button className="secondary">Queue job</button>
+              </form>
+              <div className="list scroll-list">
+                {jobs.length === 0 ? <Empty text="No jobs yet" /> : null}
+                {jobs.map((job) => (
+                  <div className="row static" key={job.id}>
+                    <span className="row-main">
+                      <strong>{job.type}</strong>
+                      <small>{job.error ?? formatDate(job.runAt)}</small>
+                    </span>
+                    <span className="row-meta">
+                      <b>{job.status}</b>
+                      <small>
+                        {job.attempts}/{job.maxAttempts}
+                      </small>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="panel">
+              <div className="panel-title">
+                <WebhooksLogo size={20} />
+                <h2>Webhook events</h2>
+              </div>
+              <div className="list scroll-list">
+                {webhookEvents.length === 0 ? <Empty text="No webhook events yet" /> : null}
+                {webhookEvents.map((event) => (
+                  <div className="row" key={event.id}>
+                    <span className="row-main">
+                      <strong>{event.provider}</strong>
+                      <small>{event.externalEventId ?? event.id}</small>
+                      {event.error ? <small>{event.error}</small> : null}
+                    </span>
+                    <span className="row-meta">
+                      <b>{event.status}</b>
+                      {event.status !== "processed" ? (
+                        <button
+                          className="secondary compact"
+                          onClick={() => void retryWebhookEvent(event.id)}
+                        >
+                          Retry
+                        </button>
+                      ) : null}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          <section className="split">
+            <div className="panel">
+              <div className="panel-title">
+                <ShieldCheck size={20} />
+                <h2>Audit log</h2>
+              </div>
+              <div className="list scroll-list">
+                {auditLogs.length === 0 ? <Empty text="No audit logs yet" /> : null}
+                {auditLogs.map((log) => (
+                  <div className="row static" key={log.id}>
+                    <span className="row-main">
+                      <strong>{log.action}</strong>
+                      <small>
+                        {log.targetType ? `${log.targetType} ${log.targetId ?? ""}` : log.id}
+                      </small>
+                    </span>
+                    <span className="row-meta">
+                      <b>{log.actorType}</b>
+                      <small>{formatDate(log.createdAt)}</small>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="panel">
+              <div className="panel-title">
+                <Terminal size={20} />
+                <h2>Tool calls</h2>
+              </div>
+              <div className="list scroll-list">
+                {toolCalls.length === 0 ? <Empty text="No tool calls yet" /> : null}
+                {toolCalls.map((toolCall) => (
+                  <div className="row static" key={toolCall.id}>
+                    <span className="row-main">
+                      <strong>{toolCall.toolSlug}</strong>
+                      <small>{toolCall.conversationId ?? toolCall.id}</small>
+                      {toolCall.error ? <small>{toolCall.error}</small> : null}
+                    </span>
+                    <span className="row-meta">
+                      <b>{toolCall.status}</b>
+                      {typeof toolCall.latencyMs === "number" ? (
+                        <small>{toolCall.latencyMs}ms</small>
+                      ) : null}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
         </section>
 
         <form className="create-project" action={(form) => void createProject(form)}>
@@ -610,6 +1219,15 @@ function Empty(props: { text: string }) {
   return <div className="empty">{props.text}</div>;
 }
 
+function StatusItem(props: { label: string; value: string }) {
+  return (
+    <div className="status-item">
+      <span>{props.label}</span>
+      <strong>{props.value}</strong>
+    </div>
+  );
+}
+
 function conversationLabel(conversation: Conversation): string {
   return (
     conversation.contact?.name ??
@@ -617,6 +1235,42 @@ function conversationLabel(conversation: Conversation): string {
     conversation.contact?.externalUserId ??
     conversation.id
   );
+}
+
+function parseScopes(value: string): string[] {
+  const scopes = value
+    .split(",")
+    .map((scope) => scope.trim())
+    .filter(Boolean);
+  return scopes.length > 0 ? scopes : ["admin:project"];
+}
+
+function jsonRecordFromText(value: string): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(value || "{}");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Payload must be a JSON object");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function metadataString(
+  metadata: Record<string, unknown> | undefined,
+  key: string
+): string | undefined {
+  const value = metadata?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function countSummary(counts: Record<string, number>): string {
+  const entries = Object.entries(counts);
+  if (entries.length === 0) {
+    return "0";
+  }
+  return entries.map(([key, value]) => `${key} ${value}`).join(", ");
+}
+
+function formatDate(value: string): string {
+  return new Date(value).toLocaleString();
 }
 
 function IntegrationStatus(props: {

@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.5.2 - 2026-06-18
+
+English:
+
+- Added admin console Operations surfaces for ops health, channel adapters, generic webhook configuration, API keys, async jobs, webhook events, audit logs, and tool-call logs.
+- Added admin console actions to test channel adapters, create/revoke admin API keys, queue async jobs, and schedule webhook event retries.
+- Upgraded GitHub Actions workflow actions to the current v6 release line.
+- Updated Docker Compose and release documentation with operator UI and production secret guidance.
+
+中文：
+
+- Admin Console 新增 Operations 区域，覆盖 ops health、channel adapters、generic webhook 配置、API keys、async jobs、webhook events、audit logs 和 tool-call logs。
+- 管理台新增测试 channel adapter、创建/撤销 admin API key、创建 async job、调度 webhook event retry 等操作。
+- GitHub Actions workflow 升级到当前 v6 action 版本线。
+- 更新 Docker Compose 和发布文档，补充运维 UI 和生产 secret 指引。
+
 ## v0.5.1 - 2026-06-18
 
 English:

@@ -266,6 +266,54 @@ h2 {
   font-size: 12px;
 }
 
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 8px 0 16px;
+  flex-wrap: wrap;
+}
+
+.section-heading h2 {
+  font-size: 20px;
+}
+
+.operations {
+  margin-bottom: 16px;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.status-grid.slim {
+  grid-template-columns: 1fr;
+}
+
+.status-item {
+  display: grid;
+  gap: 5px;
+  border: 1px solid #e6eaf0;
+  background: #fbfcfe;
+  border-radius: 6px;
+  padding: 10px;
+  min-width: 0;
+}
+
+.status-item span {
+  color: #5d6b82;
+  font-size: 12px;
+}
+
+.status-item strong {
+  color: #182230;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 .list {
   display: grid;
   gap: 8px;
@@ -341,6 +389,56 @@ h2 {
 
 .row.static {
   cursor: default;
+}
+
+.adapter-row .row-meta {
+  gap: 8px;
+}
+
+.compact {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.danger {
+  border-color: #f0b4a6;
+  color: #9f341f;
+}
+
+.scroll-list {
+  max-height: 360px;
+  overflow: auto;
+}
+
+.inline-form {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 90px;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.inline-form textarea,
+.inline-form button {
+  grid-column: 1 / -1;
+}
+
+.secret-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #d3dbea;
+  background: #f8fafc;
+  border-radius: 6px;
+  padding: 10px;
+  min-width: 0;
+}
+
+.secret-box code {
+  flex: 1 1 auto;
+  color: #182230;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .messages {
@@ -493,11 +591,10 @@ select {
 }
 
 .create-project {
-  position: sticky;
-  bottom: 16px;
   background: #fff;
   border: 1px solid #dde3ea;
   border-radius: 8px;
+  margin-top: 16px;
   padding: 12px;
   box-shadow: 0 18px 45px rgba(16, 24, 40, 0.08);
   flex-wrap: wrap;
@@ -546,6 +643,11 @@ select {
   }
 
   .conversation-tools {
+    grid-template-columns: 1fr;
+  }
+
+  .status-grid,
+  .inline-form {
     grid-template-columns: 1fr;
   }
 

@@ -149,6 +149,14 @@ git push origin v0.5.1
 gh release create v0.5.1 --title "OpenSupportAI v0.5.1" --notes-file docs/releases/v0.5.1.md
 ```
 
+v0.5.2：
+
+```bash
+git tag v0.5.2
+git push origin v0.5.2
+gh release create v0.5.2 --title "OpenSupportAI v0.5.2" --notes-file docs/releases/v0.5.2.md
+```
+
 发布说明建议包含：
 
 - v0.1 是可本地运行的 MVP，不是生产级 SaaS。
@@ -165,6 +173,7 @@ gh release create v0.5.1 --title "OpenSupportAI v0.5.1" --notes-file docs/releas
 - v0.4.0 增加坐席辅助 summary、suggested replies、tags 和 handoff analytics。
 - v0.5.0 增加 generic webhook 入站 channel adapter、channel adapter catalog/test API，以及 Slack/email/Telegram 契约 stub。
 - v0.5.1 增加 generic webhook secret 配置、项目级 event 幂等、channel metadata 管理端可见性和负向 smoke 覆盖。
+- v0.5.2 增加 Admin Console Operations 区域，覆盖 ops health、channel diagnostics、generic webhook 配置、API keys、audit logs、jobs、webhook events 和 tool-call logs，并升级 GitHub Actions action 版本线。
 
 ## 当前已知限制
 
@@ -176,4 +185,5 @@ gh release create v0.5.1 --title "OpenSupportAI v0.5.1" --notes-file docs/releas
 - v0.4.0 的 agent assist 是确定性启发式生成，不调用外部 LLM；后续可替换为可配置的模型生成与评测流程。
 - v0.5.0 的 Slack/email/Telegram 是 adapter 契约 stub；当前可真实本地验证的是 generic webhook adapter。
 - v0.5.1 只强化 generic webhook 安全和可观测性；还没有接入真实 Slack/Email/Telegram provider API。
+- v0.5.2 主要补齐已有后端运维 API 的管理台入口；还没有新增真实 worker handler、LLM-backed answer path 或真实 Slack/Email/Telegram provider API。
 - Docker Compose 启动需要在安装 Docker 的机器上单独验证。
