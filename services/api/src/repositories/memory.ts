@@ -609,7 +609,9 @@ export class MemorySupportRepository implements SupportRepository {
     if (input.externalEventId) {
       const existing = [...this.webhookEvents.values()].find(
         (event) =>
-          event.provider === input.provider && event.externalEventId === input.externalEventId
+          event.projectId === input.projectId &&
+          event.provider === input.provider &&
+          event.externalEventId === input.externalEventId
       );
       if (existing) {
         return existing;

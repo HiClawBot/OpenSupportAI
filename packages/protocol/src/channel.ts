@@ -52,4 +52,5 @@ export type ChannelWebhookProcessResponse = {
   webhookEventId: string;
   conversationId?: string;
   messageId?: string;
+  idempotent?: boolean;
 };

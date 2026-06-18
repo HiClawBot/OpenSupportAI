@@ -61,7 +61,11 @@ VITE_API_URL=http://localhost:4000 pnpm --filter @opensupportai/demo-app dev
 - 管理端 `GET /v1/admin/projects/{project_id}/analytics/handoffs` 可返回 handoff status/reason/provider 汇总。
 - 管理端 `GET /v1/admin/projects/{project_id}/channels/adapters` 可列出 generic webhook、Slack、Email、Telegram adapters。
 - 管理端 `POST /v1/admin/projects/{project_id}/channels/adapters/generic_webhook/test` 返回 `ok=true`。
+- 管理端 `POST /v1/admin/projects/{project_id}/channels/generic-webhook` 可配置 generic webhook secret，响应不暴露明文 secret。
 - `POST /v1/channel-webhooks/generic?public_key=pk_demo` 可写入入站消息，同一外部 `conversation_id` 会复用本地 conversation。
+- 配置 generic webhook secret 后，非法 secret 返回 401，非法 payload 返回 400。
+- 重复投递已处理过的 `event_id` 不会重复创建 end-user message。
+- 管理端 conversation list/detail 响应包含 `channel` 摘要。
 - `pnpm smoke:channels` 在内存模式 API 启动后可跑通。
 
 ## Docker Compose Smoke Test
@@ -137,6 +141,14 @@ git push origin v0.5.0
 gh release create v0.5.0 --title "OpenSupportAI v0.5.0" --notes-file docs/releases/v0.5.0.md
 ```
 
+v0.5.1：
+
+```bash
+git tag v0.5.1
+git push origin v0.5.1
+gh release create v0.5.1 --title "OpenSupportAI v0.5.1" --notes-file docs/releases/v0.5.1.md
+```
+
 发布说明建议包含：
 
 - v0.1 是可本地运行的 MVP，不是生产级 SaaS。
@@ -152,6 +164,7 @@ gh release create v0.5.0 --title "OpenSupportAI v0.5.0" --notes-file docs/releas
 - v0.3.0 增加业务工具定义、allowlist 启停、tool-call 日志，以及 demo 订单/订阅查询工具。
 - v0.4.0 增加坐席辅助 summary、suggested replies、tags 和 handoff analytics。
 - v0.5.0 增加 generic webhook 入站 channel adapter、channel adapter catalog/test API，以及 Slack/email/Telegram 契约 stub。
+- v0.5.1 增加 generic webhook secret 配置、项目级 event 幂等、channel metadata 管理端可见性和负向 smoke 覆盖。
 
 ## 当前已知限制
 
@@ -162,4 +175,5 @@ gh release create v0.5.0 --title "OpenSupportAI v0.5.0" --notes-file docs/releas
 - v0.3.0 的 `openapi` tool definition 已具备模型和管理 API，真实外部 HTTP 执行器仍需后续接入；当前自动执行仅限内置只读 demo tools。
 - v0.4.0 的 agent assist 是确定性启发式生成，不调用外部 LLM；后续可替换为可配置的模型生成与评测流程。
 - v0.5.0 的 Slack/email/Telegram 是 adapter 契约 stub；当前可真实本地验证的是 generic webhook adapter。
+- v0.5.1 只强化 generic webhook 安全和可观测性；还没有接入真实 Slack/Email/Telegram provider API。
 - Docker Compose 启动需要在安装 Docker 的机器上单独验证。

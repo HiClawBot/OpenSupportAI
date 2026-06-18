@@ -722,7 +722,8 @@ export class PrismaSupportRepository implements SupportRepository {
     if (input.externalEventId) {
       const existing = await this.prisma.webhookEvent.findUnique({
         where: {
-          provider_externalEventId: {
+          projectId_provider_externalEventId: {
+            projectId: input.projectId,
             provider: input.provider,
             externalEventId: input.externalEventId
           }

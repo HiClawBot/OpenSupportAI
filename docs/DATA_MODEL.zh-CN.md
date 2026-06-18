@@ -145,7 +145,7 @@ project_id + status
 project_id + last_message_at
 ```
 
-v0.5 的 generic channel webhook 不新增单独的 channel conversation 表；它在 `conversations.metadata.channel` 中保存：
+v0.5 的 generic channel webhook 不新增单独的 channel conversation 表；它在 `conversations.metadata.channel` 中保存，并在 v0.5.1 的管理端 conversation list/detail 响应中直接暴露摘要字段：
 
 ```json
 {
@@ -381,13 +381,13 @@ created_at         timestamp
 processed_at       timestamp nullable
 ```
 
-v0.5 generic channel webhook 使用 `provider=generic_webhook` 记录入站事件。Slack/email/Telegram 当前是 adapter 契约 stub，还不会写入真实 provider webhook。
+v0.5 generic channel webhook 使用 `provider=generic_webhook` 记录入站事件。v0.5.1 将幂等键收敛为项目级 `project_id + provider + external_event_id`，避免不同项目间的外部事件 ID 冲突。Slack/email/Telegram 当前是 adapter 契约 stub，还不会写入真实 provider webhook。
 
 索引：
 
 ```text
 project_id + provider
-provider + external_event_id unique
+project_id + provider + external_event_id unique
 status + created_at
 ```
 

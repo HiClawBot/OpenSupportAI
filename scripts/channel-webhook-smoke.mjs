@@ -8,9 +8,11 @@ This script exercises a running OpenSupportAI API with the seeded demo project:
 1. checks API health
 2. lists channel adapter descriptors
 3. tests the generic webhook adapter
-4. sends two generic webhook messages on the same external conversation id
-5. verifies the messages landed on the same OpenSupportAI conversation
-6. verifies processed generic webhook events are visible to admins
+4. configures a generic webhook secret
+5. verifies unauthorized public keys, invalid secrets, and invalid payloads fail
+6. sends two generic webhook messages on the same external conversation id
+7. verifies duplicate event ids are idempotent
+8. verifies processed and failed generic webhook events are visible to admins
 
 Optional environment variables:
   API_URL=http://localhost:4000
@@ -18,6 +20,8 @@ Optional environment variables:
   PROJECT_ID=proj_demo
   PUBLIC_KEY=pk_demo
   INBOX_ID=inbox_default
+  GENERIC_WEBHOOK_SECRET=local_channel_secret
+  GENERIC_WEBHOOK_SECRET_HEADER=x-opensupportai-webhook-secret
 
 Example:
   OPENSUPPORTAI_STORAGE=memory PORT=4000 pnpm --filter @opensupportai/api dev
@@ -34,7 +38,9 @@ const settings = {
   adminToken: env("ADMIN_TOKEN", env("ADMIN_API_TOKEN", "admin_demo_key")),
   projectId: env("PROJECT_ID", "proj_demo"),
   publicKey: env("PUBLIC_KEY", "pk_demo"),
-  inboxId: env("INBOX_ID", "inbox_default")
+  inboxId: env("INBOX_ID", "inbox_default"),
+  webhookSecret: env("GENERIC_WEBHOOK_SECRET", "local_channel_secret"),
+  webhookSecretHeader: env("GENERIC_WEBHOOK_SECRET_HEADER", "x-opensupportai-webhook-secret")
 };
 
 const runId = `channel_smoke_${Date.now()}`;
@@ -67,6 +73,55 @@ async function main() {
   );
   assert(testResult.result?.ok === true, "Generic webhook adapter test did not pass");
 
+  log("Configuring generic webhook secret");
+  const channelConfig = await adminRequest(
+    "POST",
+    `/v1/admin/projects/${settings.projectId}/channels/generic-webhook`,
+    {
+      webhook_secret: settings.webhookSecret,
+      secret_header: settings.webhookSecretHeader,
+      status: "active"
+    }
+  );
+  assert(
+    channelConfig.channel?.metadata?.secret_configured === true,
+    "Generic webhook secret was not marked configured"
+  );
+
+  log("Checking negative generic webhook cases");
+  await expectStatus(
+    "POST",
+    `/v1/channel-webhooks/generic?public_key=pk_invalid`,
+    {
+      project_id: settings.projectId,
+      event_id: `${runId}_unauthorized`,
+      text: "Should not be accepted"
+    },
+    { [settings.webhookSecretHeader]: settings.webhookSecret },
+    401
+  );
+  await expectStatus(
+    "POST",
+    `/v1/channel-webhooks/generic?public_key=${settings.publicKey}`,
+    {
+      project_id: settings.projectId,
+      event_id: `${runId}_bad_secret`,
+      text: "Should not be accepted"
+    },
+    { [settings.webhookSecretHeader]: "wrong" },
+    401
+  );
+  await expectStatus(
+    "POST",
+    `/v1/channel-webhooks/generic?public_key=${settings.publicKey}`,
+    {
+      project_id: settings.projectId,
+      event_id: `${runId}_bad_payload`
+    },
+    { [settings.webhookSecretHeader]: settings.webhookSecret },
+    400
+  );
+
   log("Sending first generic webhook message");
   const first = await channelRequest({
     project_id: settings.projectId,
@@ -82,6 +137,21 @@ async function main() {
   });
   assert(first.status === "processed", `Expected processed, got ${first.status}`);
   assert(typeof first.conversation_id === "string", "Webhook did not return a conversation_id");
+
+  log("Re-sending first generic webhook event to verify idempotency");
+  const duplicate = await channelRequest({
+    project_id: settings.projectId,
+    inbox_id: settings.inboxId,
+    event_id: `${runId}_evt_1`,
+    conversation_id: externalConversationId,
+    text: "怎么取消订阅？",
+    contact: {
+      id: `${runId}_user`,
+      name: "OpenSupportAI Channel Smoke",
+      email: `${runId}@example.com`
+    }
+  });
+  assert(duplicate.idempotent === true, "Duplicate webhook event was not idempotent");
 
   log("Sending second generic webhook message on the same external conversation");
   const second = await channelRequest({
@@ -111,7 +181,23 @@ async function main() {
     ?.filter((message) => message.role === "end_user")
     .map((message) => message.content?.text);
   assert(endUserTexts?.includes("怎么取消订阅？"), "First webhook message was not stored");
+  assert(
+    endUserTexts?.filter((text) => text === "怎么取消订阅？").length === 1,
+    "Duplicate webhook event wrote a second end-user message"
+  );
   assert(endUserTexts?.includes("我还想了解退款"), "Second webhook message was not stored");
+
+  log("Checking admin channel visibility");
+  const adminList = await adminRequest(
+    "GET",
+    `/v1/admin/projects/${settings.projectId}/conversations?q=${encodeURIComponent(externalConversationId)}`
+  );
+  const conversation = adminList.conversations?.find((item) => item.id === first.conversation_id);
+  assert(conversation?.channel?.provider === "generic_webhook", "Admin list missed channel data");
+  assert(
+    conversation?.channel?.externalConversationId === externalConversationId,
+    "Admin list missed external conversation id"
+  );
 
   log("Checking processed webhook events");
   const events = await adminRequest(
@@ -122,11 +208,21 @@ async function main() {
   assert(eventIds.includes(`${runId}_evt_1`), "First webhook event was not processed");
   assert(eventIds.includes(`${runId}_evt_2`), "Second webhook event was not processed");
 
+  const failedEvents = await adminRequest(
+    "GET",
+    `/v1/admin/projects/${settings.projectId}/webhooks/events?provider=generic_webhook&status=failed`
+  );
+  const failedEventIds = failedEvents.webhook_events?.map((event) => event.externalEventId) ?? [];
+  assert(failedEventIds.includes(`${runId}_bad_secret`), "Bad secret event was not recorded");
+  assert(failedEventIds.includes(`${runId}_bad_payload`), "Bad payload event was not recorded");
+
   log(`Channel webhook smoke test passed for conversation ${first.conversation_id}`);
 }
 
 async function channelRequest(body) {
-  return request("POST", `/v1/channel-webhooks/generic?public_key=${settings.publicKey}`, body);
+  return request("POST", `/v1/channel-webhooks/generic?public_key=${settings.publicKey}`, body, {
+    [settings.webhookSecretHeader]: settings.webhookSecret
+  });
 }
 
 async function adminRequest(method, path, body) {
@@ -157,6 +253,23 @@ async function request(method, path, body, headers = {}) {
     throw new Error(`${method} ${path} failed with ${response.status}: ${text}`);
   }
   return payload;
+}
+
+async function expectStatus(method, path, body, headers, expectedStatus) {
+  const response = await fetch(`${settings.apiUrl}${path}`, {
+    method,
+    headers: {
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      ...headers
+    },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  const text = await response.text();
+  if (response.status !== expectedStatus) {
+    throw new Error(
+      `${method} ${path} expected ${expectedStatus}, got ${response.status}: ${text}`
+    );
+  }
 }
 
 function env(name, fallback) {

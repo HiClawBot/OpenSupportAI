@@ -242,6 +242,23 @@ describe("OpenSupportAI API", () => {
       status: "ok"
     });
 
+    const configResponse = await app.inject({
+      method: "POST",
+      url: "/v1/admin/projects/proj_demo/channels/generic-webhook",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      },
+      payload: {
+        webhook_secret: "generic_secret_123",
+        secret_header: "x-channel-secret"
+      }
+    });
+    expect(configResponse.statusCode).toBe(200);
+    expect(
+      configResponse.json<{ channel: { metadata: { secret_header?: string } } }>().channel.metadata
+        .secret_header
+    ).toBe("x-channel-secret");
+
     const slackTestResponse = await app.inject({
       method: "POST",
       url: "/v1/admin/projects/proj_demo/channels/adapters/slack/test",
@@ -257,9 +274,53 @@ describe("OpenSupportAI API", () => {
       status: "stub"
     });
 
+    const unauthorizedResponse = await app.inject({
+      method: "POST",
+      url: "/v1/channel-webhooks/generic?public_key=pk_wrong",
+      headers: {
+        "x-channel-secret": "generic_secret_123"
+      },
+      payload: {
+        project_id: "proj_demo",
+        event_id: "generic_evt_unauthorized",
+        text: "Should not be accepted"
+      }
+    });
+    expect(unauthorizedResponse.statusCode).toBe(401);
+
+    const invalidSecretResponse = await app.inject({
+      method: "POST",
+      url: "/v1/channel-webhooks/generic?public_key=pk_demo",
+      headers: {
+        "x-channel-secret": "wrong"
+      },
+      payload: {
+        project_id: "proj_demo",
+        event_id: "generic_evt_bad_secret",
+        text: "Should not be accepted"
+      }
+    });
+    expect(invalidSecretResponse.statusCode).toBe(401);
+
+    const invalidPayloadResponse = await app.inject({
+      method: "POST",
+      url: "/v1/channel-webhooks/generic?public_key=pk_demo",
+      headers: {
+        "x-channel-secret": "generic_secret_123"
+      },
+      payload: {
+        project_id: "proj_demo",
+        event_id: "generic_evt_bad_payload"
+      }
+    });
+    expect(invalidPayloadResponse.statusCode).toBe(400);
+
     const firstWebhookResponse = await app.inject({
       method: "POST",
       url: "/v1/channel-webhooks/generic?public_key=pk_demo",
+      headers: {
+        "x-channel-secret": "generic_secret_123"
+      },
       payload: {
         project_id: "proj_demo",
         inbox_id: "inbox_default",
@@ -283,9 +344,39 @@ describe("OpenSupportAI API", () => {
     expect(firstWebhook.conversation_id).toMatch(/^conv_/);
     expect(firstWebhook.message_id).toMatch(/^msg_/);
 
+    const duplicateWebhookResponse = await app.inject({
+      method: "POST",
+      url: "/v1/channel-webhooks/generic?public_key=pk_demo",
+      headers: {
+        "x-channel-secret": "generic_secret_123"
+      },
+      payload: {
+        project_id: "proj_demo",
+        inbox_id: "inbox_default",
+        event_id: "generic_evt_1",
+        conversation_id: "generic_thread_1",
+        text: "怎么取消订阅？",
+        contact: {
+          id: "generic_user_1",
+          name: "Generic User",
+          email: "generic@example.com"
+        }
+      }
+    });
+    expect(duplicateWebhookResponse.statusCode).toBe(200);
+    expect(duplicateWebhookResponse.json<{ status: string; idempotent?: boolean }>()).toMatchObject(
+      {
+        status: "processed",
+        idempotent: true
+      }
+    );
+
     const secondWebhookResponse = await app.inject({
       method: "POST",
       url: "/v1/channel-webhooks/generic?public_key=pk_demo",
+      headers: {
+        "x-channel-secret": "generic_secret_123"
+      },
       payload: {
         project_id: "proj_demo",
         message: {
@@ -319,7 +410,46 @@ describe("OpenSupportAI API", () => {
       .filter((message) => message.role === "end_user")
       .map((message) => message.content.text);
     expect(endUserTexts).toContain("怎么取消订阅？");
+    expect(endUserTexts.filter((text) => text === "怎么取消订阅？")).toHaveLength(1);
     expect(endUserTexts).toContain("我还想了解退款");
+
+    const adminListResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/conversations?q=generic_thread_1",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(adminListResponse.statusCode).toBe(200);
+    const adminList = adminListResponse.json<{
+      conversations: Array<{
+        id: string;
+        channel?: { provider?: string; externalConversationId?: string };
+      }>;
+    }>();
+    expect(adminList.conversations[0]).toMatchObject({
+      id: firstWebhook.conversation_id,
+      channel: {
+        provider: "generic_webhook",
+        externalConversationId: "generic_thread_1"
+      }
+    });
+
+    const adminDetailResponse = await app.inject({
+      method: "GET",
+      url: `/v1/admin/projects/proj_demo/conversations/${firstWebhook.conversation_id}`,
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(adminDetailResponse.statusCode).toBe(200);
+    expect(
+      adminDetailResponse.json<{ channel?: { provider?: string; externalUserId?: string } }>()
+        .channel
+    ).toMatchObject({
+      provider: "generic_webhook",
+      externalUserId: "generic_user_1"
+    });
 
     const webhookEventsResponse = await app.inject({
       method: "GET",
@@ -334,6 +464,20 @@ describe("OpenSupportAI API", () => {
     }>().webhook_events;
     expect(webhookEvents.map((event) => event.externalEventId)).toEqual(
       expect.arrayContaining(["generic_evt_1", "generic_evt_2"])
+    );
+
+    const failedWebhookEventsResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/webhooks/events?provider=generic_webhook&status=failed",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    const failedWebhookEvents = failedWebhookEventsResponse.json<{
+      webhook_events: Array<{ externalEventId?: string; status: string }>;
+    }>().webhook_events;
+    expect(failedWebhookEvents.map((event) => event.externalEventId)).toEqual(
+      expect.arrayContaining(["generic_evt_bad_secret", "generic_evt_bad_payload"])
     );
   });
 

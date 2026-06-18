@@ -299,7 +299,7 @@ model WebhookEvent {
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([projectId, provider])
-  @@unique([provider, externalEventId])
+  @@unique([projectId, provider, externalEventId])
   @@index([status, createdAt])
   @@map("webhook_events")
 }

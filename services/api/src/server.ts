@@ -2,6 +2,7 @@ import {
   channelAdapterCatalog,
   createGenericWebhookAdapter,
   createStubChannelAdapter,
+  type GenericWebhookAdapterConfig,
   type StubChannelProvider
 } from "@opensupportai/adapter-channels";
 import { createChatwootAdapter, type ChatwootAdapterConfig } from "@opensupportai/adapter-chatwoot";
@@ -42,7 +43,8 @@ import type {
   JsonRecord,
   MessageRecord,
   ProjectRecord,
-  SupportRepository
+  SupportRepository,
+  WebhookEventRecord
 } from "./repositories/types";
 import {
   chatwootWebhookBodySchema,
@@ -64,6 +66,7 @@ import {
   sendMessageBodySchema,
   updateToolDefinitionBodySchema,
   upsertChatwootIntegrationBodySchema,
+  upsertGenericWebhookChannelBodySchema,
   upsertLlmProviderBodySchema,
   upsertToolDefinitionBodySchema
 } from "./schemas";
@@ -269,7 +272,17 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   app.post("/v1/channel-webhooks/generic", async (request) => {
     const body = genericChannelWebhookBodySchema.parse(request.body);
     const project = await authenticateClient(request, repository, stringValue(body["project_id"]));
-    const adapter = createGenericWebhookAdapter();
+    const integration = await repository.getIntegrationConfig(project.id, "generic_webhook");
+    if (integration?.status === "disabled") {
+      throw forbidden("Generic webhook channel is disabled");
+    }
+    const adapter = createGenericWebhookAdapter(
+      integration
+        ? genericWebhookAdapterConfig(
+            decryptJson(integration.configEncrypted, config.encryptionKey)
+          )
+        : {}
+    );
     let webhookEvent: Awaited<ReturnType<SupportRepository["createWebhookEvent"]>> | undefined;
 
     try {
@@ -283,6 +296,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         externalEventId: normalized.externalEventId,
         payload: body
       });
+      const idempotentResponse = idempotentWebhookResponse(webhookEvent, normalized.provider);
+      if (idempotentResponse) {
+        return idempotentResponse;
+      }
+
       const inbox = await repository.findInbox(project.id, normalized.inboxId);
       if (!inbox) {
         throw notFound("Inbox not found");
@@ -331,6 +349,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       webhookEvent ??= await repository.createWebhookEvent({
         projectId: project.id,
         provider: "generic_webhook",
+        externalEventId:
+          stringValue(body["event_id"]) ??
+          stringValue(body["eventId"]) ??
+          stringValue(body["id"]) ??
+          stringValue(recordValue(body["message"])?.["id"]) ??
+          stringValue(body["message_id"]),
         payload: body
       });
       await repository.markWebhookEvent({
@@ -338,6 +362,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         status: "failed",
         error: error instanceof Error ? error.message : "Unknown channel webhook error"
       });
+      if (error instanceof Error && error.message === "Invalid generic webhook secret") {
+        throw unauthorized("Invalid generic webhook secret");
+      }
       if (error instanceof ApiError) {
         throw error;
       }
@@ -400,11 +427,29 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       throw notFound("Channel adapter not found");
     }
 
+    const integration =
+      provider === "generic_webhook"
+        ? await repository.getIntegrationConfig(project.id, "generic_webhook")
+        : undefined;
     const adapter =
       provider === "generic_webhook"
-        ? createGenericWebhookAdapter()
+        ? createGenericWebhookAdapter(
+            integration
+              ? genericWebhookAdapterConfig(
+                  decryptJson(integration.configEncrypted, config.encryptionKey)
+                )
+              : {}
+          )
         : createStubChannelAdapter(provider);
-    const result = await adapter.testConnection();
+    const result =
+      provider === "generic_webhook" && integration?.status === "disabled"
+        ? {
+            provider,
+            ok: false,
+            status: "failed" as const,
+            message: "Generic webhook channel is disabled."
+          }
+        : await adapter.testConnection();
     await recordAudit(repository, request, {
       project,
       identity,
@@ -417,6 +462,60 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       }
     });
     return { result };
+  });
+
+  app.get("/v1/admin/projects/:projectId/channels/generic-webhook", async (request) => {
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:channels");
+    const integration = await repository.getIntegrationConfig(project.id, "generic_webhook");
+    return {
+      channel: integration ? safeIntegrationResponse(integration) : null
+    };
+  });
+
+  app.post("/v1/admin/projects/:projectId/channels/generic-webhook", async (request) => {
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:channels");
+    const body = upsertGenericWebhookChannelBodySchema.parse(request.body);
+    const integration = await repository.upsertIntegrationConfig({
+      projectId: project.id,
+      provider: "generic_webhook",
+      status: body.status,
+      configEncrypted: encryptJson(
+        {
+          webhook_secret: body.webhook_secret,
+          secret_header: body.secret_header.toLowerCase()
+        },
+        config.encryptionKey
+      ),
+      metadata: {
+        secret_configured: true,
+        secret_header: body.secret_header.toLowerCase()
+      }
+    });
+    await recordAudit(repository, request, {
+      project,
+      identity,
+      action: "channel.generic_webhook.upserted",
+      targetType: "integration_config",
+      targetId: integration.id,
+      metadata: {
+        provider: integration.provider,
+        status: integration.status,
+        secret_header: body.secret_header.toLowerCase()
+      }
+    });
+    return {
+      channel: safeIntegrationResponse(integration)
+    };
   });
 
   app.get("/v1/admin/projects/:projectId/api-keys", async (request) => {
@@ -645,6 +744,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     }
     return {
       conversation,
+      channel: channelSummaryFromMetadata(conversation.metadata),
       messages: await repository.listMessages(projectId, conversation.id),
       ai_runs: await repository.listAiRuns(projectId, conversation.id),
       tool_calls: await repository.listToolCalls({
@@ -1458,6 +1558,36 @@ function chatwootAdapterConfig(
   return fetchImpl ? { ...adapterConfig, fetchImpl } : adapterConfig;
 }
 
+function genericWebhookAdapterConfig(configPayload: JsonRecord): GenericWebhookAdapterConfig {
+  return {
+    webhookSecret: requiredConfigString(configPayload, "webhook_secret"),
+    secretHeader: stringValue(configPayload["secret_header"]) ?? "x-opensupportai-webhook-secret"
+  };
+}
+
+function idempotentWebhookResponse(
+  event: WebhookEventRecord,
+  provider: ChannelProvider
+):
+  | {
+      status: "processed" | "ignored";
+      provider: ChannelProvider;
+      webhook_event_id: string;
+      idempotent: true;
+    }
+  | undefined {
+  if (event.status !== "processed" && event.status !== "ignored") {
+    return undefined;
+  }
+
+  return {
+    status: event.status,
+    provider,
+    webhook_event_id: event.id,
+    idempotent: true
+  };
+}
+
 function safeIntegrationResponse(integration: IntegrationConfigRecord): {
   id: string;
   projectId: string;
@@ -1744,6 +1874,16 @@ type AdminConversationListItem = ConversationRecord & {
     externalConversationId?: string;
     updatedAt: string;
   };
+  channel?: ChannelConversationSummary;
+};
+
+type ChannelConversationSummary = {
+  provider: string;
+  externalConversationId?: string;
+  externalEventId?: string;
+  externalUserId?: string;
+  source?: string;
+  receivedAt?: string;
 };
 
 async function buildAdminConversationList(
@@ -1837,7 +1977,8 @@ async function buildAdminConversationListItem(
           externalConversationId: latestHandoff.externalConversationId,
           updatedAt: latestHandoff.updatedAt
         }
-      : undefined
+      : undefined,
+    channel: channelSummaryFromMetadata(conversation.metadata)
   };
 }
 
@@ -1865,6 +2006,10 @@ function matchesAdminConversationQuery(
     conversation.contact?.email,
     conversation.contact?.externalUserId,
     conversation.lastMessage?.text,
+    conversation.channel?.provider,
+    conversation.channel?.externalConversationId,
+    conversation.channel?.externalUserId,
+    conversation.channel?.source,
     conversation.handoff?.provider,
     conversation.handoff?.status,
     conversation.handoff?.externalConversationId
@@ -2239,6 +2384,27 @@ function channelMessageMetadata(
     externalConversationId: normalized.externalConversationId,
     externalUserId: normalized.contact.externalUserId,
     receivedAt: normalized.receivedAt
+  };
+}
+
+function channelSummaryFromMetadata(metadata: JsonRecord): ChannelConversationSummary | undefined {
+  const channel = recordValue(metadata["channel"]);
+  if (!channel) {
+    return undefined;
+  }
+
+  const provider = stringValue(channel["provider"]);
+  if (!provider) {
+    return undefined;
+  }
+
+  return {
+    provider,
+    externalConversationId: stringValue(channel["externalConversationId"]),
+    externalEventId: stringValue(channel["externalEventId"]),
+    externalUserId: stringValue(channel["externalUserId"]),
+    source: stringValue(metadata["source"]) ?? stringValue(channel["source"]),
+    receivedAt: stringValue(channel["receivedAt"])
   };
 }
 

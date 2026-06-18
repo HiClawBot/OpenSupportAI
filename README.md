@@ -148,13 +148,15 @@ pnpm smoke:chatwoot
 
 ### Multi-Channel Adapters
 
-v0.5 adds a generic inbound webhook adapter for external channels that can send JSON. The adapter accepts flat or nested payloads, normalizes contact/message/conversation fields, records webhook events, creates or reuses conversations by external `conversation_id`, stores the inbound user message, and lets the orchestrator answer through the existing AI flow.
+v0.5 adds a generic inbound webhook adapter for external channels that can send JSON. The adapter accepts flat or nested payloads, normalizes contact/message/conversation fields, records webhook events, creates or reuses conversations by external `conversation_id`, stores the inbound user message, and lets the orchestrator answer through the existing AI flow. v0.5.1 adds optional generic webhook secret configuration, project-scoped event idempotency, and channel metadata in admin conversation responses.
 
 Admin APIs expose the adapter catalog and test results:
 
 ```text
 GET  /v1/admin/projects/{project_id}/channels/adapters
 POST /v1/admin/projects/{project_id}/channels/adapters/{provider}/test
+GET  /v1/admin/projects/{project_id}/channels/generic-webhook
+POST /v1/admin/projects/{project_id}/channels/generic-webhook
 ```
 
 Generic inbound messages can be sent with the project public key:
@@ -162,6 +164,8 @@ Generic inbound messages can be sent with the project public key:
 ```text
 POST /v1/channel-webhooks/generic?public_key=pk_demo
 ```
+
+When a generic webhook secret is configured, inbound requests must include the configured secret header, `X-OpenSupportAI-Webhook-Secret`, `X-Webhook-Secret`, or `Authorization: Bearer <secret>`. Repeated processed `event_id` values are idempotent and do not create duplicate end-user messages.
 
 Slack, email, and Telegram are included as typed contract stubs so future adapters have explicit capabilities and configuration keys, but they do not connect to live provider APIs yet.
 
@@ -482,13 +486,15 @@ pnpm smoke:chatwoot
 
 ### 多渠道 Adapter
 
-v0.5 新增 generic inbound webhook adapter，适合能发送 JSON 的外部渠道。它支持扁平或嵌套 payload，会归一化 contact/message/conversation 字段，记录 webhook event，按外部 `conversation_id` 创建或复用会话，写入 end-user message，并复用现有 orchestrator 生成 AI 回复。
+v0.5 新增 generic inbound webhook adapter，适合能发送 JSON 的外部渠道。它支持扁平或嵌套 payload，会归一化 contact/message/conversation 字段，记录 webhook event，按外部 `conversation_id` 创建或复用会话，写入 end-user message，并复用现有 orchestrator 生成 AI 回复。v0.5.1 新增 generic webhook secret 配置、项目级 event 幂等，以及管理端会话响应中的 channel metadata。
 
 管理端 API 可查看 adapter catalog 并测试 adapter：
 
 ```text
 GET  /v1/admin/projects/{project_id}/channels/adapters
 POST /v1/admin/projects/{project_id}/channels/adapters/{provider}/test
+GET  /v1/admin/projects/{project_id}/channels/generic-webhook
+POST /v1/admin/projects/{project_id}/channels/generic-webhook
 ```
 
 Generic 入站消息可使用项目 public key 调用：
@@ -496,6 +502,8 @@ Generic 入站消息可使用项目 public key 调用：
 ```text
 POST /v1/channel-webhooks/generic?public_key=pk_demo
 ```
+
+配置 generic webhook secret 后，入站请求必须携带配置的 secret header、`X-OpenSupportAI-Webhook-Secret`、`X-Webhook-Secret`，或 `Authorization: Bearer <secret>`。已处理过的重复 `event_id` 会走幂等返回，不会重复创建 end-user message。
 
 Slack、Email、Telegram 已作为类型化契约 stub 纳入 catalog，明确 capabilities 和 configuration keys；它们还没有接入真实 provider API。
 

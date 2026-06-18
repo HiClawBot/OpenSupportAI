@@ -131,6 +131,12 @@ export const upsertChatwootIntegrationBodySchema = z.object({
   status: z.enum(["active", "disabled"]).default("active")
 });
 
+export const upsertGenericWebhookChannelBodySchema = z.object({
+  webhook_secret: z.string().min(8).max(500),
+  secret_header: z.string().trim().min(1).max(120).default("x-opensupportai-webhook-secret"),
+  status: z.enum(["active", "disabled"]).default("active")
+});
+
 export const chatwootWebhookBodySchema = z.record(z.string(), z.unknown());
 
 export const genericChannelWebhookBodySchema = z.record(z.string(), z.unknown());

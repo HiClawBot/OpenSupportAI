@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.5.1 - 2026-06-18
+
+English:
+
+- Added admin configuration for the generic webhook channel secret and secret header.
+- Added secret verification for configured generic webhook channels.
+- Made generic webhook event idempotency project-scoped by `project + provider + external_event_id`.
+- Avoided duplicate messages when a processed generic webhook event is delivered again.
+- Added channel metadata to admin conversation list and detail responses.
+- Expanded channel smoke testing for invalid public keys, invalid secrets, invalid payloads, duplicate events, and admin channel visibility.
+
+中文：
+
+- 管理端新增 generic webhook channel secret 和 secret header 配置。
+- 配置 generic webhook channel 后会校验 webhook secret。
+- Generic webhook 幂等键调整为项目级：`project + provider + external_event_id`。
+- 已处理的 generic webhook event 重复投递时不会重复写入消息。
+- 管理端会话列表和详情新增 channel metadata。
+- Channel smoke test 新增非法 public key、非法 secret、非法 payload、重复事件和管理端 channel 可见性覆盖。
+
 ## v0.5.0 - 2026-06-18
 
 English:

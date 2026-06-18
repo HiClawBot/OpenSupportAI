@@ -1,4 +1,4 @@
-# OpenSupportAI API 规范 v0.5
+# OpenSupportAI API 规范 v0.5.1
 
 ## 通用约定
 
@@ -336,12 +336,25 @@ Content-Type: application/json
 }
 ```
 
+重复投递已处理过的 `event_id` 时会走幂等返回，不会再次写入 end-user message：
+
+```json
+{
+  "status": "processed",
+  "provider": "generic_webhook",
+  "webhook_event_id": "webhook_123",
+  "idempotent": true
+}
+```
+
 处理语义：
 
 - `event_id` / `message.id` 会写入 `webhook_events.external_event_id`。
+- 幂等键为 `project_id + provider + external_event_id`。
 - 相同外部 `conversation_id` 会复用同一个本地 conversation。
 - 如果传入 `local_conversation_id` 或 `opensupportai_conversation_id`，会优先写入该本地 conversation。
 - 成功处理后写入 end-user message，并复用现有 orchestrator 生成 AI 回复。
+- 如果管理端配置了 generic webhook secret，请求必须携带配置的 secret header、`X-OpenSupportAI-Webhook-Secret`、`X-Webhook-Secret`，或 `Authorization: Bearer <secret>`。
 
 ---
 
@@ -588,6 +601,68 @@ POST /v1/admin/projects/{project_id}/channels/adapters/{provider}/test
 ```
 
 Stub provider 会返回 `ok=false`、`status=stub`，不会访问真实第三方平台。
+
+---
+
+### 获取 Generic Webhook Channel 配置
+
+```http
+GET /v1/admin/projects/{project_id}/channels/generic-webhook
+```
+
+响应不会返回 secret 明文：
+
+```json
+{
+  "channel": {
+    "id": "integration_123",
+    "provider": "generic_webhook",
+    "status": "active",
+    "configured": true,
+    "metadata": {
+      "secret_configured": true,
+      "secret_header": "x-opensupportai-webhook-secret"
+    }
+  }
+}
+```
+
+尚未配置时 `channel` 为 `null`。未配置时 generic webhook 仍可仅使用项目 public key；配置后必须校验 secret。
+
+---
+
+### 配置 Generic Webhook Channel
+
+```http
+POST /v1/admin/projects/{project_id}/channels/generic-webhook
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "webhook_secret": "secret_xxx",
+  "secret_header": "x-opensupportai-webhook-secret",
+  "status": "active"
+}
+```
+
+响应：
+
+```json
+{
+  "channel": {
+    "provider": "generic_webhook",
+    "status": "active",
+    "configured": true,
+    "metadata": {
+      "secret_configured": true,
+      "secret_header": "x-opensupportai-webhook-secret"
+    }
+  }
+}
+```
 
 ---
 
