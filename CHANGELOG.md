@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.9.0 - 2026-06-18
+
+English:
+
+- Added OpenAPI-style business tool execution for active project-scoped tools.
+- Added intent matching through tool metadata keywords and regex extraction.
+- Added HTTP tool safety controls: final-host allowlists, request timeouts, response-size limits, response-path shaping, answer templates, environment-backed bearer auth, and default mutation blocking for non-GET methods.
+- Added completed and failed tool-call records for OpenAPI tool execution.
+- Added API regression coverage and a real local `pnpm smoke:tools` end-to-end smoke test.
+- Updated API docs, README, release checklist, release notes, and workspace package versions for `0.9.0`.
+
+中文：
+
+- 新增 OpenAPI-style 业务工具执行，支持 active 的项目级工具定义。
+- 新增通过 tool metadata keywords 和正则抽取进行意图匹配。
+- 新增 HTTP 工具安全控制：最终 host allowlist、请求 timeout、响应大小限制、response path shaping、answer template、环境变量 bearer auth，以及非 GET 方法默认 mutation 阻断。
+- OpenAPI 工具执行会记录 completed 和 failed tool-call。
+- 新增 API 回归测试和真实本地 `pnpm smoke:tools` 端到端 smoke test。
+- 更新 API 文档、README、发布清单、release notes 和 workspace package versions 到 `0.9.0`。
+
 ## v0.8.0 - 2026-06-18
 
 English:

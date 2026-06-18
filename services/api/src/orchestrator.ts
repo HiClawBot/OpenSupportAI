@@ -50,6 +50,7 @@ export function createOrchestrator(
   options: {
     requestHandoff?: RequestHandoffHandler;
     generateGroundedAnswer?: GroundedAnswerGenerator;
+    businessToolFetch?: typeof fetch;
   } = {}
 ): Orchestrator {
   const handoffHandler =
@@ -91,11 +92,17 @@ export function createOrchestrator(
       }
 
       const startedAt = Date.now();
-      const toolResult = await maybeRunBusinessTool(repository, {
-        projectId: input.projectId,
-        conversationId: input.conversationId,
-        text
-      });
+      const toolResult = await maybeRunBusinessTool(
+        repository,
+        {
+          projectId: input.projectId,
+          conversationId: input.conversationId,
+          text
+        },
+        {
+          fetchImpl: options.businessToolFetch
+        }
+      );
       if (toolResult) {
         const message = await repository.createMessage({
           projectId: input.projectId,

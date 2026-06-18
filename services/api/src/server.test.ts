@@ -1339,6 +1339,274 @@ describe("OpenSupportAI API", () => {
     });
   });
 
+  it("executes allowlisted OpenAPI business tools with safety controls", async () => {
+    const toolRequests: Array<{ method: string; url: string }> = [];
+    const toolApp = await buildApp({
+      config: {
+        nodeEnv: "test",
+        port: 0,
+        storageMode: "memory",
+        adminToken: "admin_demo_key",
+        encryptionKey: "test_encryption_key",
+        corsOrigin: true
+      },
+      toolFetch: async (url, init) => {
+        const orderId = String(url).split("/").at(-1) ?? "unknown";
+        toolRequests.push({
+          method: String(init?.method ?? "GET"),
+          url: String(url)
+        });
+        return new Response(
+          JSON.stringify({
+            order_id: orderId,
+            status: "shipped",
+            eta: "2026-06-25"
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json"
+            }
+          }
+        );
+      }
+    });
+    await toolApp.ready();
+
+    try {
+      const upsertToolResponse = await toolApp.inject({
+        method: "POST",
+        url: "/v1/admin/projects/proj_demo/tools",
+        headers: {
+          authorization: "Bearer admin_demo_key"
+        },
+        payload: {
+          slug: "openapi.external_order_lookup",
+          name: "External order lookup",
+          description: "Looks up orders from an allowlisted HTTP tool.",
+          kind: "openapi",
+          status: "active",
+          method: "GET",
+          path: "https://tools.example.test/orders/{order_id}",
+          input_schema: {
+            type: "object",
+            required: ["order_id"],
+            properties: {
+              order_id: { type: "string" }
+            }
+          },
+          metadata: {
+            allowed_hosts: ["tools.example.test"],
+            timeout_ms: 1000,
+            max_response_bytes: 2048,
+            intent: {
+              keywords: ["外部订单"],
+              extract: {
+                field: "order_id",
+                pattern: "EXT-\\d{4}-\\d{4}"
+              }
+            },
+            answer_template: "外部订单 {order_id} 当前状态为 {status}，预计发货 {eta}。"
+          }
+        }
+      });
+      expect(upsertToolResponse.statusCode).toBe(200);
+
+      const conversationResponse = await toolApp.inject({
+        method: "POST",
+        url: "/v1/client/conversations",
+        headers: {
+          "x-opensupportai-public-key": "pk_demo"
+        },
+        payload: {
+          project_id: "proj_demo",
+          inbox_id: "inbox_default",
+          contact: {
+            external_user_id: "openapi_tool_user"
+          }
+        }
+      });
+      const conversation = conversationResponse.json<{ conversation_id: string }>();
+
+      const messageResponse = await toolApp.inject({
+        method: "POST",
+        url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
+        headers: {
+          "x-opensupportai-public-key": "pk_demo"
+        },
+        payload: {
+          type: "text",
+          text: "请帮我查外部订单 EXT-2026-9001"
+        }
+      });
+      expect(messageResponse.statusCode).toBe(200);
+      expect(toolRequests).toEqual([
+        {
+          method: "GET",
+          url: "https://tools.example.test/orders/EXT-2026-9001"
+        }
+      ]);
+
+      const messagesResponse = await toolApp.inject({
+        method: "GET",
+        url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
+        headers: {
+          "x-opensupportai-public-key": "pk_demo"
+        }
+      });
+      expect(
+        messagesResponse
+          .json<{ messages: Array<{ role: string; content: { text?: string } }> }>()
+          .messages.some((message) => message.content.text?.includes("当前状态为 shipped"))
+      ).toBe(true);
+
+      const toolCallsResponse = await toolApp.inject({
+        method: "GET",
+        url: `/v1/admin/projects/proj_demo/tool-calls?conversation_id=${conversation.conversation_id}`,
+        headers: {
+          authorization: "Bearer admin_demo_key"
+        }
+      });
+      expect(toolCallsResponse.statusCode).toBe(200);
+      const toolCalls = toolCallsResponse.json<{
+        tool_calls: Array<{ toolSlug: string; status: string; output?: Record<string, unknown> }>;
+      }>().tool_calls;
+      expect(toolCalls[0]).toMatchObject({
+        toolSlug: "openapi.external_order_lookup",
+        status: "completed",
+        output: {
+          status: "shipped"
+        }
+      });
+
+      const realOrderToolResponse = await toolApp.inject({
+        method: "POST",
+        url: "/v1/admin/projects/proj_demo/tools",
+        headers: {
+          authorization: "Bearer admin_demo_key"
+        },
+        payload: {
+          slug: "openapi.real_order_lookup",
+          name: "Real order lookup",
+          description: "Looks up real order-shaped IDs before demo fixtures.",
+          kind: "openapi",
+          status: "active",
+          method: "GET",
+          path: "https://tools.example.test/real-orders/{order_id}",
+          input_schema: {
+            type: "object",
+            required: ["order_id"],
+            properties: {
+              order_id: { type: "string" }
+            }
+          },
+          metadata: {
+            allowed_hosts: ["tools.example.test"],
+            intent: {
+              keywords: ["订单"],
+              extract: {
+                field: "order_id",
+                pattern: "ORD-\\d{4}-\\d{4}"
+              }
+            },
+            answer_template: "真实订单 {order_id} 当前状态为 {status}。"
+          }
+        }
+      });
+      expect(realOrderToolResponse.statusCode).toBe(200);
+
+      const realOrderMessageResponse = await toolApp.inject({
+        method: "POST",
+        url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
+        headers: {
+          "x-opensupportai-public-key": "pk_demo"
+        },
+        payload: {
+          type: "text",
+          text: "请帮我查订单 ORD-2026-1001"
+        }
+      });
+      expect(realOrderMessageResponse.statusCode).toBe(200);
+      expect(toolRequests.at(-1)).toEqual({
+        method: "GET",
+        url: "https://tools.example.test/real-orders/ORD-2026-1001"
+      });
+
+      const unsafeToolResponse = await toolApp.inject({
+        method: "POST",
+        url: "/v1/admin/projects/proj_demo/tools",
+        headers: {
+          authorization: "Bearer admin_demo_key"
+        },
+        payload: {
+          slug: "openapi.refund_create",
+          name: "Refund create",
+          description: "Attempts a mutating refund operation.",
+          kind: "openapi",
+          status: "active",
+          method: "POST",
+          path: "https://tools.example.test/refunds",
+          input_schema: {
+            type: "object",
+            required: ["order_id"],
+            properties: {
+              order_id: { type: "string" }
+            }
+          },
+          metadata: {
+            allowed_hosts: ["tools.example.test"],
+            intent: {
+              keywords: ["创建退款"],
+              extract: {
+                field: "order_id",
+                pattern: "EXT-\\d{4}-\\d{4}"
+              }
+            },
+            answer_template: "退款已创建"
+          }
+        }
+      });
+      expect(unsafeToolResponse.statusCode).toBe(200);
+
+      const unsafeMessageResponse = await toolApp.inject({
+        method: "POST",
+        url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
+        headers: {
+          "x-opensupportai-public-key": "pk_demo"
+        },
+        payload: {
+          type: "text",
+          text: "请创建退款 EXT-2026-9001"
+        }
+      });
+      expect(unsafeMessageResponse.statusCode).toBe(200);
+      expect(toolRequests).toHaveLength(2);
+
+      const failedToolCallsResponse = await toolApp.inject({
+        method: "GET",
+        url: `/v1/admin/projects/proj_demo/tool-calls?conversation_id=${conversation.conversation_id}`,
+        headers: {
+          authorization: "Bearer admin_demo_key"
+        }
+      });
+      expect(
+        failedToolCallsResponse.json<{
+          tool_calls: Array<{ toolSlug: string; status: string; error?: string }>;
+        }>().tool_calls
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            toolSlug: "openapi.refund_create",
+            status: "failed",
+            error: "OpenAPI tool mutation is not allowed"
+          })
+        ])
+      );
+    } finally {
+      await toolApp.close();
+    }
+  });
+
   it("generates agent assist insights and handoff analytics", async () => {
     const conversationResponse = await app.inject({
       method: "POST",

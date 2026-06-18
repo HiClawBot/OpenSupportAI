@@ -1,4 +1,4 @@
-# OpenSupportAI API 规范 v0.8.0
+# OpenSupportAI API 规范 v0.9.0
 
 ## 通用约定
 
@@ -429,7 +429,7 @@ Slack Events API message callback 示例：
 - `event.type=message` 会归一化为 OpenSupportAI end-user message。
 - 外部 conversation id 为 `team_id:channel:thread_ts`；没有 `thread_ts` 时使用 event `ts`。
 - `event_id` 会用于 webhook event 幂等；重复投递已处理事件时不会重复写入 end-user message。
-- 当前 v0.8 支持 Slack 入站消息，不包含 Slack 出站回复。
+- 从 v0.8 起支持 Slack 入站消息，不包含 Slack 出站回复。
 
 ---
 
@@ -667,7 +667,7 @@ GET /v1/admin/projects/{project_id}/channels/adapters
 }
 ```
 
-`slack` 在 v0.8 已支持签名后的 Events API 入站消息。`email`、`telegram` 仍是契约 stub，表示协议、能力和配置项已固定，但尚未连接真实 provider API。
+`slack` 从 v0.8 起支持签名后的 Events API 入站消息。`email`、`telegram` 仍是契约 stub，表示协议、能力和配置项已固定，但尚未连接真实 provider API。
 
 ---
 
@@ -877,6 +877,15 @@ GET /v1/admin/projects/{project_id}/tools?status=active&limit=100
       },
       "outputSchema": {
         "type": "object"
+      },
+      "metadata": {
+        "intent": {
+          "keywords": ["订单"],
+          "extract": {
+            "field": "order_id",
+            "pattern": "ORD-\\d{4}-\\d{4}"
+          }
+        }
       }
     }
   ]
@@ -904,10 +913,34 @@ Content-Type: application/json
   "method": "GET",
   "path": "https://api.example.com/customers/{customer_id}",
   "input_schema": {
-    "type": "object"
+    "type": "object",
+    "required": ["customer_id"],
+    "properties": {
+      "customer_id": {
+        "type": "string"
+      }
+    }
   },
   "output_schema": {
     "type": "object"
+  },
+  "metadata": {
+    "allowed_hosts": ["api.example.com"],
+    "timeout_ms": 3000,
+    "max_response_bytes": 65536,
+    "intent": {
+      "keywords": ["客户"],
+      "extract": {
+        "field": "customer_id",
+        "pattern": "CUS-\\d+"
+      }
+    },
+    "response_path": "data.customer",
+    "answer_template": "客户 {customer_id} 当前套餐为 {plan}，状态为 {status}。",
+    "auth": {
+      "type": "bearer_env",
+      "env": "CUSTOMER_API_TOKEN"
+    }
   }
 }
 ```
@@ -946,6 +979,36 @@ Content-Type: application/json
 
 ---
 
+### OpenAPI 工具执行契约
+
+v0.9 起，`kind=openapi` 且 `status=active` 的工具可以由 orchestrator 自动执行。执行前必须通过用户消息意图匹配和工具安全配置。
+
+支持的字段：
+
+- `method`: 默认 `GET`。非 `GET` 方法默认拒绝执行，必须显式设置 `metadata.allow_mutation=true`。
+- `path`: 可以是绝对 URL，也可以是相对路径。相对路径需要 `metadata.base_url`。
+- `input_schema.required`: 当前执行器会检查 required 字段是否已从用户消息或 `metadata.default_input` 中取得。
+- `metadata.intent.keywords`: 可选字符串数组。存在时，用户消息必须命中至少一个关键词。
+- `metadata.intent.extract`: 可选正则抽取配置，形如 `{ "field": "order_id", "pattern": "EXT-\\d{4}-\\d{4}", "flags": "i" }`。若正则有捕获组，使用第一组；否则使用完整匹配。
+- `metadata.default_input`: 可选默认输入，会与抽取结果合并，抽取结果优先。
+- `metadata.allowed_hosts`: 必填 host allowlist。最终 URL 的 `host` 必须在列表中。
+- `metadata.timeout_ms`: 可选请求超时时间，默认 `3000`。
+- `metadata.max_response_bytes`: 可选最大响应字节数，默认 `65536`。
+- `metadata.response_path`: 可选点号路径，用于从 JSON object 响应中选择子对象。
+- `metadata.answer_template`: 可选回复模板，支持 `{field}` 或 `{nested.field}` 占位符，字段来自输入和输出合并对象。
+- `metadata.auth`: 可选认证配置。当前支持 `{ "type": "bearer_env", "env": "ENV_NAME" }`，运行时从环境变量读取 token 并注入 `Authorization: Bearer ...`。
+
+执行失败时，API 会记录 `status=failed` 的 tool call 和错误信息，并向用户返回安全失败提示。执行成功时，API 会记录 `status=completed`、输入、输出和耗时。
+
+本地端到端 smoke test：
+
+```bash
+OPENSUPPORTAI_STORAGE=memory PORT=4000 pnpm --filter @opensupportai/api dev
+API_URL=http://localhost:4000 pnpm smoke:tools
+```
+
+---
+
 ### 获取 Tool Call 日志
 
 ```http
@@ -970,6 +1033,7 @@ GET /v1/admin/projects/{project_id}/tool-calls?conversation_id=conv_123&limit=10
         "found": true,
         "status": "paid"
       },
+      "error": null,
       "latencyMs": 1,
       "createdAt": "2026-06-18T00:00:00.000Z"
     }

@@ -1,4 +1,4 @@
-# OpenSupportAI v0.8.x 发布清单
+# OpenSupportAI v0.9.x 发布清单
 
 这份清单用于公开发布到 GitHub 前的最后检查。
 
@@ -16,6 +16,7 @@ pnpm build
 pnpm smoke:memory -- --help
 pnpm smoke:chatwoot -- --help
 pnpm smoke:channels -- --help
+pnpm smoke:tools -- --help
 ```
 
 GitHub Actions CI 会在 `main`、Pull Request 和 `v*` tag 上执行同一组核心检查。
@@ -62,7 +63,11 @@ VITE_API_URL=http://localhost:4000 pnpm --filter @opensupportai/demo-app dev
 - 管理端 `GET/POST/PATCH /v1/admin/projects/{project_id}/tools` 可列出、upsert、启停工具 allowlist。
 - Widget 中输入 `请帮我查订单 ORD-2026-1001` 会触发 `demo.order_lookup` 并返回订单状态。
 - Widget 中输入 `我的订阅状态是什么？` 会触发 `demo.subscription_lookup` 并返回订阅状态。
+- 管理端可 upsert `kind=openapi` 的 active tool，metadata 中配置 `intent`、`allowed_hosts`、timeout、response shaping 和 answer template。
+- 用户消息命中 OpenAPI tool intent 后，会调用 allowlist HTTP endpoint，写入 `status=completed` tool-call，并用 HTTP 响应生成回复。
+- 未配置 `metadata.allow_mutation=true` 的非 `GET` OpenAPI tool 不会发起外部 HTTP 请求，会记录 `status=failed` tool-call 和安全失败回复。
 - 管理端 `GET /v1/admin/projects/{project_id}/tool-calls` 可查看工具调用日志。
+- `pnpm smoke:tools` 在内存模式 API 启动后可跑通。
 - 管理端 `POST /v1/admin/projects/{project_id}/conversations/{conversation_id}/assist` 可生成会话 summary、tags 和 suggested replies。
 - 管理端 `GET /v1/admin/projects/{project_id}/analytics/handoffs` 可返回 handoff status/reason/provider 汇总。
 - 管理端 `GET /v1/admin/projects/{project_id}/channels/adapters` 可列出 generic webhook、Slack、Email、Telegram adapters。
@@ -193,6 +198,14 @@ git push origin v0.8.0
 gh release create v0.8.0 --title "OpenSupportAI v0.8.0" --notes-file docs/releases/v0.8.0.md
 ```
 
+v0.9.0：
+
+```bash
+git tag v0.9.0
+git push origin v0.9.0
+gh release create v0.9.0 --title "OpenSupportAI v0.9.0" --notes-file docs/releases/v0.9.0.md
+```
+
 发布说明建议包含：
 
 - v0.1 是可本地运行的 MVP，不是生产级 SaaS。
@@ -213,6 +226,7 @@ gh release create v0.8.0 --title "OpenSupportAI v0.8.0" --notes-file docs/releas
 - v0.6.0 将 OpenAI-compatible LLM client 接入 orchestrator 的 grounded answer path：知识命中时可调用真实 provider 生成回答，并保留 demo/no-provider/error 的确定性回退和 no-hit refusal。
 - v0.7.0 增加 knowledge document 原文存储、content hash、reindex API/Admin UI，以及真实 `knowledge.index` worker handler，可重建知识块并记录 indexed/failed 状态。
 - v0.8.0 增加 Slack 入站 MVP：签名校验、URL verification、message event normalization、admin config/test UI/API、webhook event 幂等和本地 channel smoke 覆盖。
+- v0.9.0 增加 OpenAPI-style business tool executor：支持 intent 抽取、host allowlist、timeout、response shaping、answer template、env bearer auth、mutation guard、failed tool-call 记录和本地 tool smoke 覆盖。
 
 ## 当前已知限制
 
@@ -220,9 +234,8 @@ gh release create v0.8.0 --title "OpenSupportAI v0.8.0" --notes-file docs/releas
 - PDF/URL 知识源在文档中作为方向保留，v0.1 API 主要支持直接提交 markdown/text 内容。
 - Worker runtime 已有基础 claim/handler/retry 语义，v0.7.0 已接入真实知识库 indexing handler；`webhook.retry` 实际重放处理器仍需后续实现。
 - v0.2.0 的 webhook retry 已完成管理端调度，实际重放处理器会在后续 worker 迭代中实现。
-- v0.3.0 的 `openapi` tool definition 已具备模型和管理 API，真实外部 HTTP 执行器仍需后续接入；当前自动执行仅限内置只读 demo tools。
+- v0.9.0 已接入 `openapi` tool definition 的 HTTP 执行器，但还没有自动 OpenAPI spec import、模型规划器、工具级密钥加密存储或人工审批流；生产部署建议通过环境变量注入 token 并只开放只读工具。
 - v0.4.0 的 agent assist 是确定性启发式生成，不调用外部 LLM；后续可替换为可配置的模型生成与评测流程。
 - v0.8.0 已新增 Slack 入站 Events API adapter；Slack 出站回复、Email 和 Telegram provider API 仍需后续实现。
 - v0.7.0 已新增知识库重建索引 worker handler，但 retrieval 仍以 keyword scoring 为主；embedding/vector retrieval 仍需后续实现。
-- v0.8.0 尚未新增 OpenAPI tool executor。
 - Docker Compose 启动需要在安装 Docker 的机器上单独验证。

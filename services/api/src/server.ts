@@ -86,6 +86,7 @@ export type BuildAppOptions = {
   eventHub?: EventHub;
   chatwootFetch?: typeof fetch;
   llmFetch?: typeof fetch;
+  toolFetch?: typeof fetch;
 };
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
@@ -111,7 +112,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     });
   const orchestrator = createOrchestrator(repository, eventHub, {
     requestHandoff: handoffRequester,
-    generateGroundedAnswer: createLlmGroundedAnswerGenerator(config, options.llmFetch)
+    generateGroundedAnswer: createLlmGroundedAnswerGenerator(config, options.llmFetch),
+    businessToolFetch: options.toolFetch
   });
   await repository.seedDemo();
 
