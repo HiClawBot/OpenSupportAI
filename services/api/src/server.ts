@@ -6,6 +6,7 @@ import {
   type StubChannelProvider
 } from "@opensupportai/adapter-channels";
 import { createChatwootAdapter, type ChatwootAdapterConfig } from "@opensupportai/adapter-chatwoot";
+import { OpenAICompatibleClient } from "@opensupportai/llm";
 import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import type {
@@ -29,7 +30,7 @@ import {
 } from "./errors";
 import { EventHub, formatSse } from "./event-hub";
 import { buildHandoffAnalytics, generateConversationInsight } from "./agent-assist";
-import { createOrchestrator, requestHandoff } from "./orchestrator";
+import { createOrchestrator, requestHandoff, type GroundedAnswerGenerator } from "./orchestrator";
 import { MemorySupportRepository } from "./repositories/memory";
 import { PrismaSupportRepository } from "./repositories/prisma";
 import type {
@@ -41,6 +42,8 @@ import type {
   InboxRecord,
   IntegrationConfigRecord,
   JsonRecord,
+  KnowledgeChunkRecord,
+  LlmProviderRecord,
   MessageRecord,
   ProjectRecord,
   SupportRepository,
@@ -76,6 +79,7 @@ export type BuildAppOptions = {
   repository?: SupportRepository;
   eventHub?: EventHub;
   chatwootFetch?: typeof fetch;
+  llmFetch?: typeof fetch;
 };
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
@@ -100,7 +104,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       ...input
     });
   const orchestrator = createOrchestrator(repository, eventHub, {
-    requestHandoff: handoffRequester
+    requestHandoff: handoffRequester,
+    generateGroundedAnswer: createLlmGroundedAnswerGenerator(config, options.llmFetch)
   });
   await repository.seedDemo();
 
@@ -1543,6 +1548,90 @@ async function completeChatwootHandoff(input: {
 
     return failedSession;
   }
+}
+
+function createLlmGroundedAnswerGenerator(
+  config: ApiConfig,
+  fetchImpl?: typeof fetch
+): GroundedAnswerGenerator {
+  return async ({ userText, chunks, provider }) => {
+    if (!provider) {
+      throw new Error("LLM provider is required");
+    }
+
+    const client = new OpenAICompatibleClient({
+      baseUrl: provider.baseUrl,
+      apiKey: llmApiKey(provider, config),
+      model: provider.model,
+      embeddingModel: provider.embeddingModel,
+      timeoutMs: 45_000,
+      fetchImpl
+    });
+    const response = await client.generate({
+      model: provider.model,
+      temperature: 0.2,
+      messages: groundedAnswerMessages(userText, chunks)
+    });
+
+    return {
+      answer: response.text,
+      provider: provider.provider,
+      model: response.model,
+      promptVersion: "v0.6",
+      inputTokens: response.usage?.promptTokens,
+      outputTokens: response.usage?.completionTokens,
+      confidence: Math.min(1, 0.6 + chunks.length * 0.08),
+      metadata: {
+        generated_by: "openai_compatible_grounded_answer_v0.6",
+        llm_base_url: provider.baseUrl,
+        embedding_model: provider.embeddingModel
+      }
+    };
+  };
+}
+
+function groundedAnswerMessages(
+  userText: string,
+  chunks: KnowledgeChunkRecord[]
+): Array<{ role: "system" | "user"; content: string }> {
+  return [
+    {
+      role: "system",
+      content: [
+        "You are OpenSupportAI, a support assistant embedded in a product.",
+        "Answer only from the provided knowledge snippets.",
+        "If the snippets do not answer the question, say you cannot confirm from the current knowledge base and suggest human handoff.",
+        "Keep the answer concise, practical, and in the same language as the customer."
+      ].join(" ")
+    },
+    {
+      role: "user",
+      content: [
+        `Customer question:\n${userText}`,
+        "Knowledge snippets:",
+        chunks
+          .map((chunk, index) => {
+            const title =
+              typeof chunk.metadata["title"] === "string" ? ` (${chunk.metadata["title"]})` : "";
+            return `[${index + 1}]${title}\n${chunk.content}`;
+          })
+          .join("\n\n")
+      ].join("\n\n")
+    }
+  ];
+}
+
+function llmApiKey(provider: LlmProviderRecord, config: ApiConfig): string {
+  if (provider.apiKeyEncrypted.startsWith("v1.")) {
+    return requiredConfigString(
+      decryptJson(provider.apiKeyEncrypted, config.encryptionKey),
+      "api_key"
+    );
+  }
+  if (provider.baseUrl === "demo://local") {
+    return provider.apiKeyEncrypted;
+  }
+  throw new Error("Unsupported LLM API key format");
 }
 
 function chatwootAdapterConfig(

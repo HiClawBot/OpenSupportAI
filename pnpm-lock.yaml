@@ -162,6 +162,9 @@ importers:
       "@opensupportai/adapter-chatwoot":
         specifier: workspace:*
         version: link:../../packages/adapters/chatwoot
+      "@opensupportai/llm":
+        specifier: workspace:*
+        version: link:../../packages/llm
       "@opensupportai/protocol":
         specifier: workspace:*
         version: link:../../packages/protocol

@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.6.0 - 2026-06-18
+
+English:
+
+- Wired the OpenAI-compatible LLM client into the API orchestrator for knowledge-grounded answer generation.
+- Kept deterministic grounded answers for demo/no-provider/error fallback paths and preserved no-hit refusal behavior.
+- Recorded grounded generation provider, model, prompt version, token usage, confidence, retrieved chunk IDs, and fallback metadata in `ai_runs`.
+- Added regression coverage for configured LLM generation through the client message flow.
+- Bumped workspace package versions to `0.6.0`.
+
+中文：
+
+- 将 OpenAI-compatible LLM client 接入 API orchestrator，用于生成基于知识库的回答。
+- 保留 demo、未配置 provider、模型错误等场景下的确定性 grounded answer fallback，并继续保持无命中不编造策略。
+- 在 `ai_runs` 中记录 grounded generation 的 provider、model、prompt version、token usage、confidence、retrieved chunk IDs 和 fallback metadata。
+- 新增通过客户端消息流程触发已配置 LLM generation 的回归测试。
+- Workspace package versions 升级到 `0.6.0`。
+
 ## v0.5.2 - 2026-06-18
 
 English:

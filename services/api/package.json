@@ -1,6 +1,6 @@
 {
   "name": "@opensupportai/api",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -16,6 +16,7 @@
     "@fastify/cors": "^11.2.0",
     "@opensupportai/adapter-channels": "workspace:*",
     "@opensupportai/adapter-chatwoot": "workspace:*",
+    "@opensupportai/llm": "workspace:*",
     "@opensupportai/protocol": "workspace:*",
     "@prisma/client": "^7.8.0",
     "fastify": "^5.8.5",

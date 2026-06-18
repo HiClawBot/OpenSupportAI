@@ -1,4 +1,4 @@
-# OpenSupportAI API 规范 v0.5.1
+# OpenSupportAI API 规范 v0.6.0
 
 ## 通用约定
 
@@ -353,7 +353,7 @@ Content-Type: application/json
 - 幂等键为 `project_id + provider + external_event_id`。
 - 相同外部 `conversation_id` 会复用同一个本地 conversation。
 - 如果传入 `local_conversation_id` 或 `opensupportai_conversation_id`，会优先写入该本地 conversation。
-- 成功处理后写入 end-user message，并复用现有 orchestrator 生成 AI 回复。
+- 成功处理后写入 end-user message，并复用现有 orchestrator 生成 AI 回复；v0.6 在配置 active 且非 demo 的 LLM provider 后，会对有知识命中的问题调用 OpenAI-compatible grounded answer path。
 - 如果管理端配置了 generic webhook secret，请求必须携带配置的 secret header、`X-OpenSupportAI-Webhook-Secret`、`X-Webhook-Secret`，或 `Authorization: Bearer <secret>`。
 
 ---
@@ -418,6 +418,14 @@ Content-Type: application/json
 ```
 
 API Key 必须加密存储，不可在 GET 响应中返回明文。
+
+v0.6 生成语义：
+
+- 当用户问题检索到知识块，且项目存在 active、非 `demo://local` 的 OpenAI-compatible provider 时，orchestrator 会调用该 provider 生成 grounded answer。
+- Prompt 会包含用户问题和检索到的知识片段，并要求模型只基于片段回答；如果片段不足以回答，应说明无法根据当前知识库确认并建议转人工。
+- `ai_runs` 会记录 provider、model、prompt version、token usage、latency、retrieved chunk ids 和 generation metadata。
+- 未配置 provider、使用 `demo://local`、模型请求失败或模型返回空内容时，会回退到确定性 grounded answer；失败回退会在 `ai_runs.metadata.llm_fallback` 和 `llm_error` 中记录原因。
+- 无知识命中时仍走 no-hit refusal，不调用 LLM，也不会编造答案。
 
 ---
 
@@ -577,7 +585,7 @@ GET /v1/admin/projects/{project_id}/channels/adapters
 }
 ```
 
-`slack`、`email`、`telegram` 在 v0.5 是契约 stub，表示协议、能力和配置项已固定，但尚未连接真实 provider API。
+`slack`、`email`、`telegram` 在 v0.6 仍是契约 stub，表示协议、能力和配置项已固定，但尚未连接真实 provider API。
 
 ---
 

@@ -1,4 +1,4 @@
-# OpenSupportAI v0.5.x 发布清单
+# OpenSupportAI v0.6.x 发布清单
 
 这份清单用于公开发布到 GitHub 前的最后检查。
 
@@ -42,6 +42,9 @@ VITE_API_URL=http://localhost:4000 pnpm --filter @opensupportai/demo-app dev
 - `http://localhost:3001` 能打开 Demo app。
 - Demo app 右下角 Widget 能创建会话。
 - 输入 `怎么取消订阅？` 后能得到基于 demo 知识库的回答。
+- 配置 active 且非 `demo://local` 的 OpenAI-compatible LLM provider 后，知识命中的用户问题会通过 LLM-backed grounded answer path 生成回答，并在 `ai_runs` 中记录 provider/model/prompt/token metadata。
+- 未配置 LLM provider、使用 `demo://local` 或模型请求失败时，知识命中的用户问题会回退到确定性 grounded answer。
+- 无知识命中时 API 仍拒绝编造答案，并建议转人工。
 - 输入 `我要转人工` 后会话状态进入 `handoff_requested`。
 - 管理台能看到对应 conversation、message 和 knowledge document。
 - 管理台会话列表的状态筛选、搜索、刷新、队列指标、最近消息预览和失败 handoff 计数可正常显示。
@@ -157,13 +160,21 @@ git push origin v0.5.2
 gh release create v0.5.2 --title "OpenSupportAI v0.5.2" --notes-file docs/releases/v0.5.2.md
 ```
 
+v0.6.0：
+
+```bash
+git tag v0.6.0
+git push origin v0.6.0
+gh release create v0.6.0 --title "OpenSupportAI v0.6.0" --notes-file docs/releases/v0.6.0.md
+```
+
 发布说明建议包含：
 
 - v0.1 是可本地运行的 MVP，不是生产级 SaaS。
 - 支持 memory mode，用于无数据库快速演示。
 - Docker Compose 支持 Postgres/pgvector、Redis、MinIO、API、worker、admin、demo app。
 - Chatwoot 是 optional profile 和 adapter，不是内置客服台。
-- LLM provider 已有 OpenAI-compatible package，但 demo orchestrator 默认使用确定性知识库回答。
+- v0.6.0 已接入 OpenAI-compatible LLM-backed grounded answer path；demo/no-provider/error 场景仍使用确定性知识库回答。
 - v0.1.1 增加 Chatwoot 连接测试、handoff retry、状态同步、CI 和 smoke-test 脚本。
 - v0.1.2 增加管理台会话运营筛选、摘要指标、最近消息预览和最新 handoff 状态。
 - v0.1.3 增加 API 限流、memory smoke test、管理台错误提示和 favicon polish。
@@ -174,6 +185,7 @@ gh release create v0.5.2 --title "OpenSupportAI v0.5.2" --notes-file docs/releas
 - v0.5.0 增加 generic webhook 入站 channel adapter、channel adapter catalog/test API，以及 Slack/email/Telegram 契约 stub。
 - v0.5.1 增加 generic webhook secret 配置、项目级 event 幂等、channel metadata 管理端可见性和负向 smoke 覆盖。
 - v0.5.2 增加 Admin Console Operations 区域，覆盖 ops health、channel diagnostics、generic webhook 配置、API keys、audit logs、jobs、webhook events 和 tool-call logs，并升级 GitHub Actions action 版本线。
+- v0.6.0 将 OpenAI-compatible LLM client 接入 orchestrator 的 grounded answer path：知识命中时可调用真实 provider 生成回答，并保留 demo/no-provider/error 的确定性回退和 no-hit refusal。
 
 ## 当前已知限制
 
@@ -185,5 +197,6 @@ gh release create v0.5.2 --title "OpenSupportAI v0.5.2" --notes-file docs/releas
 - v0.4.0 的 agent assist 是确定性启发式生成，不调用外部 LLM；后续可替换为可配置的模型生成与评测流程。
 - v0.5.0 的 Slack/email/Telegram 是 adapter 契约 stub；当前可真实本地验证的是 generic webhook adapter。
 - v0.5.1 只强化 generic webhook 安全和可观测性；还没有接入真实 Slack/Email/Telegram provider API。
-- v0.5.2 主要补齐已有后端运维 API 的管理台入口；还没有新增真实 worker handler、LLM-backed answer path 或真实 Slack/Email/Telegram provider API。
+- v0.6.0 已新增 LLM-backed grounded answer path，但 retrieval 仍以 keyword scoring 为主，embedding/vector retrieval 仍待 v0.7 生产知识库管线实现。
+- v0.6.0 尚未新增真实 worker handler、真实 Slack/Email/Telegram provider API 或 OpenAPI tool executor。
 - Docker Compose 启动需要在安装 Docker 的机器上单独验证。

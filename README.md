@@ -19,15 +19,15 @@
 
 OpenSupportAI gives SaaS products, internal tools, apps, and websites a project-scoped AI support layer with a chat widget, headless SDK, conversation API, knowledge-grounded answers, human handoff, and admin workflows.
 
-The v0.5 release line is still intentionally small: it is not a full CRM or ticketing suite, and it does not copy Chatwoot, Tiledesk, or Zammad. Instead, OpenSupportAI provides the AI support runtime that can receive messages from channels and hand conversations to those systems.
+The v0.6 release line is still intentionally focused: it is not a full CRM or ticketing suite, and it does not copy Chatwoot, Tiledesk, or Zammad. Instead, OpenSupportAI provides the AI support runtime that can receive messages from channels, generate knowledge-grounded answers, and hand conversations to those systems.
 
-### What Works in v0.5
+### What Works in v0.6
 
 - Fastify API with health, client conversation, message, SSE events, handoff, admin, knowledge, LLM config, Chatwoot config, and webhook endpoints.
 - Prisma schema and migration for PostgreSQL with pgvector-backed knowledge chunks.
 - In-memory demo storage for instant local development without Docker or a database.
 - Seeded demo project: `proj_demo`, public key `pk_demo`, default inbox `inbox_default`, admin token `admin_demo_key`.
-- Deterministic RAG-style demo orchestration with a no-hit no-hallucination fallback.
+- LLM-backed grounded answer generation through configured OpenAI-compatible providers, with deterministic fallback for demo/no-provider/error paths and a no-hit no-hallucination refusal.
 - OpenAI-compatible LLM and embedding client package.
 - Headless JavaScript SDK.
 - Embeddable browser widget with Shadow DOM UI, SSE updates, conversation persistence, source references, and handoff action.
@@ -146,9 +146,15 @@ For a live local smoke test after the API and Chatwoot are running, set the `CHA
 pnpm smoke:chatwoot
 ```
 
+### LLM-Backed Grounded Answers
+
+Configure an OpenAI-compatible provider from the admin console or `POST /v1/admin/projects/{project_id}/llm`. When a user question retrieves matching knowledge chunks, v0.6 sends the question and snippets to the configured provider and records provider/model/prompt/token metadata in `ai_runs`.
+
+If no provider is configured, the provider is `demo://local`, the model request fails, or the model returns an empty answer, OpenSupportAI falls back to the deterministic grounded answer path. If retrieval finds no relevant chunks, the assistant still refuses to invent an answer and suggests human handoff.
+
 ### Multi-Channel Adapters
 
-v0.5 adds a generic inbound webhook adapter for external channels that can send JSON. The adapter accepts flat or nested payloads, normalizes contact/message/conversation fields, records webhook events, creates or reuses conversations by external `conversation_id`, stores the inbound user message, and lets the orchestrator answer through the existing AI flow. v0.5.1 adds optional generic webhook secret configuration, project-scoped event idempotency, and channel metadata in admin conversation responses. v0.5.2 exposes channel adapter diagnostics and generic webhook configuration in the admin console Operations area.
+v0.5 adds a generic inbound webhook adapter for external channels that can send JSON. The adapter accepts flat or nested payloads, normalizes contact/message/conversation fields, records webhook events, creates or reuses conversations by external `conversation_id`, stores the inbound user message, and lets the orchestrator answer through the existing AI flow. v0.5.1 adds optional generic webhook secret configuration, project-scoped event idempotency, and channel metadata in admin conversation responses. v0.5.2 exposes channel adapter diagnostics and generic webhook configuration in the admin console Operations area. v0.6 lets those inbound channel messages use the same LLM-backed grounded answer path when an active non-demo LLM provider is configured.
 
 Admin APIs expose the adapter catalog and test results:
 
@@ -360,15 +366,15 @@ See [docs/RELEASE_CHECKLIST.zh-CN.md](./docs/RELEASE_CHECKLIST.zh-CN.md) for the
 
 OpenSupportAI 是一套开源、可嵌入、LLM-native 的 AI 智能客服运行时。它为 SaaS 产品、内部工具、App 和网站提供按项目隔离的 AI 客服层，包含聊天 Widget、Headless SDK、会话 API、基于知识库的回答、人工转接和管理台工作流。
 
-v0.5 版本线仍然保持小而清晰：不做完整 CRM，不做复杂工单系统，也不复制 Chatwoot、Tiledesk 或 Zammad。OpenSupportAI 专注于 AI 客服运行时，可以从不同渠道接收消息，并把会话转交给这些客服系统。
+v0.6 版本线仍然保持聚焦：不做完整 CRM，不做复杂工单系统，也不复制 Chatwoot、Tiledesk 或 Zammad。OpenSupportAI 专注于 AI 客服运行时，可以从不同渠道接收消息，生成基于知识库的回答，并把会话转交给这些客服系统。
 
-### v0.5 已实现能力
+### v0.6 已实现能力
 
 - Fastify API：健康检查、客户端会话、消息、SSE 事件、人工转接、管理端、知识库、LLM 配置、Chatwoot 配置和 webhook。
 - Prisma schema 与 migration，支持 PostgreSQL + pgvector 知识块模型。
 - 内存模式 demo，无需 Docker 或数据库即可本地跑通。
 - 内置 demo 项目：`proj_demo`，public key `pk_demo`，默认 inbox `inbox_default`，admin token `admin_demo_key`。
-- 确定性的 RAG demo 编排：有知识命中则回答，无命中则拒绝编造并建议转人工。
+- 通过已配置的 OpenAI-compatible provider 生成基于知识库的回答；demo、未配置 provider 或模型失败时会回退到确定性回答；无知识命中时仍拒绝编造并建议转人工。
 - OpenAI-compatible LLM 与 embedding 客户端包。
 - Headless JavaScript SDK。
 - 可嵌入浏览器 Widget：Shadow DOM UI、SSE 更新、会话持久化、source references 和人工转接。
@@ -487,9 +493,15 @@ API 和 Chatwoot 都启动后，可以设置 `deploy/docker-compose/.env.example
 pnpm smoke:chatwoot
 ```
 
+### LLM 支撑的知识库回答
+
+可以在 Admin Console 或 `POST /v1/admin/projects/{project_id}/llm` 配置 OpenAI-compatible provider。当用户问题检索到匹配的知识块时，v0.6 会把问题和知识片段发送给已配置的 provider，并在 `ai_runs` 中记录 provider、model、prompt、token 等元数据。
+
+如果未配置 provider、provider 是 `demo://local`、模型请求失败，或模型返回空内容，OpenSupportAI 会回退到确定性的知识库回答路径。如果检索没有找到相关知识块，助手仍会拒绝编造答案并建议转人工。
+
 ### 多渠道 Adapter
 
-v0.5 新增 generic inbound webhook adapter，适合能发送 JSON 的外部渠道。它支持扁平或嵌套 payload，会归一化 contact/message/conversation 字段，记录 webhook event，按外部 `conversation_id` 创建或复用会话，写入 end-user message，并复用现有 orchestrator 生成 AI 回复。v0.5.1 新增 generic webhook secret 配置、项目级 event 幂等，以及管理端会话响应中的 channel metadata。v0.5.2 在 Admin Console Operations 区域暴露 channel adapter diagnostics 和 generic webhook 配置。
+v0.5 新增 generic inbound webhook adapter，适合能发送 JSON 的外部渠道。它支持扁平或嵌套 payload，会归一化 contact/message/conversation 字段，记录 webhook event，按外部 `conversation_id` 创建或复用会话，写入 end-user message，并复用现有 orchestrator 生成 AI 回复。v0.5.1 新增 generic webhook secret 配置、项目级 event 幂等，以及管理端会话响应中的 channel metadata。v0.5.2 在 Admin Console Operations 区域暴露 channel adapter diagnostics 和 generic webhook 配置。v0.6 在配置 active 且非 demo 的 LLM provider 后，可让这些入站渠道消息复用同一条 LLM-backed grounded answer 路径。
 
 管理端 API 可查看 adapter catalog 并测试 adapter：
 

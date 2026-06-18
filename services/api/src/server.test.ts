@@ -146,6 +146,138 @@ describe("OpenSupportAI API", () => {
     expect(messages.messages.at(-1)?.content.text).toContain("无法根据当前知识库确认");
   });
 
+  it("generates grounded answers through a configured OpenAI-compatible LLM", async () => {
+    const llmRequests: Array<{ model?: string; messages?: Array<{ content?: string }> }> = [];
+    const llmApp = await buildApp({
+      config: {
+        nodeEnv: "test",
+        port: 0,
+        storageMode: "memory",
+        adminToken: "admin_demo_key",
+        encryptionKey: "test_encryption_key",
+        corsOrigin: true
+      },
+      llmFetch: async (_url, init) => {
+        llmRequests.push(JSON.parse(String(init?.body ?? "{}")));
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: "LLM grounded answer: you can cancel from billing settings."
+                }
+              }
+            ],
+            usage: {
+              prompt_tokens: 37,
+              completion_tokens: 9,
+              total_tokens: 46
+            }
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json"
+            }
+          }
+        );
+      }
+    });
+    await llmApp.ready();
+
+    try {
+      const providerResponse = await llmApp.inject({
+        method: "POST",
+        url: "/v1/admin/projects/proj_demo/llm",
+        headers: {
+          authorization: "Bearer admin_demo_key"
+        },
+        payload: {
+          base_url: "https://llm.example.test/v1",
+          model: "support-grounded",
+          embedding_model: "support-embedding",
+          api_key: "llm_secret",
+          status: "active"
+        }
+      });
+      expect(providerResponse.statusCode).toBe(200);
+
+      const conversationResponse = await llmApp.inject({
+        method: "POST",
+        url: "/v1/client/conversations",
+        headers: {
+          "x-opensupportai-public-key": "pk_demo"
+        },
+        payload: {
+          project_id: "proj_demo",
+          inbox_id: "inbox_default",
+          contact: {
+            external_user_id: "llm_user"
+          }
+        }
+      });
+      const conversation = conversationResponse.json<{ conversation_id: string }>();
+
+      const sendResponse = await llmApp.inject({
+        method: "POST",
+        url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
+        headers: {
+          "x-opensupportai-public-key": "pk_demo"
+        },
+        payload: {
+          type: "text",
+          text: "怎么取消订阅？"
+        }
+      });
+      expect(sendResponse.statusCode).toBe(200);
+
+      const messagesResponse = await llmApp.inject({
+        method: "GET",
+        url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
+        headers: {
+          "x-opensupportai-public-key": "pk_demo"
+        }
+      });
+      const messages = messagesResponse.json<{
+        messages: Array<{ role: string; content: { text?: string } }>;
+      }>().messages;
+      expect(messages.at(-1)?.content.text).toBe(
+        "LLM grounded answer: you can cancel from billing settings."
+      );
+      expect(llmRequests[0]?.model).toBe("support-grounded");
+      expect(llmRequests[0]?.messages?.at(-1)?.content).toContain("取消订阅");
+
+      const adminResponse = await llmApp.inject({
+        method: "GET",
+        url: `/v1/admin/projects/proj_demo/conversations/${conversation.conversation_id}`,
+        headers: {
+          authorization: "Bearer admin_demo_key"
+        }
+      });
+      const aiRuns = adminResponse.json<{
+        ai_runs: Array<{
+          provider: string;
+          model: string;
+          promptVersion: string;
+          inputTokens?: number;
+          outputTokens?: number;
+          metadata: Record<string, unknown>;
+        }>;
+      }>().ai_runs;
+      expect(aiRuns[0]).toMatchObject({
+        provider: "openai_compatible",
+        model: "support-grounded",
+        promptVersion: "v0.6",
+        inputTokens: 37,
+        outputTokens: 9
+      });
+      expect(aiRuns[0]?.metadata.llm_generated).toBe(true);
+      expect(aiRuns[0]?.metadata.generated_by).toBe("openai_compatible_grounded_answer_v0.6");
+    } finally {
+      await llmApp.close();
+    }
+  });
+
   it("applies fixed-window rate limits when enabled", async () => {
     const limitedApp = await buildApp({
       config: {
