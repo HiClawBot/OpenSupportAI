@@ -11,10 +11,14 @@
 - docs/ARCHITECTURE.zh-CN.md：架构设计
 - docs/API_SPEC.zh-CN.md：API 规范
 - docs/DATA_MODEL.zh-CN.md：数据模型
+- docs/PUBLIC_CONTRACTS.zh-CN.md：v1.0 公共契约
+- docs/UPGRADE_TO_V1.zh-CN.md：v1.0 升级指南
+- docs/PRODUCTION_DEPLOYMENT.zh-CN.md：v1.0 生产部署指南
 - docs/RAG.zh-CN.md：RAG 设计
 - docs/CHATWOOT_ADAPTER.zh-CN.md：Chatwoot Adapter
 - docs/SECURITY.zh-CN.md：安全设计
 - docs/ROADMAP.zh-CN.md：路线图
+- docs/RELEASE_CHECKLIST.zh-CN.md：发布清单
 
 ## 推荐使用方式
 

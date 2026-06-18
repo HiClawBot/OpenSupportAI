@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.0.0 - 2026-06-18
+
+English:
+
+- Promoted OpenSupportAI to the first stable public release line.
+- Froze v1.0 public contracts for the REST API, JavaScript SDK, Widget initialization API, Chatwoot handoff adapter, generic/Slack inbound channel adapters, and OpenAPI-style business tool executor.
+- Added v1.0 public contract documentation, upgrade guide, and production deployment guide.
+- Expanded security guidance with OpenAPI business tool controls and production hardening requirements.
+- Updated API spec, README, data model, roadmap, release checklist, release notes, and workspace package versions for `1.0.0`.
+
+中文：
+
+- 将 OpenSupportAI 推进到首个稳定公开发布版本线。
+- 冻结 v1.0 公共契约：REST API、JavaScript SDK、Widget 初始化 API、Chatwoot handoff adapter、generic/Slack 入站 channel adapter 和 OpenAPI-style business tool executor。
+- 新增 v1.0 公共契约文档、升级指南和生产部署指南。
+- 扩展安全文档，覆盖 OpenAPI business tool 控制和生产硬化要求。
+- 更新 API 规范、README、数据模型、路线图、发布清单、release notes 和 workspace package versions 到 `1.0.0`。
+
 ## v0.9.0 - 2026-06-18
 
 English:

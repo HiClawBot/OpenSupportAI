@@ -1,4 +1,4 @@
-# OpenSupportAI API 规范 v0.9.0
+# OpenSupportAI API 规范 v1.0.0
 
 ## 通用约定
 
@@ -1633,7 +1633,9 @@ export type SupportEvent =
 
 ## 版本策略
 
-- `/v1` 在 v1.0 前允许小幅调整。
+- `/v1` 从 v1.0.0 起进入稳定公共契约。
+- Patch/minor 版本不得删除或重命名现有公开响应字段。
+- 新字段、endpoint 和事件必须以向后兼容方式添加。
 - SDK 每次破坏性改动必须同步更新 protocol 类型。
 - Widget 不应依赖未公开的内部 API。
-- 后续 v1.0 后遵循语义化版本。
+- 破坏性变更必须进入下一个 major 版本，并提供迁移说明。

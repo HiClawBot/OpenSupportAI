@@ -1,4 +1,4 @@
-# OpenSupportAI v0.9.x 发布清单
+# OpenSupportAI v1.0.x 发布清单
 
 这份清单用于公开发布到 GitHub 前的最后检查。
 
@@ -84,6 +84,9 @@ VITE_API_URL=http://localhost:4000 pnpm --filter @opensupportai/demo-app dev
 - Slack `event_callback` message payload 会写入入站消息，按 `team_id:channel:thread_ts` 复用本地 conversation。
 - 重复投递已处理过的 Slack `event_id` 不会重复创建 end-user message。
 - `pnpm smoke:channels` 在内存模式 API 启动后可跑通。
+- v1.0 公共契约文档已更新：`docs/PUBLIC_CONTRACTS.zh-CN.md`。
+- v1.0 升级指南已更新：`docs/UPGRADE_TO_V1.zh-CN.md`。
+- v1.0 生产部署指南已更新：`docs/PRODUCTION_DEPLOYMENT.zh-CN.md`。
 
 ## Docker Compose Smoke Test
 
@@ -206,6 +209,14 @@ git push origin v0.9.0
 gh release create v0.9.0 --title "OpenSupportAI v0.9.0" --notes-file docs/releases/v0.9.0.md
 ```
 
+v1.0.0：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+gh release create v1.0.0 --title "OpenSupportAI v1.0.0" --notes-file docs/releases/v1.0.0.md
+```
+
 发布说明建议包含：
 
 - v0.1 是可本地运行的 MVP，不是生产级 SaaS。
@@ -227,6 +238,7 @@ gh release create v0.9.0 --title "OpenSupportAI v0.9.0" --notes-file docs/releas
 - v0.7.0 增加 knowledge document 原文存储、content hash、reindex API/Admin UI，以及真实 `knowledge.index` worker handler，可重建知识块并记录 indexed/failed 状态。
 - v0.8.0 增加 Slack 入站 MVP：签名校验、URL verification、message event normalization、admin config/test UI/API、webhook event 幂等和本地 channel smoke 覆盖。
 - v0.9.0 增加 OpenAPI-style business tool executor：支持 intent 抽取、host allowlist、timeout、response shaping、answer template、env bearer auth、mutation guard、failed tool-call 记录和本地 tool smoke 覆盖。
+- v1.0.0 冻结公共 REST API、SDK、Widget 初始化参数、Chatwoot/generic/Slack adapter 和 OpenAPI tool executor 契约，并新增升级指南、生产部署指南和安全硬化说明。
 
 ## 当前已知限制
 

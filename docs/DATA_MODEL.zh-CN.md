@@ -1,4 +1,4 @@
-# OpenSupportAI 数据模型 v0.5
+# OpenSupportAI 数据模型 v1.0
 
 ## 设计目标
 
@@ -382,7 +382,7 @@ created_at         timestamp
 processed_at       timestamp nullable
 ```
 
-v0.5 generic channel webhook 使用 `provider=generic_webhook` 记录入站事件。v0.5.1 将幂等键收敛为项目级 `project_id + provider + external_event_id`，避免不同项目间的外部事件 ID 冲突。Slack/email/Telegram 当前是 adapter 契约 stub，还不会写入真实 provider webhook。
+v0.5 generic channel webhook 使用 `provider=generic_webhook` 记录入站事件。v0.5.1 将幂等键收敛为项目级 `project_id + provider + external_event_id`，避免不同项目间的外部事件 ID 冲突。v0.8 起 Slack Events API 入站消息使用 `provider=slack` 记录 webhook event。Email/Telegram 当前仍是 adapter 契约 stub。
 
 索引：
 
@@ -412,6 +412,25 @@ metadata        jsonb
 created_at      timestamp
 updated_at      timestamp
 ```
+
+v1.0 中 `kind=openapi` tool 的 `metadata` 支持：
+
+```text
+base_url
+allowed_hosts
+timeout_ms
+max_response_bytes
+intent.keywords
+intent.extract
+default_input
+response_path
+answer_template
+auth.type=bearer_env
+auth.env
+allow_mutation
+```
+
+生产环境中，tool token 应通过 `auth.env` 指向环境变量，不应明文写入 `metadata`。
 
 索引：
 

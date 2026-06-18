@@ -186,6 +186,36 @@ AI 不应拥有：
 
 ---
 
+## 业务工具安全
+
+v1.0 的 OpenAPI-style business tool executor 必须按 allowlist 模型使用。
+
+要求：
+
+```text
+tool 必须 project-scoped
+只有 status=active 的 tool 可执行
+OpenAPI tool 必须配置 metadata.allowed_hosts
+最终 URL host 必须命中 allowlist
+非 GET 方法默认拒绝执行
+mutation tool 必须显式 metadata.allow_mutation=true
+tool token 通过环境变量注入，不写入 tool definition
+所有 tool call 必须记录 completed 或 failed 日志
+```
+
+生产建议：
+
+```text
+优先只启用 GET/只读工具
+按最小权限创建外部业务 API token
+给 tool endpoint 设置独立 rate limit
+不要让模型自由构造任意 URL
+高风险退款、删除、改套餐等动作走人工流程
+定期审计 tool_calls 中的 failed rate 和异常输入
+```
+
+---
+
 ## RAG 安全
 
 要求：
@@ -217,6 +247,35 @@ PDF 解析不执行嵌入脚本
 ---
 
 ## 日志与隐私
+
+生产环境必须避免在日志中输出：
+
+```text
+LLM API key
+Chatwoot token
+Slack signing secret
+Webhook secret
+OpenAPI tool bearer token
+Admin API token
+完整用户隐私资料
+```
+
+---
+
+## v1.0 生产硬化基线
+
+公开部署前必须确认：
+
+```text
+ADMIN_API_TOKEN 已替换 demo 值
+ENCRYPTION_KEY 是稳定高熵值，且有安全备份
+CORS_ORIGIN 限制为真实域名
+RATE_LIMIT_ENABLED=true
+DATABASE_URL 使用生产数据库账号
+Webhook secret/signature 校验已启用
+OpenAPI tool allowed_hosts 已逐项审查
+生产 migration 前已做数据库备份和恢复演练
+```
 
 日志应包含：
 

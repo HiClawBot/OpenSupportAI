@@ -119,23 +119,36 @@ Mobile SDK 方案
 
 ---
 
-## v1.0：稳定发行
+## v1.0：稳定发行（当前）
 
 目标：稳定 API、稳定 SDK、稳定部署方案。
 
 ### 范围
 
 ```text
-稳定 REST API
-稳定 SSE protocol
-稳定 SDK API
-稳定 Widget embed API
+稳定 REST API（v1.0 已冻结）
+稳定 SSE protocol（v1.0 已冻结）
+稳定 SDK API（v1.0 已冻结）
+稳定 Widget embed API（v1.0 已冻结）
+稳定 adapter/tool execution 契约（v1.0 已冻结）
+升级指南（v1.0 已提供）
+生产部署指南（v1.0 已提供）
+安全硬化清单（v1.0 已提供）
+发布验证清单（持续维护）
+```
+
+### v1.x 后续方向
+
+```text
 Helm Chart
-性能压测
-安全测试
-迁移策略
-插件系统
+性能压测报告
+更完整的观测集成
+自动 OpenAPI spec import
+高风险工具人工审批流
+Slack 出站回复
+Email/Telegram 真实 provider API
 完整文档站
+插件系统
 ```
 
 ---
