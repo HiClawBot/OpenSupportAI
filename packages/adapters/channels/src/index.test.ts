@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   channelAdapterCatalog,
   createGenericWebhookAdapter,
+  createSlackAdapter,
   createStubChannelAdapter
 } from "./index";
+import { createHmac } from "node:crypto";
 
 describe("channel adapters", () => {
   it("lists available and stub channel adapters", () => {
@@ -122,11 +124,85 @@ describe("channel adapters", () => {
   });
 
   it("returns stub test results for future providers", async () => {
-    const adapter = createStubChannelAdapter("slack");
+    const adapter = createStubChannelAdapter("email");
     await expect(adapter.testConnection()).resolves.toMatchObject({
-      provider: "slack",
+      provider: "email",
       ok: false,
       status: "stub"
     });
   });
+
+  it("normalizes signed Slack message callbacks", async () => {
+    const adapter = createSlackAdapter({
+      signingSecret: "slack_secret",
+      defaultInboxId: "inbox_default"
+    });
+    const payload = {
+      type: "event_callback",
+      team_id: "T123",
+      event_id: "Ev123",
+      event: {
+        type: "message",
+        channel: "C123",
+        user: "U123",
+        text: "Need billing help",
+        ts: "1710000000.000100",
+        thread_ts: "1710000000.000100"
+      }
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const signature = slackSignature("slack_secret", timestamp, rawBody);
+
+    await expect(
+      adapter.normalizeInboundWebhook({
+        headers: {
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": signature
+        },
+        payload,
+        rawBody,
+        receivedAt: "2026-06-18T00:00:00.000Z"
+      })
+    ).resolves.toMatchObject({
+      provider: "slack",
+      externalEventId: "Ev123",
+      externalConversationId: "T123:C123:1710000000.000100",
+      inboxId: "inbox_default",
+      contact: {
+        externalUserId: "U123"
+      },
+      message: {
+        text: "Need billing help"
+      },
+      metadata: {
+        adapter: "slack",
+        team_id: "T123",
+        channel_id: "C123"
+      }
+    });
+  });
+
+  it("rejects Slack callbacks with invalid signatures", async () => {
+    const adapter = createSlackAdapter({ signingSecret: "slack_secret" });
+    await expect(
+      adapter.normalizeInboundWebhook({
+        headers: {
+          "x-slack-request-timestamp": Math.floor(Date.now() / 1000).toString(),
+          "x-slack-signature": "v0=bad"
+        },
+        payload: {
+          type: "event_callback",
+          event: {
+            type: "message",
+            text: "Hello"
+          }
+        }
+      })
+    ).rejects.toThrow("Invalid Slack signature");
+  });
 });
+
+function slackSignature(secret: string, timestamp: string, rawBody: string): string {
+  return `v0=${createHmac("sha256", secret).update(`v0:${timestamp}:${rawBody}`).digest("hex")}`;
+}

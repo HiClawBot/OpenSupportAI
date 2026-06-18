@@ -1,4 +1,4 @@
-# OpenSupportAI v0.7.x 发布清单
+# OpenSupportAI v0.8.x 发布清单
 
 这份清单用于公开发布到 GitHub 前的最后检查。
 
@@ -72,6 +72,12 @@ VITE_API_URL=http://localhost:4000 pnpm --filter @opensupportai/demo-app dev
 - 配置 generic webhook secret 后，非法 secret 返回 401，非法 payload 返回 400。
 - 重复投递已处理过的 `event_id` 不会重复创建 end-user message。
 - 管理端 conversation list/detail 响应包含 `channel` 摘要。
+- 管理端 `POST /v1/admin/projects/{project_id}/channels/slack` 可配置 Slack signing secret、default channel、default inbox 和 status，响应不暴露明文 secret。
+- 管理端 `POST /v1/admin/projects/{project_id}/channels/adapters/slack/test` 在 Slack 已配置时返回 `ok=true`。
+- `POST /v1/channel-webhooks/slack?public_key=pk_demo` 对 Slack URL verification payload 会在签名校验通过后回显 `challenge`。
+- Slack invalid signature 返回 401，并在 webhook events 中记录 failed event。
+- Slack `event_callback` message payload 会写入入站消息，按 `team_id:channel:thread_ts` 复用本地 conversation。
+- 重复投递已处理过的 Slack `event_id` 不会重复创建 end-user message。
 - `pnpm smoke:channels` 在内存模式 API 启动后可跑通。
 
 ## Docker Compose Smoke Test
@@ -179,6 +185,14 @@ git push origin v0.7.0
 gh release create v0.7.0 --title "OpenSupportAI v0.7.0" --notes-file docs/releases/v0.7.0.md
 ```
 
+v0.8.0：
+
+```bash
+git tag v0.8.0
+git push origin v0.8.0
+gh release create v0.8.0 --title "OpenSupportAI v0.8.0" --notes-file docs/releases/v0.8.0.md
+```
+
 发布说明建议包含：
 
 - v0.1 是可本地运行的 MVP，不是生产级 SaaS。
@@ -198,6 +212,7 @@ gh release create v0.7.0 --title "OpenSupportAI v0.7.0" --notes-file docs/releas
 - v0.5.2 增加 Admin Console Operations 区域，覆盖 ops health、channel diagnostics、generic webhook 配置、API keys、audit logs、jobs、webhook events 和 tool-call logs，并升级 GitHub Actions action 版本线。
 - v0.6.0 将 OpenAI-compatible LLM client 接入 orchestrator 的 grounded answer path：知识命中时可调用真实 provider 生成回答，并保留 demo/no-provider/error 的确定性回退和 no-hit refusal。
 - v0.7.0 增加 knowledge document 原文存储、content hash、reindex API/Admin UI，以及真实 `knowledge.index` worker handler，可重建知识块并记录 indexed/failed 状态。
+- v0.8.0 增加 Slack 入站 MVP：签名校验、URL verification、message event normalization、admin config/test UI/API、webhook event 幂等和本地 channel smoke 覆盖。
 
 ## 当前已知限制
 
@@ -207,8 +222,7 @@ gh release create v0.7.0 --title "OpenSupportAI v0.7.0" --notes-file docs/releas
 - v0.2.0 的 webhook retry 已完成管理端调度，实际重放处理器会在后续 worker 迭代中实现。
 - v0.3.0 的 `openapi` tool definition 已具备模型和管理 API，真实外部 HTTP 执行器仍需后续接入；当前自动执行仅限内置只读 demo tools。
 - v0.4.0 的 agent assist 是确定性启发式生成，不调用外部 LLM；后续可替换为可配置的模型生成与评测流程。
-- v0.5.0 的 Slack/email/Telegram 是 adapter 契约 stub；当前可真实本地验证的是 generic webhook adapter。
-- v0.5.1 只强化 generic webhook 安全和可观测性；还没有接入真实 Slack/Email/Telegram provider API。
+- v0.8.0 已新增 Slack 入站 Events API adapter；Slack 出站回复、Email 和 Telegram provider API 仍需后续实现。
 - v0.7.0 已新增知识库重建索引 worker handler，但 retrieval 仍以 keyword scoring 为主；embedding/vector retrieval 仍需后续实现。
-- v0.7.0 尚未新增真实 Slack/Email/Telegram provider API 或 OpenAPI tool executor。
+- v0.8.0 尚未新增 OpenAPI tool executor。
 - Docker Compose 启动需要在安装 Docker 的机器上单独验证。

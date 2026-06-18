@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createHmac } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "./server";
 
@@ -403,8 +404,180 @@ describe("OpenSupportAI API", () => {
       slackTestResponse.json<{ result: { ok: boolean; status: string } }>().result
     ).toMatchObject({
       ok: false,
-      status: "stub"
+      status: "failed"
     });
+
+    const slackConfigResponse = await app.inject({
+      method: "POST",
+      url: "/v1/admin/projects/proj_demo/channels/slack",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      },
+      payload: {
+        signing_secret: "slack_secret_123",
+        default_channel_id: "C123",
+        default_inbox_id: "inbox_default"
+      }
+    });
+    expect(slackConfigResponse.statusCode).toBe(200);
+    expect(
+      slackConfigResponse.json<{
+        channel: { metadata: { signing_secret_configured?: boolean; default_channel_id?: string } };
+      }>().channel.metadata
+    ).toMatchObject({
+      signing_secret_configured: true,
+      default_channel_id: "C123"
+    });
+
+    const configuredSlackTestResponse = await app.inject({
+      method: "POST",
+      url: "/v1/admin/projects/proj_demo/channels/adapters/slack/test",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(configuredSlackTestResponse.statusCode).toBe(200);
+    expect(
+      configuredSlackTestResponse.json<{ result: { ok: boolean; status: string } }>().result
+    ).toMatchObject({
+      ok: true,
+      status: "ok"
+    });
+
+    const slackChallengePayload = {
+      type: "url_verification",
+      challenge: "challenge_123"
+    };
+    const slackChallengeResponse = await app.inject({
+      method: "POST",
+      url: "/v1/channel-webhooks/slack?public_key=pk_demo",
+      headers: slackHeaders("slack_secret_123", slackChallengePayload),
+      payload: slackChallengePayload
+    });
+    expect(slackChallengeResponse.statusCode).toBe(200);
+    expect(slackChallengeResponse.json<{ challenge: string }>()).toEqual({
+      challenge: "challenge_123"
+    });
+
+    const invalidSlackSignatureResponse = await app.inject({
+      method: "POST",
+      url: "/v1/channel-webhooks/slack?public_key=pk_demo",
+      headers: {
+        "x-slack-request-timestamp": Math.floor(Date.now() / 1000).toString(),
+        "x-slack-signature": "v0=bad"
+      },
+      payload: {
+        type: "event_callback",
+        team_id: "T123",
+        event_id: "Ev_bad_signature",
+        event: {
+          type: "message",
+          channel: "C123",
+          user: "U123",
+          text: "Should not be accepted",
+          ts: "1710000000.000000"
+        }
+      }
+    });
+    expect(invalidSlackSignatureResponse.statusCode).toBe(401);
+
+    const slackPayload = {
+      type: "event_callback",
+      team_id: "T123",
+      event_id: "Ev123",
+      event: {
+        type: "message",
+        channel: "C123",
+        user: "U123",
+        text: "怎么取消订阅？",
+        ts: "1710000000.000100",
+        thread_ts: "1710000000.000100"
+      }
+    };
+    const firstSlackResponse = await app.inject({
+      method: "POST",
+      url: "/v1/channel-webhooks/slack?public_key=pk_demo",
+      headers: slackHeaders("slack_secret_123", slackPayload),
+      payload: slackPayload
+    });
+    expect(firstSlackResponse.statusCode).toBe(200);
+    const firstSlack = firstSlackResponse.json<{
+      status: string;
+      provider: string;
+      conversation_id: string;
+      message_id: string;
+    }>();
+    expect(firstSlack).toMatchObject({
+      status: "processed",
+      provider: "slack"
+    });
+    expect(firstSlack.conversation_id).toMatch(/^conv_/);
+    expect(firstSlack.message_id).toMatch(/^msg_/);
+
+    const duplicateSlackResponse = await app.inject({
+      method: "POST",
+      url: "/v1/channel-webhooks/slack?public_key=pk_demo",
+      headers: slackHeaders("slack_secret_123", slackPayload),
+      payload: slackPayload
+    });
+    expect(duplicateSlackResponse.statusCode).toBe(200);
+    expect(duplicateSlackResponse.json<{ status: string; idempotent?: boolean }>()).toMatchObject({
+      status: "processed",
+      idempotent: true
+    });
+
+    const slackAdminListResponse = await app.inject({
+      method: "GET",
+      url: `/v1/admin/projects/proj_demo/conversations?q=${encodeURIComponent(
+        "T123:C123:1710000000.000100"
+      )}`,
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(slackAdminListResponse.statusCode).toBe(200);
+    expect(
+      slackAdminListResponse.json<{
+        conversations: Array<{
+          id: string;
+          channel?: { provider?: string; externalConversationId?: string };
+        }>;
+      }>().conversations[0]
+    ).toMatchObject({
+      id: firstSlack.conversation_id,
+      channel: {
+        provider: "slack",
+        externalConversationId: "T123:C123:1710000000.000100"
+      }
+    });
+
+    const slackEventsResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/webhooks/events?provider=slack&status=processed",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(slackEventsResponse.statusCode).toBe(200);
+    const slackEventIds = slackEventsResponse
+      .json<{ webhook_events: Array<{ externalEventId?: string }> }>()
+      .webhook_events.map((event) => event.externalEventId);
+    expect(slackEventIds).toContain("Ev123");
+    expect(slackEventIds.filter((eventId) => eventId === "Ev123")).toHaveLength(1);
+
+    const failedSlackEventsResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/webhooks/events?provider=slack&status=failed",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      }
+    });
+    expect(failedSlackEventsResponse.statusCode).toBe(200);
+    expect(
+      failedSlackEventsResponse
+        .json<{ webhook_events: Array<{ externalEventId?: string }> }>()
+        .webhook_events.map((event) => event.externalEventId)
+    ).toContain("Ev_bad_signature");
 
     const unauthorizedResponse = await app.inject({
       method: "POST",
@@ -1902,3 +2075,14 @@ describe("OpenSupportAI API", () => {
     });
   });
 });
+
+function slackHeaders(secret: string, payload: Record<string, unknown>): Record<string, string> {
+  const rawBody = JSON.stringify(payload);
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  return {
+    "x-slack-request-timestamp": timestamp,
+    "x-slack-signature": `v0=${createHmac("sha256", secret)
+      .update(`v0:${timestamp}:${rawBody}`)
+      .digest("hex")}`
+  };
+}

@@ -238,6 +238,8 @@ function App() {
     GenericWebhookChannel | undefined
   >();
   const [genericWebhookStatus, setGenericWebhookStatus] = useState<string | undefined>();
+  const [slackChannel, setSlackChannel] = useState<GenericWebhookChannel | undefined>();
+  const [slackStatus, setSlackStatus] = useState<string | undefined>();
   const [channelAdapters, setChannelAdapters] = useState<ChannelAdapter[]>([]);
   const [channelTestStatus, setChannelTestStatus] = useState<Record<string, string>>({});
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
@@ -357,6 +359,7 @@ function App() {
         healthPayload,
         adaptersPayload,
         genericPayload,
+        slackPayload,
         apiKeysPayload,
         auditPayload,
         jobsPayload,
@@ -369,6 +372,9 @@ function App() {
         ),
         request<{ channel: GenericWebhookChannel | null }>(
           `/v1/admin/projects/${projectId}/channels/generic-webhook`
+        ),
+        request<{ channel: GenericWebhookChannel | null }>(
+          `/v1/admin/projects/${projectId}/channels/slack`
         ),
         request<{ api_keys: ApiKey[] }>(
           `/v1/admin/projects/${projectId}/api-keys?include_revoked=true`
@@ -384,6 +390,7 @@ function App() {
       setOpsHealth(healthPayload);
       setChannelAdapters(adaptersPayload.adapters);
       setGenericWebhookChannel(genericPayload.channel ?? undefined);
+      setSlackChannel(slackPayload.channel ?? undefined);
       setApiKeys(apiKeysPayload.api_keys);
       setAuditLogs(auditPayload.audit_logs);
       setJobs(jobsPayload.jobs);
@@ -518,6 +525,35 @@ function App() {
       setGenericWebhookStatus(
         saveError instanceof Error ? saveError.message : "Unable to save generic webhook"
       );
+    }
+  }
+
+  async function saveSlackChannel(form: FormData) {
+    const signingSecret = String(form.get("signing_secret") ?? "").trim();
+    if (!signingSecret) {
+      setSlackStatus("Signing secret is required");
+      return;
+    }
+
+    try {
+      setSlackStatus("Saving Slack channel");
+      const payload = await request<{ channel: GenericWebhookChannel }>(
+        `/v1/admin/projects/${activeProjectId}/channels/slack`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            signing_secret: signingSecret,
+            default_channel_id: String(form.get("default_channel_id") ?? "").trim() || undefined,
+            default_inbox_id: String(form.get("default_inbox_id") ?? "").trim() || "inbox_default",
+            status: String(form.get("status") ?? "active")
+          })
+        }
+      );
+      setSlackChannel(payload.channel);
+      setSlackStatus("Slack channel saved");
+      await loadOperations(activeProjectId);
+    } catch (saveError) {
+      setSlackStatus(saveError instanceof Error ? saveError.message : "Unable to save Slack");
     }
   }
 
@@ -1052,6 +1088,65 @@ function App() {
               {genericWebhookStatus ? (
                 <div className="integration-status">{genericWebhookStatus}</div>
               ) : null}
+            </form>
+
+            <form className="panel form" action={(form) => void saveSlackChannel(form)}>
+              <div className="panel-title">
+                <PlugsConnected size={20} />
+                <h2>Slack inbound</h2>
+              </div>
+              <div className="status-grid slim">
+                <StatusItem label="Status" value={slackChannel?.status ?? "not configured"} />
+                <StatusItem
+                  label="Default channel"
+                  value={metadataString(slackChannel?.metadata, "default_channel_id") ?? "-"}
+                />
+                <StatusItem
+                  label="Default inbox"
+                  value={
+                    metadataString(slackChannel?.metadata, "default_inbox_id") ?? "inbox_default"
+                  }
+                />
+              </div>
+              <label className="field">
+                <span>Signing secret</span>
+                <input
+                  name="signing_secret"
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder="Slack app signing secret"
+                />
+              </label>
+              <div className="two">
+                <label className="field">
+                  <span>Default channel</span>
+                  <input
+                    name="default_channel_id"
+                    defaultValue={
+                      metadataString(slackChannel?.metadata, "default_channel_id") ?? ""
+                    }
+                    placeholder="C123"
+                  />
+                </label>
+                <label className="field">
+                  <span>Default inbox</span>
+                  <input
+                    name="default_inbox_id"
+                    defaultValue={
+                      metadataString(slackChannel?.metadata, "default_inbox_id") ?? "inbox_default"
+                    }
+                  />
+                </label>
+              </div>
+              <label className="field">
+                <span>Status</span>
+                <select name="status" defaultValue={slackChannel?.status ?? "active"}>
+                  <option value="active">Active</option>
+                  <option value="disabled">Disabled</option>
+                </select>
+              </label>
+              <button className="primary">Save Slack channel</button>
+              {slackStatus ? <div className="integration-status">{slackStatus}</div> : null}
             </form>
 
             <form className="panel form" action={(form) => void createApiKey(form)}>

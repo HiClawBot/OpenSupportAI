@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import "dotenv/config";
+import { createHmac } from "node:crypto";
 
 const help = `OpenSupportAI channel webhook smoke test
 
@@ -13,6 +14,8 @@ This script exercises a running OpenSupportAI API with the seeded demo project:
 6. sends two generic webhook messages on the same external conversation id
 7. verifies duplicate event ids are idempotent
 8. verifies processed and failed generic webhook events are visible to admins
+9. configures Slack inbound webhooks and verifies signed URL verification callbacks
+10. sends a signed Slack message event and verifies idempotency/admin visibility
 
 Optional environment variables:
   API_URL=http://localhost:4000
@@ -22,6 +25,8 @@ Optional environment variables:
   INBOX_ID=inbox_default
   GENERIC_WEBHOOK_SECRET=local_channel_secret
   GENERIC_WEBHOOK_SECRET_HEADER=x-opensupportai-webhook-secret
+  SLACK_SIGNING_SECRET=local_slack_secret
+  SLACK_DEFAULT_CHANNEL_ID=CLOCAL
 
 Example:
   OPENSUPPORTAI_STORAGE=memory PORT=4000 pnpm --filter @opensupportai/api dev
@@ -40,11 +45,15 @@ const settings = {
   publicKey: env("PUBLIC_KEY", "pk_demo"),
   inboxId: env("INBOX_ID", "inbox_default"),
   webhookSecret: env("GENERIC_WEBHOOK_SECRET", "local_channel_secret"),
-  webhookSecretHeader: env("GENERIC_WEBHOOK_SECRET_HEADER", "x-opensupportai-webhook-secret")
+  webhookSecretHeader: env("GENERIC_WEBHOOK_SECRET_HEADER", "x-opensupportai-webhook-secret"),
+  slackSigningSecret: env("SLACK_SIGNING_SECRET", "local_slack_secret"),
+  slackDefaultChannelId: env("SLACK_DEFAULT_CHANNEL_ID", "CLOCAL")
 };
 
 const runId = `channel_smoke_${Date.now()}`;
 const externalConversationId = `${runId}_thread`;
+const slackEventTs = `${Math.floor(Date.now() / 1000)}.000100`;
+const slackConversationId = `TLOCAL:${settings.slackDefaultChannelId}:${slackEventTs}`;
 
 await main().catch((error) => {
   console.error(error instanceof Error ? error.message : error);
@@ -64,6 +73,12 @@ async function main() {
   assert(
     adapters.adapters?.some((adapter) => adapter.provider === "generic_webhook"),
     "Generic webhook adapter was not listed"
+  );
+  assert(
+    adapters.adapters?.some(
+      (adapter) => adapter.provider === "slack" && adapter.status === "available"
+    ),
+    "Slack adapter was not listed as available"
   );
 
   log("Testing generic webhook adapter");
@@ -216,6 +231,120 @@ async function main() {
   assert(failedEventIds.includes(`${runId}_bad_secret`), "Bad secret event was not recorded");
   assert(failedEventIds.includes(`${runId}_bad_payload`), "Bad payload event was not recorded");
 
+  log("Configuring Slack inbound channel");
+  const slackConfig = await adminRequest(
+    "POST",
+    `/v1/admin/projects/${settings.projectId}/channels/slack`,
+    {
+      signing_secret: settings.slackSigningSecret,
+      default_channel_id: settings.slackDefaultChannelId,
+      default_inbox_id: settings.inboxId,
+      status: "active"
+    }
+  );
+  assert(
+    slackConfig.channel?.metadata?.signing_secret_configured === true,
+    "Slack signing secret was not marked configured"
+  );
+
+  log("Testing Slack adapter");
+  const slackTest = await adminRequest(
+    "POST",
+    `/v1/admin/projects/${settings.projectId}/channels/adapters/slack/test`
+  );
+  assert(slackTest.result?.ok === true, "Slack adapter test did not pass");
+
+  log("Verifying Slack URL challenge");
+  const challengePayload = {
+    type: "url_verification",
+    challenge: `${runId}_challenge`
+  };
+  const challengeResult = await slackRequest(challengePayload);
+  assert(
+    challengeResult.challenge === challengePayload.challenge,
+    "Slack challenge was not echoed"
+  );
+
+  log("Checking invalid Slack signature handling");
+  const badSlackPayload = {
+    type: "event_callback",
+    team_id: "TLOCAL",
+    event_id: `${runId}_slack_bad_signature`,
+    event: {
+      type: "message",
+      channel: settings.slackDefaultChannelId,
+      user: `${runId}_slack_user`,
+      text: "Should not be accepted",
+      ts: `${Math.floor(Date.now() / 1000)}.000000`
+    }
+  };
+  await expectStatus(
+    "POST",
+    `/v1/channel-webhooks/slack?public_key=${settings.publicKey}`,
+    badSlackPayload,
+    {
+      ...slackHeaders(badSlackPayload),
+      "x-slack-signature": "v0=bad"
+    },
+    401
+  );
+
+  log("Sending signed Slack message event");
+  const slackPayload = {
+    type: "event_callback",
+    team_id: "TLOCAL",
+    event_id: `${runId}_slack_evt_1`,
+    event: {
+      type: "message",
+      channel: settings.slackDefaultChannelId,
+      user: `${runId}_slack_user`,
+      text: "怎么取消订阅？",
+      ts: slackEventTs,
+      thread_ts: slackEventTs
+    }
+  };
+  const firstSlack = await slackRequest(slackPayload);
+  assert(firstSlack.status === "processed", `Expected Slack processed, got ${firstSlack.status}`);
+  assert(firstSlack.provider === "slack", "Slack webhook response did not identify provider");
+  assert(typeof firstSlack.conversation_id === "string", "Slack did not return a conversation_id");
+
+  log("Re-sending Slack event to verify idempotency");
+  const duplicateSlack = await slackRequest(slackPayload);
+  assert(duplicateSlack.idempotent === true, "Duplicate Slack event was not idempotent");
+
+  log("Checking Slack admin channel visibility");
+  const slackAdminList = await adminRequest(
+    "GET",
+    `/v1/admin/projects/${settings.projectId}/conversations?q=${encodeURIComponent(slackConversationId)}`
+  );
+  const slackConversation = slackAdminList.conversations?.find(
+    (item) => item.id === firstSlack.conversation_id
+  );
+  assert(slackConversation?.channel?.provider === "slack", "Admin list missed Slack channel data");
+  assert(
+    slackConversation?.channel?.externalConversationId === slackConversationId,
+    "Admin list missed Slack external conversation id"
+  );
+
+  log("Checking Slack webhook events");
+  const slackEvents = await adminRequest(
+    "GET",
+    `/v1/admin/projects/${settings.projectId}/webhooks/events?provider=slack&status=processed`
+  );
+  const slackEventIds = slackEvents.webhook_events?.map((event) => event.externalEventId) ?? [];
+  assert(slackEventIds.includes(`${runId}_slack_evt_1`), "Slack event was not processed");
+
+  const failedSlackEvents = await adminRequest(
+    "GET",
+    `/v1/admin/projects/${settings.projectId}/webhooks/events?provider=slack&status=failed`
+  );
+  const failedSlackEventIds =
+    failedSlackEvents.webhook_events?.map((event) => event.externalEventId) ?? [];
+  assert(
+    failedSlackEventIds.includes(`${runId}_slack_bad_signature`),
+    "Bad Slack signature event was not recorded"
+  );
+
   log(`Channel webhook smoke test passed for conversation ${first.conversation_id}`);
 }
 
@@ -223,6 +352,15 @@ async function channelRequest(body) {
   return request("POST", `/v1/channel-webhooks/generic?public_key=${settings.publicKey}`, body, {
     [settings.webhookSecretHeader]: settings.webhookSecret
   });
+}
+
+async function slackRequest(body) {
+  return request(
+    "POST",
+    `/v1/channel-webhooks/slack?public_key=${settings.publicKey}`,
+    body,
+    slackHeaders(body)
+  );
 }
 
 async function adminRequest(method, path, body) {
@@ -274,6 +412,17 @@ async function expectStatus(method, path, body, headers, expectedStatus) {
 
 function env(name, fallback) {
   return process.env[name] || fallback;
+}
+
+function slackHeaders(body) {
+  const rawBody = JSON.stringify(body);
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  return {
+    "x-slack-request-timestamp": timestamp,
+    "x-slack-signature": `v0=${createHmac("sha256", settings.slackSigningSecret)
+      .update(`v0:${timestamp}:${rawBody}`)
+      .digest("hex")}`
+  };
 }
 
 function assert(condition, message) {

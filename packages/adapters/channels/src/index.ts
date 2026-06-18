@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type {
   ChannelAdapterDescriptor,
   ChannelAdapterTestResult,
@@ -8,12 +9,20 @@ import type {
 export type ChannelWebhookInput = {
   headers: Record<string, string | undefined>;
   payload: unknown;
+  rawBody?: string;
   receivedAt?: string;
 };
 
 export type GenericWebhookAdapterConfig = {
   webhookSecret?: string;
   secretHeader?: string;
+};
+
+export type SlackAdapterConfig = {
+  signingSecret?: string;
+  defaultInboxId?: string;
+  defaultChannelId?: string;
+  clockToleranceSeconds?: number;
 };
 
 export interface InboundChannelAdapter {
@@ -33,15 +42,16 @@ const genericWebhookDescriptor: ChannelAdapterDescriptor = {
     "Accepts normalized or nested JSON payloads and creates OpenSupportAI conversations from inbound text messages."
 };
 
+const slackDescriptor: ChannelAdapterDescriptor = {
+  provider: "slack",
+  name: "Slack",
+  status: "available",
+  capabilities: ["receive_message", "verify_webhook", "test_connection"],
+  configurationKeys: ["signing_secret", "default_channel_id", "default_inbox_id"],
+  notes: "Accepts signed Slack Events API message callbacks and normalizes them into conversations."
+};
+
 const stubDescriptors: ChannelAdapterDescriptor[] = [
-  {
-    provider: "slack",
-    name: "Slack",
-    status: "stub",
-    capabilities: ["receive_message", "send_message", "verify_webhook", "test_connection"],
-    configurationKeys: ["bot_token", "signing_secret", "default_channel_id"],
-    notes: "Contract placeholder for a future Slack app adapter."
-  },
   {
     provider: "email",
     name: "Email",
@@ -62,10 +72,11 @@ const stubDescriptors: ChannelAdapterDescriptor[] = [
 
 export const channelAdapterCatalog: ChannelAdapterDescriptor[] = [
   genericWebhookDescriptor,
+  slackDescriptor,
   ...stubDescriptors
 ];
 
-export type StubChannelProvider = "slack" | "email" | "telegram";
+export type StubChannelProvider = "email" | "telegram";
 
 export function createGenericWebhookAdapter(
   config: GenericWebhookAdapterConfig = {}
@@ -161,6 +172,97 @@ export function createGenericWebhookAdapter(
   };
 }
 
+export function createSlackAdapter(config: SlackAdapterConfig = {}): InboundChannelAdapter {
+  return {
+    provider: "slack",
+    descriptor: slackDescriptor,
+    async testConnection() {
+      if (!config.signingSecret) {
+        return {
+          provider: "slack",
+          ok: false,
+          status: "failed",
+          message: "Slack signing_secret is not configured."
+        };
+      }
+      return {
+        provider: "slack",
+        ok: true,
+        status: "ok",
+        message: "Slack inbound webhook adapter is configured for signed Events API callbacks.",
+        metadata: {
+          default_channel_id: config.defaultChannelId,
+          default_inbox_id: config.defaultInboxId
+        }
+      };
+    },
+    async normalizeInboundWebhook(input) {
+      verifySlackWebhookSignature(input, config);
+      const payload = recordValue(input.payload);
+      if (!payload) {
+        throw new Error("Slack webhook payload must be a JSON object");
+      }
+
+      const event = recordValue(payload["event"]);
+      if (!event) {
+        throw new Error("Slack webhook payload must include an event object");
+      }
+      const eventType = stringValue(event["type"]);
+      if (eventType !== "message") {
+        throw new Error(`Unsupported Slack event type: ${eventType ?? "unknown"}`);
+      }
+      const subtype = stringValue(event["subtype"]);
+      if (subtype && subtype !== "thread_broadcast") {
+        throw new Error(`Unsupported Slack message subtype: ${subtype}`);
+      }
+
+      const text = stringValue(event["text"]);
+      if (!text?.trim()) {
+        throw new Error("Slack message event must include text content");
+      }
+
+      const teamId = stringValue(payload["team_id"]);
+      const channelId =
+        stringValue(event["channel"]) ??
+        stringValue(payload["channel_id"]) ??
+        config.defaultChannelId;
+      const eventTs = stringValue(event["ts"]);
+      const threadTs = stringValue(event["thread_ts"]) ?? eventTs;
+      const externalConversationId =
+        teamId && channelId && threadTs
+          ? `${teamId}:${channelId}:${threadTs}`
+          : [teamId, channelId, threadTs].filter(Boolean).join(":") || undefined;
+      const fallbackEventId = [channelId, eventTs].filter(Boolean).join(":") || undefined;
+
+      return {
+        provider: "slack",
+        externalEventId:
+          stringValue(payload["event_id"]) ??
+          stringValue(event["client_msg_id"]) ??
+          fallbackEventId,
+        externalConversationId,
+        inboxId: config.defaultInboxId,
+        contact: {
+          externalUserId: stringValue(event["user"]) ?? stringValue(event["bot_id"])
+        },
+        message: {
+          type: "text",
+          text: text.trim()
+        },
+        metadata: {
+          adapter: "slack",
+          event_type: stringValue(payload["type"]),
+          team_id: teamId,
+          channel_id: channelId,
+          thread_ts: threadTs,
+          event_ts: eventTs
+        },
+        receivedAt: input.receivedAt ?? new Date().toISOString()
+      };
+    }
+  };
+}
+
 export function createStubChannelAdapter(provider: StubChannelProvider): InboundChannelAdapter {
   const descriptor = stubDescriptors.find((item) => item.provider === provider);
   if (!descriptor) {
@@ -182,6 +284,11 @@ export function createStubChannelAdapter(provider: StubChannelProvider): Inbound
       throw new Error(`${descriptor.name} adapter is a contract stub`);
     }
   };
+}
+
+export function isSlackUrlVerificationPayload(payload: unknown): payload is { challenge: string } {
+  const record = recordValue(payload);
+  return record?.["type"] === "url_verification" && typeof record["challenge"] === "string";
 }
 
 function verifyWebhookSecret(
@@ -206,6 +313,43 @@ function verifyWebhookSecret(
   }
 
   throw new Error("Invalid generic webhook secret");
+}
+
+export function verifySlackWebhookSignature(
+  input: ChannelWebhookInput,
+  config: SlackAdapterConfig
+): void {
+  if (!config.signingSecret) {
+    throw new Error("Slack signing_secret is not configured");
+  }
+
+  const timestamp = input.headers["x-slack-request-timestamp"];
+  const signature = input.headers["x-slack-signature"];
+  if (!timestamp || !signature) {
+    throw new Error("Missing Slack signature headers");
+  }
+
+  const timestampSeconds = Number(timestamp);
+  const tolerance = config.clockToleranceSeconds ?? 60 * 5;
+  if (
+    !Number.isFinite(timestampSeconds) ||
+    Math.abs(Date.now() / 1000 - timestampSeconds) > tolerance
+  ) {
+    throw new Error("Slack signature timestamp is outside the allowed tolerance");
+  }
+
+  const rawBody = input.rawBody ?? JSON.stringify(input.payload);
+  const base = `v0:${timestamp}:${rawBody}`;
+  const expected = `v0=${createHmac("sha256", config.signingSecret).update(base).digest("hex")}`;
+  if (!safeEqual(expected, signature)) {
+    throw new Error("Invalid Slack signature");
+  }
+}
+
+function safeEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 function recordValue(value: unknown): Record<string, unknown> | undefined {

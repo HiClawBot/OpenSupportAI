@@ -1,8 +1,12 @@
 import {
   channelAdapterCatalog,
   createGenericWebhookAdapter,
+  createSlackAdapter,
   createStubChannelAdapter,
+  isSlackUrlVerificationPayload,
+  verifySlackWebhookSignature,
   type GenericWebhookAdapterConfig,
+  type SlackAdapterConfig,
   type StubChannelProvider
 } from "@opensupportai/adapter-channels";
 import { createChatwootAdapter, type ChatwootAdapterConfig } from "@opensupportai/adapter-chatwoot";
@@ -72,6 +76,7 @@ import {
   upsertChatwootIntegrationBodySchema,
   upsertGenericWebhookChannelBodySchema,
   upsertLlmProviderBodySchema,
+  upsertSlackChannelBodySchema,
   upsertToolDefinitionBodySchema
 } from "./schemas";
 
@@ -378,6 +383,122 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     }
   });
 
+  app.post("/v1/channel-webhooks/slack", async (request) => {
+    const body = genericChannelWebhookBodySchema.parse(request.body);
+    const project = await authenticateClient(request, repository, stringValue(body["project_id"]));
+    const integration = await repository.getIntegrationConfig(project.id, "slack");
+    if (!integration) {
+      throw forbidden("Slack channel is not configured");
+    }
+    if (integration.status === "disabled") {
+      throw forbidden("Slack channel is disabled");
+    }
+
+    const adapterConfig = slackAdapterConfig(
+      decryptJson(integration.configEncrypted, config.encryptionKey)
+    );
+    const headers = normalizeRequestHeaders(request);
+    const rawBody = JSON.stringify(body);
+    if (isSlackUrlVerificationPayload(body)) {
+      try {
+        verifySlackWebhookSignature({ headers, payload: body, rawBody }, adapterConfig);
+      } catch (error) {
+        throw unauthorized(error instanceof Error ? error.message : "Invalid Slack signature");
+      }
+      return {
+        challenge: body.challenge
+      };
+    }
+
+    const adapter = createSlackAdapter(adapterConfig);
+    let webhookEvent: Awaited<ReturnType<SupportRepository["createWebhookEvent"]>> | undefined;
+
+    try {
+      const normalized = await adapter.normalizeInboundWebhook({
+        headers,
+        payload: body,
+        rawBody
+      });
+      webhookEvent = await repository.createWebhookEvent({
+        projectId: project.id,
+        provider: normalized.provider,
+        externalEventId: normalized.externalEventId,
+        payload: body
+      });
+      const idempotentResponse = idempotentWebhookResponse(webhookEvent, normalized.provider);
+      if (idempotentResponse) {
+        return idempotentResponse;
+      }
+
+      const inbox = await repository.findInbox(project.id, normalized.inboxId);
+      if (!inbox) {
+        throw notFound("Inbox not found");
+      }
+
+      const conversation = await findOrCreateChannelConversation(repository, {
+        project,
+        inbox,
+        normalized
+      });
+      const message = await repository.createMessage({
+        projectId: project.id,
+        conversationId: conversation.id,
+        message: {
+          role: "end_user",
+          text: normalized.message.text,
+          metadata: {
+            ...normalized.metadata,
+            channel: channelMessageMetadata(normalized)
+          }
+        }
+      });
+      eventHub.publish(project.id, conversation.id, {
+        event: "message.created",
+        data: { message }
+      });
+
+      await orchestrator.respondToUserMessage({
+        projectId: project.id,
+        conversationId: conversation.id,
+        message
+      });
+
+      await repository.markWebhookEvent({
+        id: webhookEvent.id,
+        status: "processed"
+      });
+      return {
+        status: "processed",
+        provider: normalized.provider,
+        webhook_event_id: webhookEvent.id,
+        conversation_id: conversation.id,
+        message_id: message.id
+      };
+    } catch (error) {
+      webhookEvent ??= await repository.createWebhookEvent({
+        projectId: project.id,
+        provider: "slack",
+        externalEventId:
+          stringValue(body["event_id"]) ??
+          stringValue(recordValue(body["event"])?.["client_msg_id"]) ??
+          stringValue(recordValue(body["event"])?.["ts"]),
+        payload: body
+      });
+      await repository.markWebhookEvent({
+        id: webhookEvent.id,
+        status: "failed",
+        error: error instanceof Error ? error.message : "Unknown Slack webhook error"
+      });
+      if (isSlackSignatureError(error)) {
+        throw unauthorized(error instanceof Error ? error.message : "Invalid Slack signature");
+      }
+      if (error instanceof ApiError) {
+        throw error;
+      }
+      throw invalidRequest(error instanceof Error ? error.message : "Invalid Slack webhook");
+    }
+  });
+
   app.get("/v1/admin/projects", async (request) => {
     const identity = await authenticateAdminIdentity(request, repository, config);
     return {
@@ -434,8 +555,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     }
 
     const integration =
-      provider === "generic_webhook"
-        ? await repository.getIntegrationConfig(project.id, "generic_webhook")
+      provider === "generic_webhook" || provider === "slack"
+        ? await repository.getIntegrationConfig(project.id, provider)
         : undefined;
     const adapter =
       provider === "generic_webhook"
@@ -446,14 +567,20 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
                 )
               : {}
           )
-        : createStubChannelAdapter(provider);
+        : provider === "slack"
+          ? createSlackAdapter(
+              integration
+                ? slackAdapterConfig(decryptJson(integration.configEncrypted, config.encryptionKey))
+                : {}
+            )
+          : createStubChannelAdapter(provider);
     const result =
-      provider === "generic_webhook" && integration?.status === "disabled"
+      (provider === "generic_webhook" || provider === "slack") && integration?.status === "disabled"
         ? {
             provider,
             ok: false,
             status: "failed" as const,
-            message: "Generic webhook channel is disabled."
+            message: `${provider} channel is disabled.`
           }
         : await adapter.testConnection();
     await recordAudit(repository, request, {
@@ -517,6 +644,63 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         provider: integration.provider,
         status: integration.status,
         secret_header: body.secret_header.toLowerCase()
+      }
+    });
+    return {
+      channel: safeIntegrationResponse(integration)
+    };
+  });
+
+  app.get("/v1/admin/projects/:projectId/channels/slack", async (request) => {
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:channels");
+    const integration = await repository.getIntegrationConfig(project.id, "slack");
+    return {
+      channel: integration ? safeIntegrationResponse(integration) : null
+    };
+  });
+
+  app.post("/v1/admin/projects/:projectId/channels/slack", async (request) => {
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:channels");
+    const body = upsertSlackChannelBodySchema.parse(request.body);
+    const integration = await repository.upsertIntegrationConfig({
+      projectId: project.id,
+      provider: "slack",
+      status: body.status,
+      configEncrypted: encryptJson(
+        {
+          signing_secret: body.signing_secret,
+          default_channel_id: body.default_channel_id,
+          default_inbox_id: body.default_inbox_id
+        },
+        config.encryptionKey
+      ),
+      metadata: {
+        signing_secret_configured: true,
+        default_channel_id: body.default_channel_id,
+        default_inbox_id: body.default_inbox_id
+      }
+    });
+    await recordAudit(repository, request, {
+      project,
+      identity,
+      action: "channel.slack.upserted",
+      targetType: "integration_config",
+      targetId: integration.id,
+      metadata: {
+        provider: integration.provider,
+        status: integration.status,
+        default_channel_id: body.default_channel_id,
+        default_inbox_id: body.default_inbox_id
       }
     });
     return {
@@ -1705,6 +1889,25 @@ function genericWebhookAdapterConfig(configPayload: JsonRecord): GenericWebhookA
   };
 }
 
+function slackAdapterConfig(configPayload: JsonRecord): SlackAdapterConfig {
+  return {
+    signingSecret: requiredConfigString(configPayload, "signing_secret"),
+    defaultChannelId: stringValue(configPayload["default_channel_id"]),
+    defaultInboxId: stringValue(configPayload["default_inbox_id"]) ?? "inbox_default"
+  };
+}
+
+function isSlackSignatureError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return (
+    error.message.includes("Slack signature") ||
+    error.message.includes("x-slack-signature") ||
+    error.message.includes("signing_secret")
+  );
+}
+
 function idempotentWebhookResponse(
   event: WebhookEventRecord,
   provider: ChannelProvider
@@ -2432,7 +2635,7 @@ function chatwootStatusToLocalStatus(status: string): "handed_off" | "closed" | 
 
 function channelProviderFromParam(
   provider: string
-): "generic_webhook" | StubChannelProvider | undefined {
+): "generic_webhook" | "slack" | StubChannelProvider | undefined {
   if (provider === "generic_webhook" || provider === "slack" || provider === "email") {
     return provider;
   }

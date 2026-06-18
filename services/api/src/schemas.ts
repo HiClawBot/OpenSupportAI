@@ -141,6 +141,13 @@ export const upsertGenericWebhookChannelBodySchema = z.object({
   status: z.enum(["active", "disabled"]).default("active")
 });
 
+export const upsertSlackChannelBodySchema = z.object({
+  signing_secret: z.string().min(8).max(500),
+  default_channel_id: z.string().trim().min(1).max(120).optional(),
+  default_inbox_id: z.string().trim().min(1).max(120).default("inbox_default"),
+  status: z.enum(["active", "disabled"]).default("active")
+});
+
 export const chatwootWebhookBodySchema = z.record(z.string(), z.unknown());
 
 export const genericChannelWebhookBodySchema = z.record(z.string(), z.unknown());

@@ -1,4 +1,4 @@
-# OpenSupportAI API 规范 v0.7.0
+# OpenSupportAI API 规范 v0.8.0
 
 ## 通用约定
 
@@ -103,6 +103,13 @@ Chatwoot webhook 使用 provider secret 校验。
 
 ```http
 X-OpenSupportAI-Signature: <signature>
+```
+
+Slack channel webhook 使用项目 public key 加 Slack request signature 双重校验。
+
+```http
+X-Slack-Request-Timestamp: 1710000000
+X-Slack-Signature: v0=...
 ```
 
 ---
@@ -358,6 +365,74 @@ Content-Type: application/json
 
 ---
 
+### Slack 入站消息
+
+```http
+POST /v1/channel-webhooks/slack?public_key=pk_live_xxx
+Content-Type: application/json
+X-Slack-Request-Timestamp: 1710000000
+X-Slack-Signature: v0=...
+```
+
+Slack URL verification payload 会在签名校验通过后回显 challenge：
+
+```json
+{
+  "type": "url_verification",
+  "challenge": "challenge_123"
+}
+```
+
+响应：
+
+```json
+{
+  "challenge": "challenge_123"
+}
+```
+
+Slack Events API message callback 示例：
+
+```json
+{
+  "type": "event_callback",
+  "team_id": "T123",
+  "event_id": "Ev123",
+  "event": {
+    "type": "message",
+    "channel": "C123",
+    "user": "U123",
+    "text": "我怎么取消订阅？",
+    "ts": "1710000000.000100",
+    "thread_ts": "1710000000.000100"
+  }
+}
+```
+
+响应：
+
+```json
+{
+  "status": "processed",
+  "provider": "slack",
+  "webhook_event_id": "webhook_123",
+  "conversation_id": "conv_123",
+  "message_id": "msg_123"
+}
+```
+
+处理语义：
+
+- 必须先通过管理端配置 Slack channel `signing_secret`。
+- 请求必须带 `X-Slack-Request-Timestamp` 和 `X-Slack-Signature`，签名使用 Slack `v0:{timestamp}:{rawBody}` HMAC-SHA256 规则。
+- `type=url_verification` 只回显 challenge，不创建 conversation/message。
+- `event.type=message` 会归一化为 OpenSupportAI end-user message。
+- 外部 conversation id 为 `team_id:channel:thread_ts`；没有 `thread_ts` 时使用 event `ts`。
+- `event_id` 会用于 webhook event 幂等；重复投递已处理事件时不会重复写入 end-user message。
+- 当前 v0.8 支持 Slack 入站消息，不包含 Slack 出站回复。
+
+---
+
 ## Admin API
 
 ### 创建 Project
@@ -577,15 +652,22 @@ GET /v1/admin/projects/{project_id}/channels/adapters
     {
       "provider": "slack",
       "name": "Slack",
+      "status": "available",
+      "capabilities": ["receive_message", "verify_webhook", "test_connection"],
+      "configurationKeys": ["signing_secret", "default_channel_id", "default_inbox_id"]
+    },
+    {
+      "provider": "email",
+      "name": "Email",
       "status": "stub",
-      "capabilities": ["receive_message", "send_message", "verify_webhook", "test_connection"],
-      "configurationKeys": ["bot_token", "signing_secret", "default_channel_id"]
+      "capabilities": ["receive_message", "send_message", "test_connection"],
+      "configurationKeys": ["imap_host", "smtp_host", "username"]
     }
   ]
 }
 ```
 
-`slack`、`email`、`telegram` 在 v0.6 仍是契约 stub，表示协议、能力和配置项已固定，但尚未连接真实 provider API。
+`slack` 在 v0.8 已支持签名后的 Events API 入站消息。`email`、`telegram` 仍是契约 stub，表示协议、能力和配置项已固定，但尚未连接真实 provider API。
 
 ---
 
@@ -608,7 +690,7 @@ POST /v1/admin/projects/{project_id}/channels/adapters/{provider}/test
 }
 ```
 
-Stub provider 会返回 `ok=false`、`status=stub`，不会访问真实第三方平台。
+未配置 Slack signing secret 时 Slack adapter test 会返回 `ok=false`、`status=failed`。Stub provider 会返回 `ok=false`、`status=stub`，不会访问真实第三方平台。
 
 ---
 
@@ -667,6 +749,71 @@ Content-Type: application/json
     "metadata": {
       "secret_configured": true,
       "secret_header": "x-opensupportai-webhook-secret"
+    }
+  }
+}
+```
+
+---
+
+### 获取 Slack Channel 配置
+
+```http
+GET /v1/admin/projects/{project_id}/channels/slack
+```
+
+响应不会返回 signing secret 明文：
+
+```json
+{
+  "channel": {
+    "id": "integration_123",
+    "provider": "slack",
+    "status": "active",
+    "configured": true,
+    "metadata": {
+      "signing_secret_configured": true,
+      "default_channel_id": "C123",
+      "default_inbox_id": "inbox_default"
+    }
+  }
+}
+```
+
+尚未配置时 `channel` 为 `null`。未配置时 Slack webhook 会返回 forbidden；配置后会校验 Slack request signature。
+
+---
+
+### 配置 Slack Channel
+
+```http
+POST /v1/admin/projects/{project_id}/channels/slack
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "signing_secret": "slack_signing_secret_xxx",
+  "default_channel_id": "C123",
+  "default_inbox_id": "inbox_default",
+  "status": "active"
+}
+```
+
+响应：
+
+```json
+{
+  "channel": {
+    "provider": "slack",
+    "status": "active",
+    "configured": true,
+    "metadata": {
+      "signing_secret_configured": true,
+      "default_channel_id": "C123",
+      "default_inbox_id": "inbox_default"
     }
   }
 }

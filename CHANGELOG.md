@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.8.0 - 2026-06-18
+
+English:
+
+- Added a real Slack inbound channel adapter for signed Slack Events API callbacks.
+- Added Slack request timestamp/signature verification and Slack URL verification challenge handling.
+- Normalized Slack message events into OpenSupportAI conversations with project-scoped webhook event idempotency.
+- Added admin API and admin console Operations UI for Slack signing secret, default channel, default inbox, status, and adapter testing.
+- Expanded channel smoke testing to cover signed Slack callbacks, invalid signatures, idempotency, admin channel visibility, and webhook event visibility.
+- Updated API docs, README, release checklist, release notes, and workspace package versions for `0.8.0`.
+
+中文：
+
+- 新增真实 Slack 入站 channel adapter，支持已签名的 Slack Events API callback。
+- 新增 Slack request timestamp/signature 校验和 Slack URL verification challenge 处理。
+- 将 Slack message event 归一化为 OpenSupportAI 会话，并保持项目级 webhook event 幂等。
+- 新增 Slack signing secret、default channel、default inbox、status 和 adapter test 的管理端 API 与 Admin Console Operations UI。
+- 扩展 channel smoke test，覆盖已签名 Slack callback、非法签名、幂等、管理端 channel 可见性和 webhook event 可见性。
+- 更新 API 文档、README、发布清单、release notes 和 workspace package versions 到 `0.8.0`。
+
 ## v0.7.0 - 2026-06-18
 
 English:
