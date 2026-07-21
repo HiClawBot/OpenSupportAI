@@ -89,7 +89,7 @@ async function main() {
   assert(testResult.ok === true, `Chatwoot test failed: ${testResult.error ?? "unknown error"}`);
 
   log("Creating client conversation");
-  const conversation = await clientRequest("POST", "/v1/client/conversations", {
+  const conversation = await projectRequest("POST", "/v1/client/conversations", {
     project_id: settings.projectId,
     inbox_id: settings.inboxId,
     contact: {
@@ -103,10 +103,13 @@ async function main() {
     }
   });
   const conversationId = conversation.conversation_id;
+  const conversationToken = conversation.conversation_token;
   assert(typeof conversationId === "string", "Create conversation did not return conversation_id");
+  assert(typeof conversationToken === "string", "Create conversation did not return a capability");
 
   log("Requesting handoff");
-  const handoff = await clientRequest(
+  const handoff = await conversationRequest(
+    conversationToken,
     "POST",
     `/v1/client/conversations/${conversationId}/handoff`,
     {
@@ -147,7 +150,8 @@ async function main() {
     }
   );
 
-  const afterMessage = await clientRequest(
+  const afterMessage = await conversationRequest(
+    conversationToken,
     "GET",
     `/v1/client/conversations/${conversationId}/messages`
   );
@@ -194,9 +198,15 @@ async function adminRequest(method, path, body) {
   });
 }
 
-async function clientRequest(method, path, body) {
+async function projectRequest(method, path, body) {
   return request(method, path, body, {
     "x-opensupportai-public-key": settings.publicKey
+  });
+}
+
+async function conversationRequest(token, method, path, body) {
+  return request(method, path, body, {
+    Authorization: `Bearer ${token}`
   });
 }
 

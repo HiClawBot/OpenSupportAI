@@ -20,7 +20,14 @@ import type {
   NormalizedInboundChannelMessage
 } from "@opensupportai/protocol";
 import { ZodError } from "zod";
-import { authenticateAdminIdentity, authenticateClient, type AdminIdentity } from "./auth";
+import {
+  authenticateAdminIdentity,
+  authenticateClient,
+  authenticateConversation,
+  authenticateStream,
+  type AdminIdentity
+} from "./auth";
+import { issueClientToken } from "./client-tokens";
 import { type ApiConfig, loadConfig } from "./config";
 import { decryptJson, encryptJson, hashSecret } from "./crypto";
 import {
@@ -35,6 +42,7 @@ import {
 import { EventHub, formatSse } from "./event-hub";
 import { buildHandoffAnalytics, generateConversationInsight } from "./agent-assist";
 import { createOrchestrator, requestHandoff, type GroundedAnswerGenerator } from "./orchestrator";
+import { createSafeOutboundFetch } from "./outbound";
 import { MemorySupportRepository } from "./repositories/memory";
 import { PrismaSupportRepository } from "./repositories/prisma";
 import type {
@@ -97,6 +105,18 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       ? new MemorySupportRepository()
       : new PrismaSupportRepository());
   const eventHub = options.eventHub ?? new EventHub();
+  const chatwootFetch = createSafeOutboundFetch({
+    allowPrivateNetwork: config.allowPrivateOutbound,
+    fetchImpl: options.chatwootFetch
+  });
+  const llmFetch = createSafeOutboundFetch({
+    allowPrivateNetwork: config.allowPrivateOutbound,
+    fetchImpl: options.llmFetch
+  });
+  const toolFetch = createSafeOutboundFetch({
+    allowPrivateNetwork: config.allowPrivateOutbound,
+    fetchImpl: options.toolFetch
+  });
   const handoffRequester = (input: {
     projectId: string;
     conversationId: string;
@@ -107,18 +127,28 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       repository,
       eventHub,
       config,
-      chatwootFetch: options.chatwootFetch,
+      chatwootFetch,
       ...input
     });
   const orchestrator = createOrchestrator(repository, eventHub, {
     requestHandoff: handoffRequester,
-    generateGroundedAnswer: createLlmGroundedAnswerGenerator(config, options.llmFetch),
-    businessToolFetch: options.toolFetch
+    generateGroundedAnswer: createLlmGroundedAnswerGenerator(config, llmFetch),
+    businessToolFetch: toolFetch
   });
-  await repository.seedDemo();
-
   const app = Fastify({
-    logger: config.nodeEnv !== "test",
+    logger:
+      config.nodeEnv === "test"
+        ? false
+        : {
+            serializers: {
+              req(request: { method?: string; url?: string }) {
+                return {
+                  method: request.method,
+                  url: redactSensitiveRequestUrl(request.url)
+                };
+              }
+            }
+          },
     genReqId: () => `req_${crypto.randomUUID()}`
   });
 
@@ -136,6 +166,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     }
     if (error instanceof ApiError) {
       reply.status(error.statusCode).send(toApiErrorResponse(error, requestId));
+      return;
+    }
+    const statusCode = (error as { statusCode?: unknown }).statusCode;
+    if (typeof statusCode === "number" && statusCode >= 400 && statusCode < 500) {
+      const apiError = invalidRequest(error instanceof Error ? error.message : "Invalid request");
+      reply.status(statusCode).send(toApiErrorResponse(apiError, requestId));
       return;
     }
 
@@ -168,20 +204,30 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       contactId: contact.id,
       metadata: body.metadata
     });
+    const capability = issueClientToken({
+      secret: config.clientTokenSecret,
+      purpose: "conversation",
+      projectId: project.id,
+      conversationId: conversation.id,
+      ttlSeconds: config.conversationTokenTtlSeconds
+    });
 
     return {
       conversation_id: conversation.id,
-      status: conversation.status
+      status: conversation.status,
+      conversation_token: capability.token,
+      conversation_token_expires_at: capability.expiresAt
     };
   });
 
   app.get("/v1/client/conversations/:conversationId/messages", async (request) => {
     const params = request.params as { conversationId: string };
-    const project = await authenticateClient(request, repository);
-    const conversation = await repository.findConversation(project.id, params.conversationId);
-    if (!conversation) {
-      throw notFound("Conversation not found");
-    }
+    const { project, conversation } = await authenticateConversation(
+      request,
+      repository,
+      config,
+      params.conversationId
+    );
 
     return {
       messages: await repository.listMessages(project.id, conversation.id)
@@ -191,11 +237,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   app.post("/v1/client/conversations/:conversationId/messages", async (request) => {
     const params = request.params as { conversationId: string };
     const body = sendMessageBodySchema.parse(request.body);
-    const project = await authenticateClient(request, repository);
-    const conversation = await repository.findConversation(project.id, params.conversationId);
-    if (!conversation) {
-      throw notFound("Conversation not found");
-    }
+    const { project, conversation } = await authenticateConversation(
+      request,
+      repository,
+      config,
+      params.conversationId
+    );
 
     const message = await repository.createMessage({
       projectId: project.id,
@@ -223,14 +270,36 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     };
   });
 
+  app.post("/v1/client/conversations/:conversationId/stream-token", async (request) => {
+    const params = request.params as { conversationId: string };
+    const { project, conversation } = await authenticateConversation(
+      request,
+      repository,
+      config,
+      params.conversationId
+    );
+    const stream = issueClientToken({
+      secret: config.clientTokenSecret,
+      purpose: "stream",
+      projectId: project.id,
+      conversationId: conversation.id,
+      ttlSeconds: config.streamTokenTtlSeconds
+    });
+    return {
+      stream_token: stream.token,
+      expires_at: stream.expiresAt
+    };
+  });
+
   app.get("/v1/client/conversations/:conversationId/events", async (request, reply) => {
     const params = request.params as { conversationId: string };
     const query = request.query as { once?: string };
-    const project = await authenticateClient(request, repository);
-    const conversation = await repository.findConversation(project.id, params.conversationId);
-    if (!conversation) {
-      throw notFound("Conversation not found");
-    }
+    const { project, conversation } = await authenticateStream(
+      request,
+      repository,
+      config,
+      params.conversationId
+    );
 
     if (query.once === "true") {
       reply.header("content-type", "text/event-stream");
@@ -243,32 +312,55 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       });
     }
 
-    writeSseHeaders(reply);
+    writeSseHeaders(request, reply, config);
+    let closed = false;
+    const send = (event: Parameters<typeof formatSse>[0]) => {
+      if (!closed) {
+        reply.raw.write(
+          formatSse(event, {
+            id: crypto.randomUUID()
+          })
+        );
+      }
+    };
     const unsubscribe = eventHub.subscribe(project.id, conversation.id, {
-      send: (event) => {
-        reply.raw.write(formatSse(event));
+      send
+    });
+    send({
+      event: "conversation.status_changed",
+      data: {
+        conversationId: conversation.id,
+        status: conversation.status
       }
     });
-    reply.raw.write(
-      formatSse({
-        event: "conversation.status_changed",
-        data: {
-          conversationId: conversation.id,
-          status: conversation.status
-        }
-      })
-    );
-    request.raw.on("close", unsubscribe);
+    const heartbeat = setInterval(() => {
+      if (!closed) {
+        reply.raw.write(`: heartbeat ${Date.now()}\n\n`);
+      }
+    }, config.sseHeartbeatMs);
+    const cleanup = () => {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      clearInterval(heartbeat);
+      unsubscribe();
+    };
+    request.raw.once("close", cleanup);
+    reply.raw.once("close", cleanup);
+    reply.raw.once("error", cleanup);
+    return reply;
   });
 
   app.post("/v1/client/conversations/:conversationId/handoff", async (request) => {
     const params = request.params as { conversationId: string };
     const body = requestHandoffBodySchema.parse(request.body);
-    const project = await authenticateClient(request, repository);
-    const conversation = await repository.findConversation(project.id, params.conversationId);
-    if (!conversation) {
-      throw notFound("Conversation not found");
-    }
+    const { project, conversation } = await authenticateConversation(
+      request,
+      repository,
+      config,
+      params.conversationId
+    );
 
     const handoffSession = await handoffRequester({
       projectId: project.id,
@@ -503,6 +595,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   app.get("/v1/admin/projects", async (request) => {
     const identity = await authenticateAdminIdentity(request, repository, config);
+    requireAdminScope(identity, "admin:project");
     return {
       projects: identity.project ? [identity.project] : await repository.listProjects()
     };
@@ -531,7 +624,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
 
   app.get("/v1/admin/projects/:projectId/ops/health", async (request) => {
-    const { project } = await authenticateAdminProjectIdentity(request, repository, config);
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:ops");
     return buildOpsHealth(repository, project, config);
   });
 
@@ -922,34 +1020,44 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
 
   app.get("/v1/admin/projects/:projectId/conversations", async (request) => {
-    const projectId = await authenticateAdminProject(request, repository, config);
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:conversations");
     const query = listConversationsQuerySchema.parse(request.query);
-    return buildAdminConversationList(repository, projectId, query);
+    return buildAdminConversationList(repository, project.id, query);
   });
 
   app.get("/v1/admin/projects/:projectId/conversations/:conversationId", async (request) => {
     const params = request.params as { projectId: string; conversationId: string };
-    const projectId = await authenticateAdminProject(request, repository, config);
-    const conversation = await repository.findConversation(projectId, params.conversationId);
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:conversations");
+    const conversation = await repository.findConversation(project.id, params.conversationId);
     if (!conversation) {
       throw notFound("Conversation not found");
     }
     return {
       conversation,
       channel: channelSummaryFromMetadata(conversation.metadata),
-      messages: await repository.listMessages(projectId, conversation.id),
-      ai_runs: await repository.listAiRuns(projectId, conversation.id),
+      messages: await repository.listMessages(project.id, conversation.id),
+      ai_runs: await repository.listAiRuns(project.id, conversation.id),
       tool_calls: await repository.listToolCalls({
-        projectId,
+        projectId: project.id,
         conversationId: conversation.id
       }),
       insight:
         (await repository.getConversationInsight({
-          projectId,
+          projectId: project.id,
           conversationId: conversation.id
         })) ?? null,
       handoff_sessions: await repository.listHandoffSessions({
-        projectId,
+        projectId: project.id,
         conversationId: conversation.id
       })
     };
@@ -1023,11 +1131,16 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
 
   app.get("/v1/admin/projects/:projectId/jobs", async (request) => {
-    const projectId = await authenticateAdminProject(request, repository, config);
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:jobs");
     const query = listAsyncJobsQuerySchema.parse(request.query);
     return {
       jobs: await repository.listAsyncJobs({
-        projectId,
+        projectId: project.id,
         status: query.status,
         type: query.type,
         limit: query.limit
@@ -1133,9 +1246,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
 
   app.get("/v1/admin/projects/:projectId/knowledge/documents", async (request) => {
-    const projectId = await authenticateAdminProject(request, repository, config);
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:knowledge");
     return {
-      documents: await repository.listKnowledgeDocuments(projectId)
+      documents: await repository.listKnowledgeDocuments(project.id)
     };
   });
 
@@ -1145,6 +1263,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       repository,
       config
     );
+    requireAdminScope(identity, "admin:knowledge");
     const body = createKnowledgeDocumentBodySchema.parse(request.body);
     const document = await repository.createKnowledgeDocument(project.id, {
       title: body.title,
@@ -1175,6 +1294,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         repository,
         config
       );
+      requireAdminScope(identity, "admin:knowledge");
       const params = request.params as { documentId: string };
       const body = reindexKnowledgeDocumentBodySchema.parse(request.body ?? {});
       const existing = await repository.findKnowledgeDocument(project.id, params.documentId);
@@ -1218,8 +1338,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   );
 
   app.get("/v1/admin/projects/:projectId/llm", async (request) => {
-    const projectId = await authenticateAdminProject(request, repository, config);
-    const provider = await repository.getActiveLlmProvider(projectId);
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:llm");
+    const provider = await repository.getActiveLlmProvider(project.id);
     return {
       provider: provider
         ? {
@@ -1237,6 +1362,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       repository,
       config
     );
+    requireAdminScope(identity, "admin:llm");
     const body = upsertLlmProviderBodySchema.parse(request.body);
     const provider = await repository.upsertLlmProvider({
       projectId: project.id,
@@ -1269,8 +1395,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
 
   app.get("/v1/admin/projects/:projectId/integrations/chatwoot", async (request) => {
-    const projectId = await authenticateAdminProject(request, repository, config);
-    const integration = await repository.getIntegrationConfig(projectId, "chatwoot");
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:integrations");
+    const integration = await repository.getIntegrationConfig(project.id, "chatwoot");
     return {
       integration: integration
         ? {
@@ -1293,6 +1424,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       repository,
       config
     );
+    requireAdminScope(identity, "admin:integrations");
     const body = upsertChatwootIntegrationBodySchema.parse(request.body);
     const integration = await repository.upsertIntegrationConfig({
       projectId: project.id,
@@ -1345,6 +1477,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       repository,
       config
     );
+    requireAdminScope(identity, "admin:integrations");
     const integration = await repository.getIntegrationConfig(project.id, "chatwoot");
     if (!integration) {
       throw notFound("Chatwoot integration not configured");
@@ -1355,7 +1488,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       const adapter = createChatwootAdapter(
         chatwootAdapterConfig(
           decryptJson(integration.configEncrypted, config.encryptionKey),
-          options.chatwootFetch
+          chatwootFetch
         )
       );
       const result = await adapter.testConnection();
@@ -1429,6 +1562,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       repository,
       config
     );
+    requireAdminScope(identity, "admin:integrations");
     const handoffSession = await repository.findHandoffSession({
       projectId: project.id,
       id: params.handoffId
@@ -1444,7 +1578,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       repository,
       eventHub,
       config,
-      chatwootFetch: options.chatwootFetch,
+      chatwootFetch,
       handoffSession
     });
     await recordAudit(repository, request, {
@@ -1776,7 +1910,7 @@ async function completeChatwootHandoff(input: {
     });
 
     input.eventHub.publish(input.projectId, input.conversationId, {
-      event: "error",
+      event: "support.error",
       data: {
         code: "chatwoot_handoff_failed",
         message: "Human handoff could not be created in Chatwoot. Please try again later."
@@ -2792,14 +2926,6 @@ function truncate(value: string, maxLength: number): string {
   return value.length > maxLength ? `${value.slice(0, maxLength - 1)}...` : value;
 }
 
-async function authenticateAdminProject(
-  request: FastifyRequest,
-  repository: SupportRepository,
-  config: ApiConfig
-): Promise<string> {
-  return (await authenticateAdminProjectIdentity(request, repository, config)).project.id;
-}
-
 async function authenticateAdminProjectIdentity(
   request: FastifyRequest,
   repository: SupportRepository,
@@ -2817,13 +2943,34 @@ async function authenticateAdminProjectIdentity(
   return { project, identity };
 }
 
-function writeSseHeaders(reply: FastifyReply): void {
-  reply.raw.writeHead(200, {
-    "Content-Type": "text/event-stream; charset=utf-8",
-    "Cache-Control": "no-cache, no-transform",
-    Connection: "keep-alive",
-    "X-Accel-Buffering": "no"
-  });
+function writeSseHeaders(request: FastifyRequest, reply: FastifyReply, config: ApiConfig): void {
+  reply.hijack();
+  reply.raw.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  reply.raw.setHeader("Cache-Control", "no-cache, no-transform");
+  reply.raw.setHeader("Connection", "keep-alive");
+  reply.raw.setHeader("X-Accel-Buffering", "no");
+  const origin = request.headers.origin;
+  if (config.corsOrigin === true) {
+    reply.raw.setHeader("Access-Control-Allow-Origin", origin ?? "*");
+  } else if (!origin || origin === config.corsOrigin) {
+    reply.raw.setHeader("Access-Control-Allow-Origin", config.corsOrigin);
+  }
+  if (origin) {
+    reply.raw.setHeader("Vary", "Origin");
+  }
+  reply.raw.writeHead(200);
+  reply.raw.write("retry: 3000\n\n");
+}
+
+export function redactSensitiveRequestUrl(url: string | undefined): string | undefined {
+  if (!url?.includes("?")) {
+    return url;
+  }
+  const parsed = new URL(url, "http://opensupportai.local");
+  if (parsed.searchParams.has("stream_token")) {
+    parsed.searchParams.set("stream_token", "[REDACTED]");
+  }
+  return `${parsed.pathname}${parsed.search}${parsed.hash}`;
 }
 
 function verifyWebhookSecret(request: FastifyRequest, configPayload: JsonRecord): void {

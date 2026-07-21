@@ -1,6 +1,16 @@
 import { z } from "zod";
 
 const metadataSchema = z.record(z.string(), z.unknown()).default({});
+const httpUrlSchema = z
+  .string()
+  .url()
+  .refine(
+    (value) => {
+      const protocol = new URL(value).protocol;
+      return protocol === "http:" || protocol === "https:";
+    },
+    { message: "URL must use http or https" }
+  );
 
 export const createConversationBodySchema = z.object({
   project_id: z.string().min(1),
@@ -37,9 +47,25 @@ export const listApiKeysQuerySchema = z.object({
   include_revoked: z.coerce.boolean().default(false)
 });
 
+const adminScopeSchema = z.enum([
+  "admin:project",
+  "admin:ops",
+  "admin:conversations",
+  "admin:knowledge",
+  "admin:llm",
+  "admin:integrations",
+  "admin:channels",
+  "admin:keys",
+  "admin:audit",
+  "admin:tools",
+  "admin:assist",
+  "admin:jobs",
+  "admin:webhooks"
+]);
+
 export const createApiKeyBodySchema = z.object({
   name: z.string().trim().min(1).max(120),
-  scopes: z.array(z.string().trim().min(1).max(80)).min(1).max(20).default(["admin:project"])
+  scopes: z.array(adminScopeSchema).min(1).max(20).default(["admin:project"])
 });
 
 export const createKnowledgeDocumentBodySchema = z.object({
@@ -119,7 +145,7 @@ export const listToolCallsQuerySchema = z.object({
 
 export const upsertLlmProviderBodySchema = z.object({
   provider: z.literal("openai_compatible").default("openai_compatible"),
-  base_url: z.string().min(1),
+  base_url: httpUrlSchema,
   model: z.string().min(1),
   embedding_model: z.string().optional(),
   api_key: z.string().min(1),
@@ -127,7 +153,7 @@ export const upsertLlmProviderBodySchema = z.object({
 });
 
 export const upsertChatwootIntegrationBodySchema = z.object({
-  base_url: z.string().url(),
+  base_url: httpUrlSchema,
   account_id: z.string().min(1),
   inbox_id: z.string().min(1),
   api_access_token: z.string().min(1),

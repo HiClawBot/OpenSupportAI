@@ -2,7 +2,8 @@ import type { FastifyRequest } from "fastify";
 import type { ApiConfig } from "./config";
 import { forbidden, unauthorized } from "./errors";
 import { hashSecret } from "./crypto";
-import type { ProjectRecord, SupportRepository } from "./repositories/types";
+import { verifyClientToken, type ClientTokenClaims } from "./client-tokens";
+import type { ConversationRecord, ProjectRecord, SupportRepository } from "./repositories/types";
 
 export type AdminIdentity = {
   actorType: "root_admin" | "api_key";
@@ -35,6 +36,62 @@ export async function authenticateClient(
   }
 
   return project;
+}
+
+export async function authenticateConversation(
+  request: FastifyRequest,
+  repository: SupportRepository,
+  config: ApiConfig,
+  expectedConversationId: string
+): Promise<{
+  project: ProjectRecord;
+  conversation: ConversationRecord;
+  claims: ClientTokenClaims;
+}> {
+  const token = bearerToken(request);
+  if (!token) {
+    throw unauthorized("Missing conversation bearer token");
+  }
+
+  let claims: ClientTokenClaims;
+  try {
+    claims = verifyClientToken({
+      token,
+      secret: config.clientTokenSecret,
+      purpose: "conversation"
+    });
+  } catch {
+    throw unauthorized("Invalid or expired conversation token");
+  }
+  return resolveConversationClaims(repository, claims, expectedConversationId);
+}
+
+export async function authenticateStream(
+  request: FastifyRequest,
+  repository: SupportRepository,
+  config: ApiConfig,
+  expectedConversationId: string
+): Promise<{
+  project: ProjectRecord;
+  conversation: ConversationRecord;
+  claims: ClientTokenClaims;
+}> {
+  const query = request.query as { stream_token?: string };
+  if (!query.stream_token) {
+    throw unauthorized("Missing stream token");
+  }
+
+  let claims: ClientTokenClaims;
+  try {
+    claims = verifyClientToken({
+      token: query.stream_token,
+      secret: config.clientTokenSecret,
+      purpose: "stream"
+    });
+  } catch {
+    throw unauthorized("Invalid or expired stream token");
+  }
+  return resolveConversationClaims(repository, claims, expectedConversationId);
 }
 
 export async function authenticateAdmin(
@@ -82,4 +139,27 @@ function bearerToken(request: FastifyRequest): string | undefined {
     return undefined;
   }
   return authorization.slice("Bearer ".length).trim();
+}
+
+async function resolveConversationClaims(
+  repository: SupportRepository,
+  claims: ClientTokenClaims,
+  expectedConversationId: string
+): Promise<{
+  project: ProjectRecord;
+  conversation: ConversationRecord;
+  claims: ClientTokenClaims;
+}> {
+  if (claims.conversationId !== expectedConversationId) {
+    throw forbidden("Conversation token does not match requested conversation");
+  }
+  const project = await repository.findProjectById(claims.projectId);
+  if (!project) {
+    throw unauthorized("Conversation token project no longer exists");
+  }
+  const conversation = await repository.findConversation(project.id, claims.conversationId);
+  if (!conversation) {
+    throw unauthorized("Conversation token conversation no longer exists");
+  }
+  return { project, conversation, claims };
 }

@@ -8,7 +8,7 @@ export type ClientEventName =
   | "handoff.requested"
   | "human.message.created"
   | "conversation.status_changed"
-  | "error";
+  | "support.error";
 
 export type ClientEvent =
   | {
@@ -28,6 +28,6 @@ export type ClientEvent =
       data: { conversationId: string; status: ConversationStatus };
     }
   | {
-      event: "error";
+      event: "support.error";
       data: { code: string; message: string };
     };

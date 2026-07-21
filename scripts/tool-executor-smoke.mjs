@@ -21,7 +21,7 @@ Optional environment variables:
   INBOX_ID=inbox_default
 
 Example:
-  OPENSUPPORTAI_STORAGE=memory PORT=4000 pnpm --filter @opensupportai/api dev
+  OPENSUPPORTAI_STORAGE=memory PORT=4000 pnpm --filter @opensupportai/api dev:demo
   pnpm smoke:tools
 `;
 
@@ -106,22 +106,30 @@ async function main() {
   assert(upsert.tool?.slug === toolSlug, "OpenAPI tool was not upserted");
 
   log("Creating client conversation");
-  const conversation = await clientRequest("POST", "/v1/client/conversations", {
+  const conversation = await projectRequest("POST", "/v1/client/conversations", {
     project_id: settings.projectId,
     inbox_id: settings.inboxId,
     contact: {
       external_user_id: `${runId}_user`
     }
   });
+  const conversationToken = conversation.conversation_token;
+  assert(typeof conversationToken === "string", "Create conversation did not return a capability");
 
   log("Sending tool-triggering user message");
-  await clientRequest("POST", `/v1/client/conversations/${conversation.conversation_id}/messages`, {
-    type: "text",
-    text: `请帮我查外部订单 ${orderId}`
-  });
+  await conversationRequest(
+    conversationToken,
+    "POST",
+    `/v1/client/conversations/${conversation.conversation_id}/messages`,
+    {
+      type: "text",
+      text: `请帮我查外部订单 ${orderId}`
+    }
+  );
 
   log("Verifying tool-backed answer");
-  const messages = await clientRequest(
+  const messages = await conversationRequest(
+    conversationToken,
     "GET",
     `/v1/client/conversations/${conversation.conversation_id}/messages`
   );
@@ -179,9 +187,15 @@ async function adminRequest(method, path, body) {
   });
 }
 
-async function clientRequest(method, path, body) {
+async function projectRequest(method, path, body) {
   return request(method, path, body, {
     "x-opensupportai-public-key": settings.publicKey
+  });
+}
+
+async function conversationRequest(token, method, path, body) {
+  return request(method, path, body, {
+    Authorization: `Bearer ${token}`
   });
 }
 

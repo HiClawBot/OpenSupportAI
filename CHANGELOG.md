@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+English:
+
+- Added conversation-scoped capabilities and short-lived SSE stream tokens; project public keys can no longer read or mutate existing conversations.
+- Removed automatic demo seeding from normal API startup and added explicit `dev:demo` startup.
+- Added production fail-fast validation for persistence, secrets, CORS, token TTLs, and outbound-network policy.
+- Added explicit scopes across admin routes, centralized SSRF-resistant outbound requests, and persisted operator approval for mutation tools.
+- Added SDK/Widget SSE reconnection with authenticated polling fallback and regression coverage for native EventSource errors.
+
+中文：
+
+- 新增 conversation-scoped capability 与短期 SSE stream token；项目 public key 不再能够读取或修改已有会话。
+- 普通 API 启动不再自动写入 demo 数据，新增显式 `dev:demo` 启动方式。
+- 新增生产启动 fail-fast 校验，覆盖持久化、密钥、CORS、token TTL 和出站网络策略。
+- 为管理端路由补齐显式 scope，并增加统一 SSRF 防护和 mutation tool 的持久化 operator approval。
+- SDK/Widget 新增 SSE 重连、认证轮询 fallback，以及原生 EventSource error 回归测试。
+
 ## v1.0.0 - 2026-06-18
 
 English:

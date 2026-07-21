@@ -29,4 +29,6 @@ export type CreateConversationInput = {
 export type CreateConversationResponse = {
   conversationId: string;
   status: ConversationStatus;
+  conversationToken: string;
+  conversationTokenExpiresAt: string;
 };

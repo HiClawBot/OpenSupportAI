@@ -29,7 +29,7 @@ Optional environment variables:
   SLACK_DEFAULT_CHANNEL_ID=CLOCAL
 
 Example:
-  OPENSUPPORTAI_STORAGE=memory PORT=4000 pnpm --filter @opensupportai/api dev
+  OPENSUPPORTAI_STORAGE=memory PORT=4000 pnpm --filter @opensupportai/api dev:demo
   pnpm smoke:channels
 `;
 
@@ -188,11 +188,11 @@ async function main() {
   );
 
   log("Reading conversation messages");
-  const messages = await clientRequest(
+  const conversationDetails = await adminRequest(
     "GET",
-    `/v1/client/conversations/${first.conversation_id}/messages`
+    `/v1/admin/projects/${settings.projectId}/conversations/${first.conversation_id}`
   );
-  const endUserTexts = messages.messages
+  const endUserTexts = conversationDetails.messages
     ?.filter((message) => message.role === "end_user")
     .map((message) => message.content?.text);
   assert(endUserTexts?.includes("怎么取消订阅？"), "First webhook message was not stored");
@@ -366,12 +366,6 @@ async function slackRequest(body) {
 async function adminRequest(method, path, body) {
   return request(method, path, body, {
     Authorization: `Bearer ${settings.adminToken}`
-  });
-}
-
-async function clientRequest(method, path, body) {
-  return request(method, path, body, {
-    "x-opensupportai-public-key": settings.publicKey
   });
 }
 

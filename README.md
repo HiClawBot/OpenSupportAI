@@ -100,7 +100,7 @@ This path runs the full API/admin/demo experience against in-memory seeded data.
 
 ```bash
 pnpm install
-OPENSUPPORTAI_STORAGE=memory PORT=4000 pnpm --filter @opensupportai/api dev
+OPENSUPPORTAI_STORAGE=memory PORT=4000 pnpm --filter @opensupportai/api dev:demo
 ```
 
 In two other terminals:
@@ -248,12 +248,12 @@ demo.subscription_lookup
 
 The orchestrator still uses these demo tools for explicit order/subscription-status questions before falling back to knowledge retrieval.
 
-v0.9 adds execution for `kind=openapi` tools. Active OpenAPI tools can match a user message through `metadata.intent.keywords` and `metadata.intent.extract`, call an allowlisted HTTP endpoint, store a completed or failed tool-call log, and return an answer rendered from `metadata.answer_template`, `output.answer`, `output.summary`, or the raw JSON result. Relative paths use `metadata.base_url`; every final host must be present in `metadata.allowed_hosts`; non-`GET` methods require `metadata.allow_mutation=true`. Optional metadata includes `timeout_ms`, `max_response_bytes`, `response_path`, and `auth: { "type": "bearer_env", "env": "ENV_NAME" }`.
+Active `kind=openapi` tools can match a user message through `metadata.intent.keywords` and `metadata.intent.extract`, call an allowlisted HTTP endpoint, store a completed or failed tool-call log, and return an answer rendered from `metadata.answer_template`, `output.answer`, `output.summary`, or the raw JSON result. Relative paths use `metadata.base_url`; every final host must be present in `metadata.allowed_hosts`. Non-`GET` methods additionally require `metadata.allow_mutation=true` and a persisted `metadata.mutation_approval` record containing `status=approved`, `approved_by`, and `approved_at`. All LLM, Chatwoot, and business-tool requests reject non-HTTP protocols, URL credentials, private/reserved destinations in production, and cross-origin redirects. Optional tool metadata includes `timeout_ms`, `max_response_bytes`, `response_path`, and `auth: { "type": "bearer_env", "env": "ENV_NAME" }`.
 
 Admin APIs can list/upsert tools, enable or disable a tool, and inspect tool-call logs. A local end-to-end OpenAPI tool smoke test is available:
 
 ```bash
-OPENSUPPORTAI_STORAGE=memory PORT=4000 pnpm --filter @opensupportai/api dev
+OPENSUPPORTAI_STORAGE=memory PORT=4000 pnpm --filter @opensupportai/api dev:demo
 API_URL=http://localhost:4000 pnpm smoke:tools
 ```
 
@@ -366,6 +366,12 @@ OPENSUPPORTAI_STORAGE=memory | prisma
 ADMIN_API_TOKEN=admin_demo_key
 DATABASE_URL=postgresql://opensupportai:opensupportai@localhost:5432/opensupportai
 ENCRYPTION_KEY=replace_with_32_byte_key
+CLIENT_TOKEN_SECRET=replace_with_32_byte_client_token_secret
+CORS_ORIGIN=*
+CONVERSATION_TOKEN_TTL_SECONDS=604800
+STREAM_TOKEN_TTL_SECONDS=60
+SSE_HEARTBEAT_MS=15000
+ALLOW_PRIVATE_OUTBOUND=true
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_API_KEY=replace_me
 LLM_DEFAULT_MODEL=gpt-4.1-mini
@@ -379,7 +385,8 @@ Do not put LLM provider keys in frontend code. Configure provider credentials th
 
 ### Security Baseline
 
-- Client public keys only identify a project. They are not admin secrets.
+- Client public keys only create conversations and authenticate channel webhooks. Conversation reads, writes, handoff, and stream-token exchange require the returned conversation capability.
+- Browser SSE URLs contain only a short-lived stream token. The SDK and Widget fall back to authenticated polling and reconnect with a fresh stream token.
 - Admin endpoints require `Authorization: Bearer <token>`.
 - API keys are stored as hashes.
 - Project-scoped API keys can only authenticate against their own project; project creation requires the root admin token.
@@ -497,7 +504,7 @@ pnpm --filter @opensupportai/site build
 
 ```bash
 pnpm install
-OPENSUPPORTAI_STORAGE=memory PORT=4000 pnpm --filter @opensupportai/api dev
+OPENSUPPORTAI_STORAGE=memory PORT=4000 pnpm --filter @opensupportai/api dev:demo
 ```
 
 另外打开两个终端：
@@ -645,12 +652,12 @@ demo.subscription_lookup
 
 当用户明确询问订单或订阅状态时，orchestrator 仍会先使用这些 demo 工具，再进入知识库检索 fallback。
 
-v0.9 新增 `kind=openapi` 工具执行。Active OpenAPI 工具可以通过 `metadata.intent.keywords` 和 `metadata.intent.extract` 匹配用户消息，调用 allowlist 保护的 HTTP endpoint，写入 completed 或 failed tool-call log，并通过 `metadata.answer_template`、`output.answer`、`output.summary` 或原始 JSON 生成回复。相对路径使用 `metadata.base_url`；最终 host 必须在 `metadata.allowed_hosts` 中；非 `GET` 方法必须显式配置 `metadata.allow_mutation=true`。可选 metadata 包含 `timeout_ms`、`max_response_bytes`、`response_path` 和 `auth: { "type": "bearer_env", "env": "ENV_NAME" }`。
+Active 的 `kind=openapi` 工具可以通过 `metadata.intent.keywords` 和 `metadata.intent.extract` 匹配用户消息，调用 allowlist 保护的 HTTP endpoint，写入 completed 或 failed tool-call log，并通过 `metadata.answer_template`、`output.answer`、`output.summary` 或原始 JSON 生成回复。相对路径使用 `metadata.base_url`，最终 host 必须在 `metadata.allowed_hosts` 中。非 `GET` 方法还必须配置 `metadata.allow_mutation=true`，并持久化包含 `status=approved`、`approved_by`、`approved_at` 的 `metadata.mutation_approval`。LLM、Chatwoot 和业务工具的全部出站请求都会拒绝非 HTTP 协议、URL 内嵌凭据、生产环境的私网/保留地址以及跨源重定向。可选 metadata 包含 `timeout_ms`、`max_response_bytes`、`response_path` 和 `auth: { "type": "bearer_env", "env": "ENV_NAME" }`。
 
 管理端 API 可以列出/upsert 工具、启停工具，并查看 tool-call 日志。本地可执行端到端 OpenAPI 工具 smoke test：
 
 ```bash
-OPENSUPPORTAI_STORAGE=memory PORT=4000 pnpm --filter @opensupportai/api dev
+OPENSUPPORTAI_STORAGE=memory PORT=4000 pnpm --filter @opensupportai/api dev:demo
 API_URL=http://localhost:4000 pnpm smoke:tools
 ```
 
@@ -763,6 +770,12 @@ OPENSUPPORTAI_STORAGE=memory | prisma
 ADMIN_API_TOKEN=admin_demo_key
 DATABASE_URL=postgresql://opensupportai:opensupportai@localhost:5432/opensupportai
 ENCRYPTION_KEY=replace_with_32_byte_key
+CLIENT_TOKEN_SECRET=replace_with_32_byte_client_token_secret
+CORS_ORIGIN=*
+CONVERSATION_TOKEN_TTL_SECONDS=604800
+STREAM_TOKEN_TTL_SECONDS=60
+SSE_HEARTBEAT_MS=15000
+ALLOW_PRIVATE_OUTBOUND=true
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_API_KEY=replace_me
 LLM_DEFAULT_MODEL=gpt-4.1-mini
@@ -776,7 +789,8 @@ RATE_LIMIT_MAX=120
 
 ### 安全基线
 
-- Client public key 只用于识别项目，不是 admin secret。
+- Client public key 只用于创建会话和校验 channel webhook。读取/发送会话消息、请求人工转接和换取 stream token 都必须使用创建会话时返回的 conversation capability。
+- 浏览器 SSE URL 只携带短期 stream token；SDK 与 Widget 在断流时会使用已认证轮询，并用新 stream token 重连。
 - Admin API 必须使用 `Authorization: Bearer <token>`。
 - API key 只保存 hash。
 - 项目级 API key 只能认证访问自己的项目；创建项目需要 root admin token。

@@ -258,8 +258,8 @@ async function executeOpenApiTool(
   if (!path) {
     throw new Error("OpenAPI tool path is not configured");
   }
-  if (method !== "GET" && tool.metadata["allow_mutation"] !== true) {
-    throw new Error("OpenAPI tool mutation is not allowed");
+  if (method !== "GET" && !hasMutationApproval(tool)) {
+    throw new Error("OpenAPI tool mutation requires persisted operator approval");
   }
 
   const url = buildToolUrl(tool, input);
@@ -292,6 +292,17 @@ async function executeOpenApiTool(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function hasMutationApproval(tool: ToolDefinitionRecord): boolean {
+  const approval = recordValue(tool.metadata["mutation_approval"]);
+  const approvedAt = stringValue(approval?.["approved_at"]);
+  return (
+    tool.metadata["allow_mutation"] === true &&
+    approval?.["status"] === "approved" &&
+    Boolean(stringValue(approval["approved_by"])) &&
+    Boolean(approvedAt && !Number.isNaN(Date.parse(approvedAt)))
+  );
 }
 
 function buildToolUrl(tool: ToolDefinitionRecord, input: JsonRecord): URL {
