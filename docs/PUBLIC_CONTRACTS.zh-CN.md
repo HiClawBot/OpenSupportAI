@@ -19,6 +19,7 @@ GET  /health
 POST /v1/client/conversations
 GET  /v1/client/conversations/{conversation_id}/messages
 POST /v1/client/conversations/{conversation_id}/messages
+POST /v1/client/conversations/{conversation_id}/stream-token
 GET  /v1/client/conversations/{conversation_id}/events
 POST /v1/client/conversations/{conversation_id}/handoff
 
@@ -67,7 +68,8 @@ POST /v1/webhooks/chatwoot/{project_id}
 - 现有成功响应字段不会被删除或重命名。
 - 新字段只能以向后兼容方式添加。
 - Error response 保持 `{ "error": { "code", "message" } }` 形状。
-- Client API 继续支持 `X-OpenSupportAI-Public-Key`。
+- `X-OpenSupportAI-Public-Key` 仅用于创建会话和 channel webhook；已有会话操作使用创建响应返回的 conversation capability。
+- SSE endpoint 仅接受通过 conversation capability 换取的短期 stream token。
 - Admin API 继续支持 `Authorization: Bearer <admin-token-or-api-key>`。
 - Webhook endpoint 继续保持 project/public-key scoped 的鉴权边界。
 
@@ -80,7 +82,7 @@ new OpenSupportAIClient({
   apiUrl,
   projectId,
   publicKey,
-  userToken
+  conversationToken
 });
 
 client.createConversation({ inboxId, contact, metadata });
@@ -99,7 +101,7 @@ ai.message.completed
 handoff.requested
 human.message.created
 conversation.status_changed
-error
+support.error
 ```
 
 ## 稳定 Widget 契约
@@ -113,7 +115,7 @@ const controller = init({
   apiUrl,
   projectId,
   publicKey,
-  userToken,
+  conversationToken,
   inboxId,
   locale,
   user
@@ -122,7 +124,7 @@ const controller = init({
 controller.destroy();
 ```
 
-Widget DOM、Shadow DOM 内部 class name 和内部渲染结构不属于稳定公共契约；宿主应用不应依赖这些内部实现。
+`userToken` 作为 `conversationToken` 的兼容别名暂时保留，但已废弃。Widget 将会话 capability 保存在当前标签页的 `sessionStorage`；Widget DOM、Shadow DOM 内部 class name 和内部渲染结构不属于稳定公共契约。
 
 ## 稳定 Adapter 契约
 

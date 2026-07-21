@@ -13,4 +13,4 @@ RUN pnpm db:generate
 RUN pnpm --filter @opensupportai/api... build
 
 EXPOSE 4000
-CMD ["sh", "-c", "pnpm db:migrate && pnpm db:seed && node services/api/dist/index.js"]
+CMD ["node", "services/api/dist/index.js"]

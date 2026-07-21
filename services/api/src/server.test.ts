@@ -1,13 +1,75 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createHmac } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { buildApp } from "./server";
+import { type ApiConfig } from "./config";
+import { issueClientToken } from "./client-tokens";
+import { MemorySupportRepository } from "./repositories/memory";
+import type { SupportRepository } from "./repositories/types";
+import { buildApp, redactSensitiveRequestUrl, type BuildAppOptions } from "./server";
+
+const testConfig: ApiConfig = {
+  nodeEnv: "test",
+  port: 0,
+  storageMode: "memory",
+  adminToken: "admin_demo_key",
+  encryptionKey: "test_encryption_key",
+  clientTokenSecret: "test_client_token_secret_at_least_32_chars",
+  corsOrigin: true,
+  rateLimitEnabled: false,
+  rateLimitWindowMs: 60_000,
+  rateLimitMax: 120,
+  conversationTokenTtlSeconds: 3600,
+  streamTokenTtlSeconds: 60,
+  sseHeartbeatMs: 15_000,
+  allowPrivateOutbound: true
+};
+
+type TestBuildAppOptions = Omit<BuildAppOptions, "config" | "repository"> & {
+  config?: Partial<ApiConfig>;
+  repository?: SupportRepository;
+};
+
+async function buildSeededApp(options: TestBuildAppOptions = {}): Promise<FastifyInstance> {
+  const repository = options.repository ?? new MemorySupportRepository();
+  await repository.seedDemo();
+  return buildApp({
+    ...options,
+    repository,
+    config: {
+      ...testConfig,
+      ...options.config
+    }
+  });
+}
+
+function conversationHeaders(conversationId: string): { authorization: string } {
+  const capability = issueClientToken({
+    secret: testConfig.clientTokenSecret,
+    purpose: "conversation",
+    projectId: "proj_demo",
+    conversationId,
+    ttlSeconds: testConfig.conversationTokenTtlSeconds
+  });
+  return {
+    authorization: `Bearer ${capability.token}`
+  };
+}
+
+async function streamTokenFor(app: FastifyInstance, conversationId: string): Promise<string> {
+  const response = await app.inject({
+    method: "POST",
+    url: `/v1/client/conversations/${conversationId}/stream-token`,
+    headers: conversationHeaders(conversationId)
+  });
+  expect(response.statusCode).toBe(200);
+  return response.json<{ stream_token: string }>().stream_token;
+}
 
 describe("OpenSupportAI API", () => {
   let app: FastifyInstance;
 
   beforeAll(async () => {
-    app = await buildApp({
+    app = await buildSeededApp({
       config: {
         nodeEnv: "test",
         port: 0,
@@ -46,15 +108,22 @@ describe("OpenSupportAI API", () => {
     });
 
     expect(conversationResponse.statusCode).toBe(200);
-    const conversation = conversationResponse.json<{ conversation_id: string; status: string }>();
+    const conversation = conversationResponse.json<{
+      conversation_id: string;
+      status: string;
+      conversation_token: string;
+      conversation_token_expires_at: string;
+    }>();
     expect(conversation.status).toBe("open");
+    expect(conversation.conversation_token).toMatch(/^osa_v1\./);
+    expect(new Date(conversation.conversation_token_expires_at).getTime()).toBeGreaterThan(
+      Date.now()
+    );
 
+    const streamToken = await streamTokenFor(app, conversation.conversation_id);
     const sseResponse = await app.inject({
       method: "GET",
-      url: `/v1/client/conversations/${conversation.conversation_id}/events?once=true`,
-      headers: {
-        "x-opensupportai-public-key": "pk_demo"
-      }
+      url: `/v1/client/conversations/${conversation.conversation_id}/events?once=true&stream_token=${streamToken}`
     });
     expect(sseResponse.statusCode).toBe(200);
     expect(sseResponse.body).toContain("event: conversation.status_changed");
@@ -62,9 +131,7 @@ describe("OpenSupportAI API", () => {
     const sendResponse = await app.inject({
       method: "POST",
       url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
-      headers: {
-        "x-opensupportai-public-key": "pk_demo"
-      },
+      headers: conversationHeaders(conversation.conversation_id),
       payload: {
         type: "text",
         text: "怎么取消订阅？"
@@ -77,9 +144,7 @@ describe("OpenSupportAI API", () => {
     const messagesResponse = await app.inject({
       method: "GET",
       url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
-      headers: {
-        "x-opensupportai-public-key": "pk_demo"
-      }
+      headers: conversationHeaders(conversation.conversation_id)
     });
     expect(messagesResponse.statusCode).toBe(200);
     const messages = messagesResponse.json<{
@@ -104,6 +169,114 @@ describe("OpenSupportAI API", () => {
     expect(adminPayload.ai_runs[0]?.retrievedChunkIds.length).toBeGreaterThan(0);
   });
 
+  it("isolates client access by conversation capability", async () => {
+    const firstResponse = await app.inject({
+      method: "POST",
+      url: "/v1/client/conversations",
+      headers: {
+        "x-opensupportai-public-key": "pk_demo"
+      },
+      payload: {
+        project_id: "proj_demo",
+        contact: { external_user_id: "capability_user_1" }
+      }
+    });
+    const secondResponse = await app.inject({
+      method: "POST",
+      url: "/v1/client/conversations",
+      headers: {
+        "x-opensupportai-public-key": "pk_demo"
+      },
+      payload: {
+        project_id: "proj_demo",
+        contact: { external_user_id: "capability_user_2" }
+      }
+    });
+    const first = firstResponse.json<{
+      conversation_id: string;
+      conversation_token: string;
+    }>();
+    const second = secondResponse.json<{
+      conversation_id: string;
+      conversation_token: string;
+    }>();
+
+    const publicKeyRead = await app.inject({
+      method: "GET",
+      url: `/v1/client/conversations/${first.conversation_id}/messages`,
+      headers: { "x-opensupportai-public-key": "pk_demo" }
+    });
+    expect(publicKeyRead.statusCode).toBe(401);
+
+    const crossConversationRead = await app.inject({
+      method: "GET",
+      url: `/v1/client/conversations/${second.conversation_id}/messages`,
+      headers: { authorization: `Bearer ${first.conversation_token}` }
+    });
+    expect(crossConversationRead.statusCode).toBe(403);
+
+    const streamTokenResponse = await app.inject({
+      method: "POST",
+      url: `/v1/client/conversations/${first.conversation_id}/stream-token`,
+      headers: { authorization: `Bearer ${first.conversation_token}` }
+    });
+    expect(streamTokenResponse.statusCode).toBe(200);
+    const stream = streamTokenResponse.json<{ stream_token: string }>();
+
+    const longLivedTokenOnStream = await app.inject({
+      method: "GET",
+      url: `/v1/client/conversations/${first.conversation_id}/events?once=true&stream_token=${first.conversation_token}`
+    });
+    expect(longLivedTokenOnStream.statusCode).toBe(401);
+
+    const crossConversationStream = await app.inject({
+      method: "GET",
+      url: `/v1/client/conversations/${second.conversation_id}/events?once=true&stream_token=${stream.stream_token}`
+    });
+    expect(crossConversationStream.statusCode).toBe(403);
+    expect(second.conversation_token).toMatch(/^osa_v1\./);
+  });
+
+  it("does not seed demo credentials during normal application startup", async () => {
+    const unseededApp = await buildApp({
+      config: testConfig,
+      repository: new MemorySupportRepository()
+    });
+    await unseededApp.ready();
+
+    try {
+      const response = await unseededApp.inject({
+        method: "POST",
+        url: "/v1/client/conversations",
+        headers: {
+          "x-opensupportai-public-key": "pk_demo"
+        },
+        payload: {
+          project_id: "proj_demo",
+          contact: { external_user_id: "unseeded_user" }
+        }
+      });
+      expect(response.statusCode).toBe(401);
+    } finally {
+      await unseededApp.close();
+    }
+  });
+
+  it("preserves Fastify request parsing failures as client errors", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/client/conversations",
+      headers: {
+        "content-type": "application/json",
+        "x-opensupportai-public-key": "pk_demo"
+      },
+      payload: ""
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json<{ error: { code: string } }>().error.code).toBe("invalid_request");
+  });
+
   it("does not fabricate answers when knowledge retrieval misses", async () => {
     const conversationResponse = await app.inject({
       method: "POST",
@@ -124,9 +297,7 @@ describe("OpenSupportAI API", () => {
     await app.inject({
       method: "POST",
       url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
-      headers: {
-        "x-opensupportai-public-key": "pk_demo"
-      },
+      headers: conversationHeaders(conversation.conversation_id),
       payload: {
         type: "text",
         text: "火星基地的停车费是多少？"
@@ -136,9 +307,7 @@ describe("OpenSupportAI API", () => {
     const messagesResponse = await app.inject({
       method: "GET",
       url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
-      headers: {
-        "x-opensupportai-public-key": "pk_demo"
-      }
+      headers: conversationHeaders(conversation.conversation_id)
     });
     const messages = messagesResponse.json<{
       messages: Array<{ role: string; content: { text?: string } }>;
@@ -149,7 +318,7 @@ describe("OpenSupportAI API", () => {
 
   it("generates grounded answers through a configured OpenAI-compatible LLM", async () => {
     const llmRequests: Array<{ model?: string; messages?: Array<{ content?: string }> }> = [];
-    const llmApp = await buildApp({
+    const llmApp = await buildSeededApp({
       config: {
         nodeEnv: "test",
         port: 0,
@@ -222,9 +391,7 @@ describe("OpenSupportAI API", () => {
       const sendResponse = await llmApp.inject({
         method: "POST",
         url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
-        headers: {
-          "x-opensupportai-public-key": "pk_demo"
-        },
+        headers: conversationHeaders(conversation.conversation_id),
         payload: {
           type: "text",
           text: "怎么取消订阅？"
@@ -235,9 +402,7 @@ describe("OpenSupportAI API", () => {
       const messagesResponse = await llmApp.inject({
         method: "GET",
         url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
-        headers: {
-          "x-opensupportai-public-key": "pk_demo"
-        }
+        headers: conversationHeaders(conversation.conversation_id)
       });
       const messages = messagesResponse.json<{
         messages: Array<{ role: string; content: { text?: string } }>;
@@ -280,7 +445,7 @@ describe("OpenSupportAI API", () => {
   });
 
   it("applies fixed-window rate limits when enabled", async () => {
-    const limitedApp = await buildApp({
+    const limitedApp = await buildSeededApp({
       config: {
         nodeEnv: "test",
         port: 0,
@@ -704,9 +869,7 @@ describe("OpenSupportAI API", () => {
     const messagesResponse = await app.inject({
       method: "GET",
       url: `/v1/client/conversations/${firstWebhook.conversation_id}/messages`,
-      headers: {
-        "x-opensupportai-public-key": "pk_demo"
-      }
+      headers: conversationHeaders(firstWebhook.conversation_id)
     });
     const messages = messagesResponse.json<{
       messages: Array<{ role: string; content: { text?: string } }>;
@@ -806,9 +969,7 @@ describe("OpenSupportAI API", () => {
     const handoffResponse = await app.inject({
       method: "POST",
       url: `/v1/client/conversations/${conversation.conversation_id}/handoff`,
-      headers: {
-        "x-opensupportai-public-key": "pk_demo"
-      },
+      headers: conversationHeaders(conversation.conversation_id),
       payload: {
         reason: "user_requested",
         note: "用户要求退款人工审核"
@@ -841,9 +1002,7 @@ describe("OpenSupportAI API", () => {
     await app.inject({
       method: "POST",
       url: `/v1/client/conversations/${alpha.conversation_id}/messages`,
-      headers: {
-        "x-opensupportai-public-key": "pk_demo"
-      },
+      headers: conversationHeaders(alpha.conversation_id),
       payload: {
         type: "text",
         text: "怎么取消订阅？"
@@ -870,9 +1029,7 @@ describe("OpenSupportAI API", () => {
     await app.inject({
       method: "POST",
       url: `/v1/client/conversations/${beta.conversation_id}/handoff`,
-      headers: {
-        "x-opensupportai-public-key": "pk_demo"
-      },
+      headers: conversationHeaders(beta.conversation_id),
       payload: {
         reason: "user_requested"
       }
@@ -1047,6 +1204,44 @@ describe("OpenSupportAI API", () => {
     });
     expect(forbiddenProjectCreateResponse.statusCode).toBe(403);
 
+    const forbiddenConversationResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/conversations",
+      headers: {
+        authorization: `Bearer ${created.key}`
+      }
+    });
+    expect(forbiddenConversationResponse.statusCode).toBe(403);
+
+    const conversationKeyResponse = await app.inject({
+      method: "POST",
+      url: "/v1/admin/projects/proj_demo/api-keys",
+      headers: {
+        authorization: "Bearer admin_demo_key"
+      },
+      payload: {
+        name: "Conversation reader",
+        scopes: ["admin:conversations"]
+      }
+    });
+    const conversationKey = conversationKeyResponse.json<{ key: string }>().key;
+    const allowedConversationResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/conversations",
+      headers: {
+        authorization: `Bearer ${conversationKey}`
+      }
+    });
+    expect(allowedConversationResponse.statusCode).toBe(200);
+    const forbiddenOpsResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/ops/health",
+      headers: {
+        authorization: `Bearer ${conversationKey}`
+      }
+    });
+    expect(forbiddenOpsResponse.statusCode).toBe(403);
+
     const listResponse = await app.inject({
       method: "GET",
       url: "/v1/admin/projects/proj_demo/api-keys?include_revoked=true",
@@ -1094,11 +1289,12 @@ describe("OpenSupportAI API", () => {
     const audit = auditResponse.json<{
       audit_logs: Array<{ action: string; targetId?: string; metadata: Record<string, unknown> }>;
     }>();
-    expect(audit.audit_logs[0]).toMatchObject({
+    const createdAudit = audit.audit_logs.find((entry) => entry.targetId === created.api_key.id);
+    expect(createdAudit).toMatchObject({
       action: "api_key.created",
       targetId: created.api_key.id
     });
-    expect(audit.audit_logs[0]?.metadata["name"]).toBe("Scoped project key");
+    expect(createdAudit?.metadata["name"]).toBe("Scoped project key");
   });
 
   it("lists webhook events, schedules retries, and reports ops health", async () => {
@@ -1259,9 +1455,7 @@ describe("OpenSupportAI API", () => {
     await app.inject({
       method: "POST",
       url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
-      headers: {
-        "x-opensupportai-public-key": "pk_demo"
-      },
+      headers: conversationHeaders(conversation.conversation_id),
       payload: {
         type: "text",
         text: "请帮我查订单 ORD-2026-1001"
@@ -1271,9 +1465,7 @@ describe("OpenSupportAI API", () => {
     await app.inject({
       method: "POST",
       url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
-      headers: {
-        "x-opensupportai-public-key": "pk_demo"
-      },
+      headers: conversationHeaders(conversation.conversation_id),
       payload: {
         type: "text",
         text: "我的订阅状态和续费日期是什么？"
@@ -1283,9 +1475,7 @@ describe("OpenSupportAI API", () => {
     const messagesResponse = await app.inject({
       method: "GET",
       url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
-      headers: {
-        "x-opensupportai-public-key": "pk_demo"
-      }
+      headers: conversationHeaders(conversation.conversation_id)
     });
     const messages = messagesResponse.json<{
       messages: Array<{ role: string; content: { text?: string } }>;
@@ -1341,7 +1531,7 @@ describe("OpenSupportAI API", () => {
 
   it("executes allowlisted OpenAPI business tools with safety controls", async () => {
     const toolRequests: Array<{ method: string; url: string }> = [];
-    const toolApp = await buildApp({
+    const toolApp = await buildSeededApp({
       config: {
         nodeEnv: "test",
         port: 0,
@@ -1431,9 +1621,7 @@ describe("OpenSupportAI API", () => {
       const messageResponse = await toolApp.inject({
         method: "POST",
         url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
-        headers: {
-          "x-opensupportai-public-key": "pk_demo"
-        },
+        headers: conversationHeaders(conversation.conversation_id),
         payload: {
           type: "text",
           text: "请帮我查外部订单 EXT-2026-9001"
@@ -1450,9 +1638,7 @@ describe("OpenSupportAI API", () => {
       const messagesResponse = await toolApp.inject({
         method: "GET",
         url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
-        headers: {
-          "x-opensupportai-public-key": "pk_demo"
-        }
+        headers: conversationHeaders(conversation.conversation_id)
       });
       expect(
         messagesResponse
@@ -1518,9 +1704,7 @@ describe("OpenSupportAI API", () => {
       const realOrderMessageResponse = await toolApp.inject({
         method: "POST",
         url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
-        headers: {
-          "x-opensupportai-public-key": "pk_demo"
-        },
+        headers: conversationHeaders(conversation.conversation_id),
         payload: {
           type: "text",
           text: "请帮我查订单 ORD-2026-1001"
@@ -1571,9 +1755,7 @@ describe("OpenSupportAI API", () => {
       const unsafeMessageResponse = await toolApp.inject({
         method: "POST",
         url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
-        headers: {
-          "x-opensupportai-public-key": "pk_demo"
-        },
+        headers: conversationHeaders(conversation.conversation_id),
         payload: {
           type: "text",
           text: "请创建退款 EXT-2026-9001"
@@ -1598,10 +1780,63 @@ describe("OpenSupportAI API", () => {
           expect.objectContaining({
             toolSlug: "openapi.refund_create",
             status: "failed",
-            error: "OpenAPI tool mutation is not allowed"
+            error: "OpenAPI tool mutation requires persisted operator approval"
           })
         ])
       );
+
+      const approvedMutationResponse = await toolApp.inject({
+        method: "POST",
+        url: "/v1/admin/projects/proj_demo/tools",
+        headers: {
+          authorization: "Bearer admin_demo_key"
+        },
+        payload: {
+          slug: "openapi.refund_create",
+          name: "Refund create",
+          description: "Creates a refund after persisted operator approval.",
+          kind: "openapi",
+          status: "active",
+          method: "POST",
+          path: "https://tools.example.test/refunds",
+          input_schema: {
+            type: "object",
+            required: ["order_id"]
+          },
+          metadata: {
+            allowed_hosts: ["tools.example.test"],
+            allow_mutation: true,
+            mutation_approval: {
+              status: "approved",
+              approved_by: "admin@example.com",
+              approved_at: "2026-07-21T12:00:00.000Z"
+            },
+            intent: {
+              keywords: ["创建退款"],
+              extract: {
+                field: "order_id",
+                pattern: "EXT-\\d{4}-\\d{4}"
+              }
+            },
+            answer_template: "退款已创建"
+          }
+        }
+      });
+      expect(approvedMutationResponse.statusCode).toBe(200);
+
+      await toolApp.inject({
+        method: "POST",
+        url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
+        headers: conversationHeaders(conversation.conversation_id),
+        payload: {
+          type: "text",
+          text: "请创建退款 EXT-2026-9002"
+        }
+      });
+      expect(toolRequests.at(-1)).toMatchObject({
+        method: "POST",
+        url: "https://tools.example.test/refunds"
+      });
     } finally {
       await toolApp.close();
     }
@@ -1628,9 +1863,7 @@ describe("OpenSupportAI API", () => {
     await app.inject({
       method: "POST",
       url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
-      headers: {
-        "x-opensupportai-public-key": "pk_demo"
-      },
+      headers: conversationHeaders(conversation.conversation_id),
       payload: {
         type: "text",
         text: "请帮我查订单 ORD-2026-1001，然后我可能需要退款"
@@ -1640,9 +1873,7 @@ describe("OpenSupportAI API", () => {
     await app.inject({
       method: "POST",
       url: `/v1/client/conversations/${conversation.conversation_id}/handoff`,
-      headers: {
-        "x-opensupportai-public-key": "pk_demo"
-      },
+      headers: conversationHeaders(conversation.conversation_id),
       payload: {
         reason: "user_requested"
       }
@@ -1717,7 +1948,7 @@ describe("OpenSupportAI API", () => {
 
       return new Response(JSON.stringify({ error: "unexpected url" }), { status: 404 });
     };
-    const chatwootApp = await buildApp({
+    const chatwootApp = await buildSeededApp({
       config: {
         nodeEnv: "test",
         port: 0,
@@ -1810,7 +2041,7 @@ describe("OpenSupportAI API", () => {
       return new Response(JSON.stringify({ error: "unexpected url" }), { status: 404 });
     };
 
-    const chatwootApp = await buildApp({
+    const chatwootApp = await buildSeededApp({
       config: {
         nodeEnv: "test",
         port: 0,
@@ -1865,9 +2096,7 @@ describe("OpenSupportAI API", () => {
       await chatwootApp.inject({
         method: "POST",
         url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
-        headers: {
-          "x-opensupportai-public-key": "pk_demo"
-        },
+        headers: conversationHeaders(conversation.conversation_id),
         payload: {
           type: "text",
           text: "怎么取消订阅？"
@@ -1877,9 +2106,7 @@ describe("OpenSupportAI API", () => {
       const handoffResponse = await chatwootApp.inject({
         method: "POST",
         url: `/v1/client/conversations/${conversation.conversation_id}/handoff`,
-        headers: {
-          "x-opensupportai-public-key": "pk_demo"
-        },
+        headers: conversationHeaders(conversation.conversation_id),
         payload: {
           reason: "user_requested",
           note: "用户想确认退款政策"
@@ -1959,9 +2186,7 @@ describe("OpenSupportAI API", () => {
       const messagesResponse = await chatwootApp.inject({
         method: "GET",
         url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
-        headers: {
-          "x-opensupportai-public-key": "pk_demo"
-        }
+        headers: conversationHeaders(conversation.conversation_id)
       });
       const messages = messagesResponse.json<{
         messages: Array<{ role: string; content: { text?: string } }>;
@@ -2060,7 +2285,7 @@ describe("OpenSupportAI API", () => {
       return new Response(JSON.stringify({ error: "unexpected url" }), { status: 404 });
     };
 
-    const chatwootApp = await buildApp({
+    const chatwootApp = await buildSeededApp({
       config: {
         nodeEnv: "test",
         port: 0,
@@ -2109,9 +2334,7 @@ describe("OpenSupportAI API", () => {
       const failedHandoffResponse = await chatwootApp.inject({
         method: "POST",
         url: `/v1/client/conversations/${conversation.conversation_id}/handoff`,
-        headers: {
-          "x-opensupportai-public-key": "pk_demo"
-        },
+        headers: conversationHeaders(conversation.conversation_id),
         payload: {
           reason: "user_requested"
         }
@@ -2188,9 +2411,7 @@ describe("OpenSupportAI API", () => {
     await app.inject({
       method: "POST",
       url: `/v1/client/conversations/${conversation.conversation_id}/handoff`,
-      headers: {
-        "x-opensupportai-public-key": "pk_demo"
-      },
+      headers: conversationHeaders(conversation.conversation_id),
       payload: {
         reason: "user_requested"
       }
@@ -2263,9 +2484,7 @@ describe("OpenSupportAI API", () => {
     const messagesResponse = await app.inject({
       method: "GET",
       url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
-      headers: {
-        "x-opensupportai-public-key": "pk_demo"
-      }
+      headers: conversationHeaders(conversation.conversation_id)
     });
     const messages = messagesResponse.json<{
       messages: Array<{ role: string; content: { text?: string } }>;
@@ -2341,6 +2560,17 @@ describe("OpenSupportAI API", () => {
         document_id: created.document.id
       }
     });
+  });
+});
+
+describe("request logging", () => {
+  it("redacts stream credentials without hiding other query context", () => {
+    expect(
+      redactSensitiveRequestUrl(
+        "/v1/client/conversations/conv_1/events?stream_token=osa_secret&once=true"
+      )
+    ).toBe("/v1/client/conversations/conv_1/events?stream_token=%5BREDACTED%5D&once=true");
+    expect(redactSensitiveRequestUrl("/health")).toBe("/health");
   });
 });
 

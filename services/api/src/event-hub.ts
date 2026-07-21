@@ -40,6 +40,15 @@ export class EventHub {
   }
 }
 
-export function formatSse(event: ClientEvent): string {
-  return `event: ${event.event}\ndata: ${JSON.stringify(event.data)}\n\n`;
+export function formatSse(
+  event: ClientEvent,
+  options: { id?: string; retryMs?: number } = {}
+): string {
+  const fields = [
+    ...(options.id ? [`id: ${options.id}`] : []),
+    ...(options.retryMs ? [`retry: ${options.retryMs}`] : []),
+    `event: ${event.event}`,
+    `data: ${JSON.stringify(event.data)}`
+  ];
+  return `${fields.join("\n")}\n\n`;
 }

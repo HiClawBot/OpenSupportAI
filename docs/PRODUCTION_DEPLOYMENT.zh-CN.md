@@ -33,7 +33,12 @@ OPENSUPPORTAI_STORAGE=prisma
 DATABASE_URL=postgresql://...
 ADMIN_API_TOKEN=replace_with_high_entropy_secret
 ENCRYPTION_KEY=replace_with_stable_high_entropy_key
+CLIENT_TOKEN_SECRET=replace_with_independent_high_entropy_secret
 CORS_ORIGIN=https://support-admin.example.com
+CONVERSATION_TOKEN_TTL_SECONDS=604800
+STREAM_TOKEN_TTL_SECONDS=60
+SSE_HEARTBEAT_MS=15000
+ALLOW_PRIVATE_OUTBOUND=false
 RATE_LIMIT_ENABLED=true
 RATE_LIMIT_WINDOW_MS=60000
 RATE_LIMIT_MAX=120
@@ -71,7 +76,7 @@ OpenAPI business tool token 不应写入 tool definition。使用 `metadata.auth
 ## 部署步骤
 
 1. 准备 PostgreSQL，并启用 pgvector 扩展能力。
-2. 设置生产 `.env`，尤其是 `DATABASE_URL`、`ADMIN_API_TOKEN`、`ENCRYPTION_KEY`、`CORS_ORIGIN`。
+2. 设置生产 `.env`，尤其是 `DATABASE_URL`、`ADMIN_API_TOKEN`、`ENCRYPTION_KEY`、`CLIENT_TOKEN_SECRET`、`CORS_ORIGIN`。
 3. 安装依赖并生成 Prisma client：
 
 ```bash
@@ -121,13 +126,16 @@ pnpm build
 
 - `ADMIN_API_TOKEN` 使用高熵随机值，不复用 demo token。
 - `ENCRYPTION_KEY` 使用稳定高熵值，部署后不得随意更换。
+- `CLIENT_TOKEN_SECRET` 使用独立、至少 32 字符的高熵值，不与 admin 或 encryption key 复用。
 - `CORS_ORIGIN` 限制为真实前端域名。
+- 反向代理和 APM 必须从 access log、trace URL 与 error report 中过滤 `stream_token` query 参数；API 自身日志已做脱敏。
 - `RATE_LIMIT_ENABLED=true`。
 - LLM API key、Chatwoot token、Slack signing secret 和 tool token 只存在服务端。
 - 项目级 admin API key 定期轮换，撤销不再使用的 key。
 - Webhook secret/signature 校验必须开启。
-- OpenAPI tools 必须配置 `allowed_hosts`，生产优先只启用 `GET` 工具。
-- 高风险业务操作通过人工流程处理，不建议在 v1.0 直接启用 mutation tool。
+- `ALLOW_PRIVATE_OUTBOUND=false`，除非 Chatwoot 或内部工具确实部署在受控私网中并完成风险评审。
+- OpenAPI tools 必须配置 `allowed_hosts`；mutation 工具还必须有持久化 operator approval 记录。
+- 高风险退款、删除或改套餐操作仍应通过人工流程处理。
 
 ## 观测与运维
 

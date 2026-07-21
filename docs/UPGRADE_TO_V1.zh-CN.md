@@ -24,6 +24,7 @@ pnpm build
 - 备份 `.env`、部署 manifest 和反向代理配置。
 - 确认 `ENCRYPTION_KEY` 没有丢失或变化；它用于解密 LLM、Chatwoot、webhook secret 等配置。
 - 确认 `ADMIN_API_TOKEN` 已替换为高熵随机值。
+- 配置独立的高熵 `CLIENT_TOKEN_SECRET`；不要与 admin token 或 encryption key 复用。
 - 确认 `CORS_ORIGIN` 已限制为真实前端域名。
 - 确认 `RATE_LIMIT_ENABLED=true`，并根据业务流量设置 `RATE_LIMIT_WINDOW_MS` 和 `RATE_LIMIT_MAX`。
 - 如果使用 Slack inbound，确认 signing secret 已配置并只在服务端保存。
@@ -42,7 +43,7 @@ pnpm build
 
 - v0.9.0 新增 OpenAPI-style business tool executor。
 - Active `kind=openapi` tool 可以通过 metadata intent 匹配用户消息并执行 allowlist HTTP 请求。
-- 非 `GET` tool 默认阻断，除非显式配置 `metadata.allow_mutation=true`。
+- 非 `GET` tool 默认阻断，除非显式配置 `metadata.allow_mutation=true` 和完整 `metadata.mutation_approval`。
 - 新增 `pnpm smoke:tools`。
 
 ### 从 v0.7.x 到 v1.0.0
@@ -82,7 +83,7 @@ pnpm smoke:tools -- --help
 使用内存模式做端到端基本验证：
 
 ```bash
-OPENSUPPORTAI_STORAGE=memory PORT=4000 pnpm --filter @opensupportai/api dev
+OPENSUPPORTAI_STORAGE=memory PORT=4000 pnpm --filter @opensupportai/api dev:demo
 API_URL=http://localhost:4000 pnpm smoke:memory
 API_URL=http://localhost:4000 pnpm smoke:channels
 API_URL=http://localhost:4000 pnpm smoke:tools

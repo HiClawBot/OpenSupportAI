@@ -589,7 +589,12 @@ function App() {
           method: "POST",
           body: JSON.stringify({
             name: String(form.get("name") ?? "").trim(),
-            scopes: parseScopes(String(form.get("scopes") ?? "admin:project"))
+            scopes: parseScopes(
+              String(
+                form.get("scopes") ??
+                  "admin:project,admin:ops,admin:conversations,admin:knowledge,admin:llm,admin:integrations,admin:channels,admin:keys,admin:audit,admin:tools,admin:assist,admin:jobs,admin:webhooks"
+              )
+            )
           })
         }
       );
@@ -1160,7 +1165,10 @@ function App() {
               </label>
               <label className="field">
                 <span>Scopes</span>
-                <input name="scopes" defaultValue="admin:project,admin:webhooks" />
+                <input
+                  name="scopes"
+                  defaultValue="admin:project,admin:ops,admin:conversations,admin:knowledge,admin:llm,admin:integrations,admin:channels,admin:keys,admin:audit,admin:tools,admin:assist,admin:jobs,admin:webhooks"
+                />
               </label>
               <button className="primary">
                 <Key size={16} /> Create key

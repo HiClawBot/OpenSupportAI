@@ -90,20 +90,11 @@ Webhook secret 加密保存
 
 ## Client API 鉴权
 
-v0.1 支持：
-
-```text
-project public key
-signed user token
-```
-
-Public key 只能用于：
+Project public key 只能用于：
 
 ```text
 创建 end-user conversation
-发送 end-user message
-订阅自己的 conversation events
-请求自己的 handoff
+校验 generic/Slack channel webhook 的项目归属
 ```
 
 不能用于：
@@ -114,7 +105,10 @@ Public key 只能用于：
 配置 LLM
 配置 Chatwoot
 读取 ai_runs debug 信息
+读取、发送或转接任何已有 conversation
 ```
+
+创建会话会返回绑定到 project 与 conversation 的 HMAC capability。读取/发送消息、请求 handoff 和换取短期 stream token 都必须使用该 capability。SSE URL 不携带 project public key 或长效 conversation token。
 
 ---
 
@@ -122,17 +116,7 @@ Public key 只能用于：
 
 Admin API 需要 admin token 或 session。
 
-权限后续细分：
-
-```text
-owner
-admin
-agent
-developer
-viewer
-```
-
-v0.1 可先简化为单管理员，但接口设计应保留 scopes。
+Root admin token 可执行全部操作。项目 API key 必须显式授予 route scope，例如 `admin:conversations`、`admin:knowledge`、`admin:llm`、`admin:integrations`、`admin:ops`、`admin:jobs`；只有 project 归属而缺少 scope 时返回 403。
 
 ---
 
@@ -199,6 +183,7 @@ OpenAPI tool 必须配置 metadata.allowed_hosts
 最终 URL host 必须命中 allowlist
 非 GET 方法默认拒绝执行
 mutation tool 必须显式 metadata.allow_mutation=true
+mutation tool 必须持久化 status=approved、approved_by、approved_at
 tool token 通过环境变量注入，不写入 tool definition
 所有 tool call 必须记录 completed 或 failed 日志
 ```
@@ -213,6 +198,8 @@ tool token 通过环境变量注入，不写入 tool definition
 高风险退款、删除、改套餐等动作走人工流程
 定期审计 tool_calls 中的 failed rate 和异常输入
 ```
+
+LLM、Chatwoot 与 OpenAPI tool 共享出站 URL 安全层：仅允许 HTTP(S)，拒绝 URL 内嵌凭据，生产默认阻断 localhost、私网、链路本地和保留地址，DNS 解析结果同样校验，并拒绝跨源重定向。
 
 ---
 
@@ -257,6 +244,8 @@ Slack signing secret
 Webhook secret
 OpenAPI tool bearer token
 Admin API token
+Conversation capability token
+SSE stream token（包括反向代理 access log 中的 query 参数）
 完整用户隐私资料
 ```
 
@@ -269,6 +258,7 @@ Admin API token
 ```text
 ADMIN_API_TOKEN 已替换 demo 值
 ENCRYPTION_KEY 是稳定高熵值，且有安全备份
+CLIENT_TOKEN_SECRET 是独立稳定的高熵值
 CORS_ORIGIN 限制为真实域名
 RATE_LIMIT_ENABLED=true
 DATABASE_URL 使用生产数据库账号
@@ -295,6 +285,8 @@ error_code
 ```text
 LLM API Key
 Chatwoot token
+Conversation capability token
+SSE stream token
 用户密码
 完整身份证件号
 完整银行卡号

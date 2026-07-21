@@ -4,7 +4,10 @@ export type OpenSupportAIWidgetOptions = {
   apiUrl?: string;
   projectId: string;
   publicKey?: string;
+  conversationToken?: string;
+  /** @deprecated Pass a conversation capability token as conversationToken. */
   userToken?: string;
+  pollIntervalMs?: number;
   inboxId?: string;
   locale?: string;
   user?: {
@@ -24,7 +27,9 @@ export function init(options: OpenSupportAIWidgetOptions): OpenSupportAIWidgetCo
     apiUrl: options.apiUrl ?? "http://localhost:4000",
     projectId: options.projectId,
     publicKey: options.publicKey,
-    userToken: options.userToken
+    conversationToken: options.conversationToken,
+    userToken: options.userToken,
+    pollIntervalMs: options.pollIntervalMs
   });
 
   if (typeof document === "undefined") {
@@ -65,7 +70,12 @@ class WidgetView {
     private readonly mount: HTMLElement
   ) {
     this.shadowRoot = mount.attachShadow({ mode: "open" });
-    this.conversationId = localStorage.getItem(this.storageKey()) ?? undefined;
+    const stored = readStoredConversation(sessionStorage.getItem(this.storageKey()));
+    this.conversationId = stored?.conversationId;
+    if (stored) {
+      this.client.setConversationToken(stored.conversationId, stored.conversationToken);
+    }
+    localStorage.removeItem(this.storageKey());
   }
 
   render(): void {
@@ -145,7 +155,13 @@ class WidgetView {
       }
     });
     this.conversationId = conversation.conversationId;
-    localStorage.setItem(this.storageKey(), conversation.conversationId);
+    sessionStorage.setItem(
+      this.storageKey(),
+      JSON.stringify({
+        conversationId: conversation.conversationId,
+        conversationToken: conversation.conversationToken
+      })
+    );
     this.unsubscribe = this.client.subscribe(conversation.conversationId, (event) =>
       this.handleEvent(event)
     );
@@ -233,7 +249,7 @@ class WidgetView {
       ];
       this.render();
     }
-    if (event.event === "error") {
+    if (event.event === "support.error") {
       this.error = event.data.message;
       this.render();
     }
@@ -265,15 +281,25 @@ class WidgetView {
 
 export class OpenSupportAIWidgetClient {
   readonly options: Required<Pick<OpenSupportAIWidgetOptions, "apiUrl" | "projectId">> &
-    Pick<OpenSupportAIWidgetOptions, "publicKey" | "userToken">;
+    Pick<
+      OpenSupportAIWidgetOptions,
+      "publicKey" | "conversationToken" | "userToken" | "pollIntervalMs"
+    >;
+  private readonly conversationTokens = new Map<string, string>();
 
   constructor(options: {
     apiUrl: string;
     projectId: string;
     publicKey?: string;
+    conversationToken?: string;
     userToken?: string;
+    pollIntervalMs?: number;
   }) {
     this.options = options;
+  }
+
+  setConversationToken(conversationId: string, token: string): void {
+    this.conversationTokens.set(conversationId, token);
   }
 
   async createConversation(input: {
@@ -285,8 +311,18 @@ export class OpenSupportAIWidgetClient {
       avatarUrl?: string;
     };
     metadata?: Record<string, unknown>;
-  }): Promise<{ conversationId: string; status: string }> {
-    const response = await this.request<{ conversation_id: string; status: string }>(
+  }): Promise<{
+    conversationId: string;
+    status: string;
+    conversationToken: string;
+    conversationTokenExpiresAt: string;
+  }> {
+    const response = await this.request<{
+      conversation_id: string;
+      status: string;
+      conversation_token: string;
+      conversation_token_expires_at: string;
+    }>(
       "/v1/client/conversations",
       {
         method: "POST",
@@ -301,11 +337,15 @@ export class OpenSupportAIWidgetClient {
           },
           metadata: input.metadata ?? {}
         })
-      }
+      },
+      { kind: "project" }
     );
+    this.conversationTokens.set(response.conversation_id, response.conversation_token);
     return {
       conversationId: response.conversation_id,
-      status: response.status
+      status: response.status,
+      conversationToken: response.conversation_token,
+      conversationTokenExpiresAt: response.conversation_token_expires_at
     };
   }
 
@@ -317,13 +357,20 @@ export class OpenSupportAIWidgetClient {
       message_id: string;
       conversation_id: string;
       status: string;
-    }>(`/v1/client/conversations/${input.conversationId}/messages`, {
-      method: "POST",
-      body: JSON.stringify({
-        type: "text",
-        text: input.text
-      })
-    });
+    }>(
+      `/v1/client/conversations/${input.conversationId}/messages`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          type: "text",
+          text: input.text
+        })
+      },
+      {
+        kind: "conversation",
+        conversationId: input.conversationId
+      }
+    );
     return {
       messageId: response.message_id,
       conversationId: response.conversation_id,
@@ -332,9 +379,16 @@ export class OpenSupportAIWidgetClient {
   }
 
   listMessages(conversationId: string): Promise<{ messages: Message[] }> {
-    return this.request(`/v1/client/conversations/${conversationId}/messages`, {
-      method: "GET"
-    });
+    return this.request(
+      `/v1/client/conversations/${conversationId}/messages`,
+      {
+        method: "GET"
+      },
+      {
+        kind: "conversation",
+        conversationId
+      }
+    );
   }
 
   async requestHandoff(input: {
@@ -350,7 +404,8 @@ export class OpenSupportAIWidgetClient {
           reason: input.reason,
           note: input.note
         })
-      }
+      },
+      { kind: "conversation", conversationId: input.conversationId }
     );
     return {
       conversationId: response.conversation_id,
@@ -359,11 +414,12 @@ export class OpenSupportAIWidgetClient {
   }
 
   subscribe(conversationId: string, handler: (event: ClientEvent) => void): () => void {
-    const url = new URL(`${this.options.apiUrl}/v1/client/conversations/${conversationId}/events`);
-    if (this.options.publicKey) {
-      url.searchParams.set("public_key", this.options.publicKey);
-    }
-    const eventSource = new EventSource(url.toString());
+    let eventSource: EventSource | undefined;
+    let pollTimer: ReturnType<typeof setInterval> | undefined;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let reconnectAttempts = 0;
+    let stopped = false;
+    const seenMessageIds = new Set<string>();
     const eventNames = [
       "message.created",
       "ai.delta",
@@ -371,27 +427,133 @@ export class OpenSupportAIWidgetClient {
       "handoff.requested",
       "human.message.created",
       "conversation.status_changed",
-      "error"
+      "support.error"
     ] as const;
 
-    for (const eventName of eventNames) {
-      eventSource.addEventListener(eventName, (event) => {
-        handler({
-          event: eventName,
-          data: JSON.parse(event.data)
-        } as ClientEvent);
-      });
-    }
+    const stopPolling = () => {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = undefined;
+      }
+    };
+    const poll = async () => {
+      try {
+        const response = await this.listMessages(conversationId);
+        for (const message of response.messages) {
+          if (seenMessageIds.has(message.id)) {
+            continue;
+          }
+          seenMessageIds.add(message.id);
+          handler({
+            event:
+              message.role === "human_agent"
+                ? "human.message.created"
+                : message.role === "ai_agent"
+                  ? "ai.message.completed"
+                  : "message.created",
+            data: { message }
+          });
+        }
+      } catch {
+        // Polling is a fallback; a later interval or stream reconnect can recover.
+      }
+    };
+    const startPolling = () => {
+      if (stopped || pollTimer) {
+        return;
+      }
+      void poll();
+      pollTimer = setInterval(() => void poll(), this.options.pollIntervalMs ?? 4_000);
+    };
+    const scheduleReconnect = () => {
+      if (stopped || reconnectTimer || typeof EventSource === "undefined") {
+        return;
+      }
+      const delayMs = Math.min(30_000, 1_000 * 2 ** Math.min(reconnectAttempts, 5));
+      reconnectAttempts += 1;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = undefined;
+        void connect();
+      }, delayMs);
+    };
+    const connect = async () => {
+      if (stopped || typeof EventSource === "undefined") {
+        startPolling();
+        return;
+      }
+      try {
+        const stream = await this.request<{ stream_token: string; expires_at: string }>(
+          `/v1/client/conversations/${conversationId}/stream-token`,
+          { method: "POST" },
+          { kind: "conversation", conversationId }
+        );
+        if (stopped) {
+          return;
+        }
+        const url = new URL(
+          `${this.options.apiUrl}/v1/client/conversations/${conversationId}/events`
+        );
+        url.searchParams.set("stream_token", stream.stream_token);
+        eventSource = new EventSource(url.toString());
+        eventSource.onopen = () => {
+          reconnectAttempts = 0;
+          stopPolling();
+        };
+        eventSource.onerror = () => {
+          eventSource?.close();
+          eventSource = undefined;
+          startPolling();
+          scheduleReconnect();
+        };
+        for (const eventName of eventNames) {
+          eventSource.addEventListener(eventName, (event) => {
+            if (!(event instanceof MessageEvent) || typeof event.data !== "string") {
+              return;
+            }
+            try {
+              const clientEvent = {
+                event: eventName,
+                data: JSON.parse(event.data)
+              } as ClientEvent;
+              rememberEventMessage(clientEvent, seenMessageIds);
+              handler(clientEvent);
+            } catch {
+              // Ignore malformed transport frames and wait for the next valid event.
+            }
+          });
+        }
+      } catch {
+        startPolling();
+        scheduleReconnect();
+      }
+    };
 
-    return () => eventSource.close();
+    void connect();
+    return () => {
+      stopped = true;
+      eventSource?.close();
+      stopPolling();
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+      }
+    };
   }
 
-  private async request<T>(path: string, init: RequestInit): Promise<T> {
+  private async request<T>(
+    path: string,
+    init: RequestInit,
+    auth:
+      | { kind: "project" }
+      | {
+          kind: "conversation";
+          conversationId: string;
+        }
+  ): Promise<T> {
     const response = await fetch(`${this.options.apiUrl}${path}`, {
       ...init,
       headers: {
-        "Content-Type": "application/json",
-        ...this.authHeaders()
+        ...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
+        ...this.authHeaders(auth)
       }
     });
     if (!response.ok) {
@@ -400,10 +562,24 @@ export class OpenSupportAIWidgetClient {
     return response.json() as Promise<T>;
   }
 
-  private authHeaders(): Record<string, string> {
-    if (this.options.userToken) {
+  private authHeaders(
+    auth:
+      | { kind: "project" }
+      | {
+          kind: "conversation";
+          conversationId: string;
+        }
+  ): Record<string, string> {
+    if (auth.kind === "conversation") {
+      const token =
+        this.conversationTokens.get(auth.conversationId) ??
+        this.options.conversationToken ??
+        this.options.userToken;
+      if (!token) {
+        throw new Error("A conversation capability token is required");
+      }
       return {
-        Authorization: `Bearer ${this.options.userToken}`
+        Authorization: `Bearer ${token}`
       };
     }
     if (this.options.publicKey) {
@@ -447,6 +623,40 @@ function textFromMessage(message: Message): string {
 
 function escapeHtml(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function readStoredConversation(
+  value: string | null
+): { conversationId: string; conversationToken: string } | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return undefined;
+    }
+    const record = parsed as Record<string, unknown>;
+    return typeof record["conversationId"] === "string" &&
+      typeof record["conversationToken"] === "string"
+      ? {
+          conversationId: record["conversationId"],
+          conversationToken: record["conversationToken"]
+        }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function rememberEventMessage(event: ClientEvent, seenMessageIds: Set<string>): void {
+  if (
+    event.event === "message.created" ||
+    event.event === "ai.message.completed" ||
+    event.event === "human.message.created"
+  ) {
+    seenMessageIds.add(event.data.message.id);
+  }
 }
 
 const styles = `
