@@ -4,6 +4,9 @@
 
 English:
 
+- Added a production-only Compose topology with non-root, read-only API/worker containers and a separate one-shot migration target.
+- Added migration-aware readiness, persisted worker process heartbeats, authenticated runtime/queue metrics, correlated JSON worker logs, and graceful API database shutdown.
+- Added a CI production rehearsal covering image entrypoints, clean migrations, worker-loss detection, recovery, PostgreSQL backup/restore, and idempotent migration replay.
 - Moved normal Prisma-backed answer generation behind durable `answer.generate` jobs while preserving the existing accepted message response contract.
 - Added a transactional user-message/job outbox, source-message answer idempotency, worker retries, and persisted-message SSE delivery across API/worker processes.
 - Restricted retryable answer workers to read-only business tools so remote mutations cannot be repeated after a lease retry.
@@ -20,6 +23,9 @@ English:
 
 中文：
 
+- 新增仅用于生产的 Compose 拓扑，包含非 root、只读 API/worker 容器和独立的一次性 migration target。
+- 新增 migration-aware readiness、持久化 worker 进程心跳、需要鉴权的 runtime/queue 指标、带关联字段的 JSON worker 日志，以及 API 数据库连接优雅关闭。
+- 新增 CI 生产演练，覆盖镜像入口、全新 migration、worker 失联检测与恢复、PostgreSQL 备份恢复和幂等 migration 重放。
 - 将 Prisma 模式下的普通回答生成迁移到 durable `answer.generate` job，同时保持现有消息 accepted 响应契约。
 - 新增用户消息/job 事务 outbox、基于源消息的回答幂等、worker 重试，以及跨 API/worker 进程的持久化消息 SSE 投递。
 - 将可重试 answer worker 限制为只读业务工具，避免租约重试重复远端 mutation。

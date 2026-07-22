@@ -50,6 +50,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level high
+
       - name: Validate Prisma schema
         run: pnpm exec prisma validate
 
@@ -85,3 +88,29 @@ jobs:
           NODE_ENV=test node services/api/dist/index.js
           NODE_ENV=test pnpm --dir services/worker exec node -e "import('@opensupportai/api/answer-runtime')"
           NODE_ENV=test WORKER_AUTOSTART=false node services/worker/dist/index.js
+
+  production-compose:
+    name: Production Compose
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      POSTGRES_USER: opensupportai
+      POSTGRES_PASSWORD: ci_postgres_password_2026
+      POSTGRES_DB: opensupportai
+      DATABASE_URL: postgresql://opensupportai:ci_postgres_password_2026@postgres:5432/opensupportai
+      ADMIN_API_TOKEN: ci_admin_token_8Qv3Kd7Wp2Rx6Lm9Ts4Nc1Hy
+      ENCRYPTION_KEY: ci_encryption_key_7Tm2Qp9Vx4Ks8Ld3Wn6Ry1Ha
+      CLIENT_TOKEN_SECRET: ci_client_token_5Zw8Kr2Np7Vx4Qs9Lm3Ty6Hd
+      CORS_ORIGIN: http://localhost:3000
+      API_PORT: 4400
+      WORKER_ID: worker-ci-1
+      WORKER_HEARTBEAT_MS: 1000
+      WORKER_HEARTBEAT_STALE_MS: 6000
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+
+      - name: Verify Docker Compose runtime and recovery
+        run: sh scripts/production-compose-smoke.sh

@@ -26,7 +26,9 @@ const testConfig: ApiConfig = {
   sseDatabasePollMs: 10,
   allowPrivateOutbound: true,
   maxConcurrentAnswersPerProject: 4,
-  llmTimeoutMs: 45_000
+  llmTimeoutMs: 45_000,
+  workerHeartbeatStaleMs: 30_000,
+  queueAgeDegradedMs: 120_000
 };
 
 type TestBuildAppOptions = Omit<BuildAppOptions, "config" | "repository"> & {
@@ -89,6 +91,79 @@ describe("OpenSupportAI API", () => {
 
   afterAll(async () => {
     await app.close();
+  });
+
+  it("separates process liveness from component readiness", async () => {
+    const liveness = await app.inject({ method: "GET", url: "/health/live" });
+    const readiness = await app.inject({ method: "GET", url: "/health/ready" });
+
+    expect(liveness).toMatchObject({ statusCode: 200 });
+    expect(liveness.json()).toEqual({ status: "ok", service: "@opensupportai/api" });
+    expect(readiness.statusCode).toBe(200);
+    expect(readiness.json()).toMatchObject({
+      status: "ready",
+      checks: { worker: { status: "not_required" } }
+    });
+  });
+
+  it("returns 503 when the production runtime probe is not ready", async () => {
+    const notReadyApp = await buildSeededApp({
+      runtimeHealthProbe: async () => ({
+        status: "not_ready",
+        generated_at: "2026-07-22T06:00:00.000Z",
+        reasons: ["worker_missing"],
+        checks: {
+          database: { status: "ok", latency_ms: 1 },
+          migration: { status: "ok", expected: "test_migration" },
+          worker: {
+            status: "missing",
+            active_count: 0,
+            stale_count: 0,
+            required_job_types: ["answer.generate", "knowledge.index"]
+          },
+          queue: {
+            status: "ok",
+            queued: 0,
+            running: 0,
+            failed: 0,
+            completed: 0,
+            cancelled: 0
+          }
+        }
+      })
+    });
+    await notReadyApp.ready();
+
+    try {
+      const response = await notReadyApp.inject({ method: "GET", url: "/health/ready" });
+      expect(response.statusCode).toBe(503);
+      expect(response.json()).toMatchObject({
+        status: "not_ready",
+        reasons: ["worker_missing"]
+      });
+    } finally {
+      await notReadyApp.close();
+    }
+  });
+
+  it("exposes runtime metrics only to the root administrator", async () => {
+    const anonymous = await app.inject({ method: "GET", url: "/v1/admin/ops/metrics" });
+    const root = await app.inject({
+      method: "GET",
+      url: "/v1/admin/ops/metrics",
+      headers: { authorization: "Bearer admin_demo_key" }
+    });
+
+    expect(anonymous.statusCode).toBe(401);
+    expect(root.statusCode).toBe(200);
+    expect(root.json()).toMatchObject({
+      runtime: { status: "ready" },
+      process: {
+        uptime_seconds: expect.any(Number),
+        resident_memory_bytes: expect.any(Number),
+        heap_used_bytes: expect.any(Number)
+      }
+    });
   });
 
   it("runs the grounded client conversation flow", async () => {

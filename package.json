@@ -11,8 +11,11 @@
     "pnpm": ">=10.0.0"
   },
   "dependencies": {
+    "@fastify/cors": "^11.2.0",
     "@prisma/adapter-pg": "7.8.0",
-    "@prisma/client": "^7.8.0"
+    "@prisma/client": "^7.8.0",
+    "dotenv": "^17.4.2",
+    "fastify": "^5.8.5"
   },
   "scripts": {
     "dev": "turbo dev",
@@ -35,7 +38,6 @@
   "devDependencies": {
     "@eslint/js": "latest",
     "@types/node": "latest",
-    "dotenv": "^17.4.2",
     "esbuild": "^0.28.1",
     "eslint": "latest",
     "prettier": "latest",
@@ -47,6 +49,11 @@
     "vitest": "latest"
   },
   "pnpm": {
+    "overrides": {
+      "@hono/node-server": "1.19.13",
+      "fast-uri": "3.1.4",
+      "hono": "4.12.27"
+    },
     "onlyBuiltDependencies": [
       "@prisma/engines",
       "prisma"

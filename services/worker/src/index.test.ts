@@ -7,8 +7,10 @@ import {
   workerRuntimeConfig,
   type KnowledgeIndexDocument,
   type KnowledgeIndexStore,
+  type WorkerHeartbeatStore,
   type WorkerJob,
-  type WorkerJobQueue
+  type WorkerJobQueue,
+  type WorkerLogRecord
 } from "./index";
 
 function createQueue(jobs: WorkerJob[]): WorkerJobQueue & {
@@ -49,6 +51,7 @@ function createQueue(jobs: WorkerJob[]): WorkerJobQueue & {
 describe("worker runtime", () => {
   it("uses bounded default runtime settings", () => {
     expect(workerRuntimeConfig.leaseMs).toBe(60_000);
+    expect(workerRuntimeConfig.heartbeatMs).toBe(5_000);
     expect(workerRuntimeConfig.jobTypes).toEqual(["answer.generate", "knowledge.index"]);
   });
 
@@ -245,6 +248,79 @@ describe("worker runtime", () => {
     handler.resolve();
     await stopped;
     expect(queue.completed).toHaveLength(1);
+  });
+
+  it("persists ready, draining, and stopped worker heartbeats", async () => {
+    const writes: Array<Parameters<WorkerHeartbeatStore["write"]>[0]> = [];
+    const runtime = createWorkerRuntime({
+      queue: createQueue([]),
+      handlers: { "knowledge.index": async () => ({}) },
+      heartbeatStore: {
+        async write(input) {
+          writes.push(input);
+        }
+      },
+      config: {
+        workerId: "worker_heartbeat",
+        heartbeatMs: 5,
+        pollIntervalMs: 20
+      }
+    });
+
+    const controller = runtime.start();
+    await waitFor(() => writes.some((write) => write.status === "ready"));
+    await controller.stop();
+
+    expect(writes.map((write) => write.status)).toContain("draining");
+    expect(writes.at(-1)).toMatchObject({
+      workerId: "worker_heartbeat",
+      status: "stopped",
+      jobTypes: ["knowledge.index"]
+    });
+  });
+
+  it("writes correlated structured job lifecycle logs without payload content", async () => {
+    const records: WorkerLogRecord[] = [];
+    const queue = createQueue([
+      {
+        id: "job_logged",
+        type: "answer.generate",
+        status: "running",
+        payload: {
+          project_id: "proj_1",
+          conversation_id: "conv_1",
+          message_content: "must not be logged"
+        },
+        attempts: 2,
+        maxAttempts: 3
+      }
+    ]);
+    const runtime = createWorkerRuntime({
+      queue,
+      handlers: { "answer.generate": async () => ({ status: "completed" }) },
+      config: { workerId: "worker_logs" },
+      log: (record) => records.push(record)
+    });
+
+    await expect(runtime.runOnce()).resolves.toBe("processed");
+
+    expect(records).toEqual([
+      expect.objectContaining({
+        event: "worker.job.started",
+        worker_id: "worker_logs",
+        job_id: "job_logged",
+        job_type: "answer.generate",
+        project_id: "proj_1",
+        conversation_id: "conv_1",
+        attempt: 2
+      }),
+      expect.objectContaining({
+        event: "worker.job.completed",
+        job_id: "job_logged",
+        duration_ms: expect.any(Number)
+      })
+    ]);
+    expect(JSON.stringify(records)).not.toContain("must not be logged");
   });
 
   it("registers only implemented default handlers", () => {

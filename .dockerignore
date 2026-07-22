@@ -6,3 +6,7 @@ dist
 coverage
 .env
 *.log
+downloads
+task_plan.md
+findings.md
+progress.md

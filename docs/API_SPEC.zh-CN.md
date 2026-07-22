@@ -52,6 +52,28 @@ HTTP/1.1 429 Too Many Requests
 
 ---
 
+## 运行状态
+
+进程存活：
+
+```http
+GET /health/live
+```
+
+只检查 API 进程是否响应，成功返回 HTTP `200`。
+
+组件就绪：
+
+```http
+GET /health/ready
+```
+
+检查数据库连接、预期 migration，以及至少一个未过期且同时监听 `answer.generate`、`knowledge.index` 的 worker。关键项失败时返回 HTTP `503` 与稳定 `reasons` code；队列年龄过高只把 queue check 标记为 `degraded`。
+
+兼容端点 `GET /health` 与 `GET /v1/health` 继续表示进程存活。
+
+---
+
 ## 鉴权
 
 ### Client API
@@ -663,6 +685,17 @@ GET /v1/admin/projects/{project_id}/ops/health
   }
 }
 ```
+
+---
+
+### 全局 Runtime Metrics
+
+```http
+GET /v1/admin/ops/metrics
+Authorization: Bearer <root_admin_token>
+```
+
+只允许 root admin token。响应包含组件 readiness snapshot、API uptime、resident memory、heap 使用量、queue 数量/年龄和 worker 新鲜度；不包含租户消息、provider config 或 secret。
 
 ---
 

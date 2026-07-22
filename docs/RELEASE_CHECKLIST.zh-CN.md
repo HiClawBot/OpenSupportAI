@@ -18,11 +18,14 @@ pnpm smoke:chatwoot -- --help
 pnpm smoke:channels -- --help
 pnpm smoke:tools -- --help
 pnpm smoke:postgres-answer
+sh scripts/production-compose-smoke.sh
 ```
 
 `smoke:postgres-answer` 需要可用的 PostgreSQL + pgvector 与 `DATABASE_URL`。GitHub Actions 会自动启动临时 pgvector 服务，执行全部 migrations/seed，并验证消息/job 事务、worker 完成和回答重放幂等。
 
 GitHub Actions CI 会在 `main`、Pull Request 和 `v*` tag 上执行同一组核心检查。
+
+`production-compose-smoke.sh` 需要 Docker Compose；GitHub Actions 会自动执行。它是生产 Beta 的镜像、migration、readiness、worker 失联/恢复和 PostgreSQL 备份恢复门槛。本机没有 Docker 时不能把静态 YAML 检查替代为该项通过。
 
 ## 本地无数据库 Smoke Test
 
@@ -133,6 +136,20 @@ pnpm smoke:chatwoot
 ```
 
 该脚本会创建测试 conversation、触发 handoff、验证 external conversation id、模拟 Chatwoot 坐席回复 webhook，并模拟 resolved 状态同步。
+
+## 生产 Compose 恢复测试
+
+```bash
+export POSTGRES_PASSWORD='...'
+export DATABASE_URL='postgresql://opensupportai:...@postgres:5432/opensupportai'
+export ADMIN_API_TOKEN='<at-least-32-character-high-entropy-value>'
+export ENCRYPTION_KEY='<independent-encryption-key-at-least-32-chars>'
+export CLIENT_TOKEN_SECRET='<independent-client-token-key-at-least-32-chars>'
+export CORS_ORIGIN='https://support.example.com'
+sh scripts/production-compose-smoke.sh
+```
+
+通过标准：API/worker 镜像用户为 `node`；migration task 成功；readiness 为 `200`；停止 worker 后变为 `503/worker_stale`；重启 worker 后恢复；custom-format 备份可恢复到独立数据库；migration 可重复执行。
 
 ## 安全发布检查
 

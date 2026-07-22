@@ -19,6 +19,8 @@ describe("API configuration", () => {
     expect(config.answerExecutionMode).toBe("inline");
     expect(config.allowPrivateOutbound).toBe(true);
     expect(config.streamTokenTtlSeconds).toBe(60);
+    expect(config.workerHeartbeatStaleMs).toBe(30_000);
+    expect(config.queueAgeDegradedMs).toBe(120_000);
   });
 
   it("accepts an explicit production configuration", () => {
@@ -50,6 +52,12 @@ describe("API configuration", () => {
       loadConfig({
         ...productionEnv,
         ADMIN_API_TOKEN: "a".repeat(64)
+      })
+    ).toThrow("ADMIN_API_TOKEN");
+    expect(() =>
+      loadConfig({
+        ...productionEnv,
+        ADMIN_API_TOKEN: "<at-least-32-character-high-entropy-value>"
       })
     ).toThrow("ADMIN_API_TOKEN");
     expect(() =>
