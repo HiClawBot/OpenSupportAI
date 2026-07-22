@@ -31,6 +31,9 @@ importers:
       "@eslint/js":
         specifier: latest
         version: 10.0.1(eslint@10.5.0(jiti@2.7.0))
+      "@opensupportai/evals":
+        specifier: workspace:*
+        version: link:packages/evals
       "@types/node":
         specifier: latest
         version: 25.9.3
@@ -158,6 +161,8 @@ importers:
         specifier: workspace:*
         version: link:../../protocol
 
+  packages/evals: {}
+
   packages/llm:
     dependencies:
       "@opensupportai/protocol":
@@ -201,6 +206,9 @@ importers:
       "@opensupportai/adapter-chatwoot":
         specifier: workspace:*
         version: link:../../packages/adapters/chatwoot
+      "@opensupportai/evals":
+        specifier: workspace:*
+        version: link:../../packages/evals
       "@opensupportai/llm":
         specifier: workspace:*
         version: link:../../packages/llm

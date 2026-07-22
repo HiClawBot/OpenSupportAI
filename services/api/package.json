@@ -23,6 +23,7 @@
     "@fastify/cors": "^11.2.0",
     "@opensupportai/adapter-channels": "workspace:*",
     "@opensupportai/adapter-chatwoot": "workspace:*",
+    "@opensupportai/evals": "workspace:*",
     "@opensupportai/llm": "workspace:*",
     "@opensupportai/protocol": "workspace:*",
     "@prisma/adapter-pg": "7.8.0",

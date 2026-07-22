@@ -124,13 +124,48 @@ export function createOrchestrator(
           }
         );
         if (toolResult) {
+          if (toolResult.kind === "needs_identity") {
+            const answerResult = await createAnswerMessage(repository, input, {
+              role: "ai_agent",
+              text: toolResult.answer,
+              metadata: {
+                needs_identity: true,
+                retryable: true
+              }
+            });
+            const message = answerResult.message;
+            if (answerResult.created) {
+              await repository.createAiRun({
+                projectId: input.projectId,
+                conversationId: input.conversationId,
+                messageId: message.id,
+                provider: "opensupportai",
+                model: "identity-requirement-gate",
+                promptVersion: "v1.1-beta",
+                inputTokens: text.length,
+                outputTokens: toolResult.answer.length,
+                latencyMs: Date.now() - startedAt,
+                retrievedChunkIds: [],
+                confidence: 1,
+                status: "skipped",
+                metadata: {
+                  reason: "missing_identity",
+                  retryable: true
+                }
+              });
+            }
+            publishCompletion(eventHub, input.projectId, input.conversationId, message);
+            return message;
+          }
+
           const answerResult = await createAnswerMessage(repository, input, {
             role: "ai_agent",
             text: toolResult.answer,
             metadata: {
               grounded: true,
               tool_slug: toolResult.tool.slug,
-              tool_call_id: toolResult.toolCall.id
+              tool_call_id: toolResult.toolCall.id,
+              tool_failed: toolResult.toolCall.status === "failed"
             }
           });
           const message = answerResult.message;

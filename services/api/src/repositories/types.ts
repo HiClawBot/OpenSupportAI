@@ -9,6 +9,12 @@ import type {
   ToolDefinitionKind,
   ToolDefinitionStatus
 } from "@opensupportai/protocol";
+import type {
+  EvaluationObservation,
+  EvaluationScenarioResult,
+  EvaluationThresholds,
+  GoldenScenarioCategory
+} from "@opensupportai/evals";
 
 export type JsonRecord = Record<string, unknown>;
 
@@ -16,6 +22,13 @@ export class IdempotencyConflictError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "IdempotencyConflictError";
+  }
+}
+
+export class GovernanceConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GovernanceConflictError";
   }
 }
 
@@ -259,6 +272,112 @@ export type AsyncJobRecord = {
   lockedAt?: string;
   leaseExpiresAt?: string;
   error?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type EvaluationSuiteStatus = "draft" | "active" | "retired";
+
+export type EvaluationScenarioRecord = {
+  id: string;
+  projectId: string;
+  suiteId: string;
+  slug: string;
+  category: GoldenScenarioCategory;
+  critical: boolean;
+  input: JsonRecord;
+  expectations: JsonRecord;
+  metadata: JsonRecord;
+  orderIndex: number;
+  createdAt: string;
+};
+
+export type EvaluationSuiteRecord = {
+  id: string;
+  projectId: string;
+  slug: string;
+  version: number;
+  name: string;
+  status: EvaluationSuiteStatus;
+  evaluatorVersion: string;
+  thresholds: EvaluationThresholds;
+  metadata: JsonRecord;
+  createdBy?: string;
+  activatedAt?: string;
+  createdAt: string;
+  scenarios: EvaluationScenarioRecord[];
+};
+
+export type EvaluationResultRecord = {
+  id: string;
+  projectId: string;
+  runId: string;
+  scenarioId?: string;
+  scenarioSlug: string;
+  category: GoldenScenarioCategory;
+  critical: boolean;
+  status: "passed" | "failed";
+  score: number;
+  outcome: string;
+  assertions: EvaluationScenarioResult["assertions"];
+  observed: EvaluationObservation;
+  error?: string;
+  createdAt: string;
+};
+
+export type EvaluationRunRecord = {
+  id: string;
+  projectId: string;
+  suiteId: string;
+  suiteVersion: number;
+  status: "passed" | "failed";
+  evaluatorVersion: string;
+  thresholds: EvaluationThresholds;
+  score: number;
+  passRate: number;
+  passedCount: number;
+  failedCount: number;
+  criticalFailures: string[];
+  summary: JsonRecord;
+  createdBy?: string;
+  startedAt: string;
+  completedAt?: string;
+  createdAt: string;
+  results: EvaluationResultRecord[];
+};
+
+export type EvaluationRunSummaryRecord = Omit<EvaluationRunRecord, "results">;
+
+export type EvolutionProposalKind = "knowledge" | "prompt" | "tool";
+export type EvolutionProposalStatus =
+  | "draft"
+  | "approved"
+  | "regression_passed"
+  | "canary"
+  | "promoted"
+  | "rejected"
+  | "rolled_back";
+
+export type EvolutionProposalRecord = {
+  id: string;
+  projectId: string;
+  sourceRunId: string;
+  regressionRunId?: string;
+  kind: EvolutionProposalKind;
+  status: EvolutionProposalStatus;
+  title: string;
+  rationale: string;
+  artifact: JsonRecord;
+  artifactHash: string;
+  baseline: JsonRecord;
+  canaryEvidence?: JsonRecord;
+  rollbackTarget?: JsonRecord;
+  reviewNote?: string;
+  createdBy?: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  promotedAt?: string;
+  rolledBackAt?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -572,4 +691,94 @@ export type SupportRepository = {
     error: string;
     retryAt?: string;
   }): Promise<AsyncJobRecord>;
+  createEvaluationSuite(input: {
+    projectId: string;
+    slug: string;
+    version: number;
+    name: string;
+    status: EvaluationSuiteStatus;
+    evaluatorVersion: string;
+    thresholds: EvaluationThresholds;
+    metadata?: JsonRecord;
+    createdBy?: string;
+    scenarios: Array<{
+      slug: string;
+      category: GoldenScenarioCategory;
+      critical: boolean;
+      input: JsonRecord;
+      expectations: JsonRecord;
+      metadata?: JsonRecord;
+      orderIndex: number;
+    }>;
+  }): Promise<EvaluationSuiteRecord>;
+  listEvaluationSuites(input: {
+    projectId: string;
+    status?: EvaluationSuiteStatus;
+    limit?: number;
+  }): Promise<EvaluationSuiteRecord[]>;
+  findEvaluationSuite(input: {
+    projectId: string;
+    id: string;
+  }): Promise<EvaluationSuiteRecord | undefined>;
+  createEvaluationRun(input: {
+    projectId: string;
+    suite: EvaluationSuiteRecord;
+    createdBy?: string;
+    startedAt: string;
+    completedAt: string;
+    summary: {
+      status: "passed" | "failed";
+      evaluatorVersion: string;
+      thresholds: EvaluationThresholds;
+      score: number;
+      passRate: number;
+      passedCount: number;
+      failedCount: number;
+      criticalFailures: string[];
+      results: EvaluationScenarioResult[];
+    };
+  }): Promise<EvaluationRunRecord>;
+  listEvaluationRuns(input: {
+    projectId: string;
+    status?: "passed" | "failed";
+    limit?: number;
+  }): Promise<EvaluationRunSummaryRecord[]>;
+  findEvaluationRun(input: {
+    projectId: string;
+    id: string;
+  }): Promise<EvaluationRunRecord | undefined>;
+  createEvolutionProposal(input: {
+    projectId: string;
+    sourceRunId: string;
+    kind: EvolutionProposalKind;
+    title: string;
+    rationale: string;
+    artifact: JsonRecord;
+    artifactHash: string;
+    baseline?: JsonRecord;
+    createdBy?: string;
+  }): Promise<EvolutionProposalRecord>;
+  listEvolutionProposals(input: {
+    projectId: string;
+    status?: EvolutionProposalStatus;
+    limit?: number;
+  }): Promise<EvolutionProposalRecord[]>;
+  findEvolutionProposal(input: {
+    projectId: string;
+    id: string;
+  }): Promise<EvolutionProposalRecord | undefined>;
+  transitionEvolutionProposal(input: {
+    projectId: string;
+    id: string;
+    expectedStatus: EvolutionProposalStatus;
+    status: EvolutionProposalStatus;
+    regressionRunId?: string;
+    canaryEvidence?: JsonRecord;
+    rollbackTarget?: JsonRecord;
+    reviewNote?: string;
+    reviewedBy?: string;
+    reviewedAt?: string;
+    promotedAt?: string;
+    rolledBackAt?: string;
+  }): Promise<EvolutionProposalRecord>;
 };

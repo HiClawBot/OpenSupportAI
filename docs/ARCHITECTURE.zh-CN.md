@@ -336,6 +336,28 @@ sequenceDiagram
 
 ---
 
+## 治理进化控制面
+
+治理进化是独立于在线回答路径的控制面，不会阻塞普通会话，也不会直接写入生产知识或工具：
+
+```mermaid
+flowchart LR
+  Corpus["Versioned evaluation suite"] --> Runner["Trusted scenario runner"]
+  Runner --> Evaluator["Deterministic evaluator"]
+  Evaluator --> Evidence["Immutable run evidence"]
+  Evidence --> Proposal["Evolution proposal"]
+  Proposal --> Review["Human approval"]
+  Review --> Regression["New passing regression run"]
+  Regression --> Canary["Canary with rollback target"]
+  Canary --> Promote["Promote"]
+  Canary --> Rollback["Rollback"]
+  Promote --> Rollback
+```
+
+Suite、scenario、run、result 和 proposal 全部携带 `project_id`。Repository 同时提供 memory 与 Prisma 实现；状态变更使用 expected-status fencing，避免两个 operator 对同一提案并发推进。API 只保存不可变 artifact 与治理证据，实际部署仍由 operator 或外部 deployment system 完成。
+
+---
+
 ## 架构决策记录
 
 ### ADR-001：v0.1 使用 TypeScript monorepo
@@ -357,3 +379,7 @@ sequenceDiagram
 ### ADR-005：所有 AI 调用必须记录 ai_run
 
 理由：AI 客服必须可审计、可评估、可调试。
+
+### ADR-006：自我进化采用确定性门禁和人工控制
+
+理由：客服系统的生产变更需要可重复证据、明确责任人和可回滚路径。模型可以生成候选提案，但不能充当自己的发布审批人，也不能绕过回归和灰度门禁自动修改生产状态。

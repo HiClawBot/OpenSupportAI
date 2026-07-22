@@ -16,6 +16,8 @@
 - docs/PUBLIC_CONTRACTS.zh-CN.md：v1.0 公共契约
 - docs/UPGRADE_TO_V1.zh-CN.md：v1.0 升级指南
 - docs/PRODUCTION_DEPLOYMENT.zh-CN.md：v1.0 生产部署指南
+- docs/GOVERNED_EVOLUTION.md：治理评测与进化英文说明
+- docs/GOVERNED_EVOLUTION.zh-CN.md：治理评测与进化中文说明
 - docs/RAG.zh-CN.md：RAG 设计
 - docs/CHATWOOT_ADAPTER.zh-CN.md：Chatwoot Adapter
 - docs/SECURITY.zh-CN.md：安全设计

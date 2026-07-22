@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { IdempotencyConflictError } from "./types";
+import { GovernanceConflictError, IdempotencyConflictError } from "./types";
 import type {
   AdminApiKeyLookup,
   AiRunRecord,
@@ -15,6 +15,14 @@ import type {
   CreateKnowledgeDocumentInput,
   CreateMessageInput,
   CreateProjectInput,
+  EvaluationRunRecord,
+  EvaluationRunSummaryRecord,
+  EvaluationScenarioRecord,
+  EvaluationSuiteRecord,
+  EvaluationSuiteStatus,
+  EvolutionProposalKind,
+  EvolutionProposalRecord,
+  EvolutionProposalStatus,
   HandoffSessionRecord,
   InboxRecord,
   IntegrationConfigRecord,
@@ -63,6 +71,9 @@ export class MemorySupportRepository implements SupportRepository {
   private readonly toolCalls = new Map<string, ToolCallRecord>();
   private readonly conversationInsights = new Map<string, ConversationInsightRecord>();
   private readonly asyncJobs = new Map<string, AsyncJobRecord>();
+  private readonly evaluationSuites = new Map<string, EvaluationSuiteRecord>();
+  private readonly evaluationRuns = new Map<string, EvaluationRunRecord>();
+  private readonly evolutionProposals = new Map<string, EvolutionProposalRecord>();
   private readonly messageOutboxTails = new Map<string, Promise<void>>();
 
   async seedDemo(): Promise<void> {
@@ -1265,6 +1276,253 @@ export class MemorySupportRepository implements SupportRepository {
       updatedAt: timestamp
     };
     this.asyncJobs.set(updated.id, updated);
+    return updated;
+  }
+
+  async createEvaluationSuite(
+    input: Parameters<SupportRepository["createEvaluationSuite"]>[0]
+  ): Promise<EvaluationSuiteRecord> {
+    await this.requireProject(input.projectId);
+    const duplicate = [...this.evaluationSuites.values()].find(
+      (suite) =>
+        suite.projectId === input.projectId &&
+        suite.slug === input.slug &&
+        suite.version === input.version
+    );
+    if (duplicate) {
+      throw new GovernanceConflictError(
+        `Evaluation suite version already exists: ${input.slug}@${input.version}`
+      );
+    }
+    const timestamp = now();
+    const suiteId = id("evalsuite");
+    const scenarios: EvaluationScenarioRecord[] = input.scenarios.map((scenario) => ({
+      id: id("evalscenario"),
+      projectId: input.projectId,
+      suiteId,
+      slug: scenario.slug,
+      category: scenario.category,
+      critical: scenario.critical,
+      input: scenario.input,
+      expectations: scenario.expectations,
+      metadata: scenario.metadata ?? {},
+      orderIndex: scenario.orderIndex,
+      createdAt: timestamp
+    }));
+    const suite: EvaluationSuiteRecord = {
+      id: suiteId,
+      projectId: input.projectId,
+      slug: input.slug,
+      version: input.version,
+      name: input.name,
+      status: input.status,
+      evaluatorVersion: input.evaluatorVersion,
+      thresholds: input.thresholds,
+      metadata: input.metadata ?? {},
+      createdBy: input.createdBy,
+      activatedAt: input.status === "active" ? timestamp : undefined,
+      createdAt: timestamp,
+      scenarios
+    };
+    this.evaluationSuites.set(suite.id, suite);
+    return suite;
+  }
+
+  async listEvaluationSuites(input: {
+    projectId: string;
+    status?: EvaluationSuiteStatus;
+    limit?: number;
+  }): Promise<EvaluationSuiteRecord[]> {
+    return [...this.evaluationSuites.values()]
+      .filter((suite) => suite.projectId === input.projectId)
+      .filter((suite) => (input.status ? suite.status === input.status : true))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, input.limit ?? 50);
+  }
+
+  async findEvaluationSuite(input: {
+    projectId: string;
+    id: string;
+  }): Promise<EvaluationSuiteRecord | undefined> {
+    const suite = this.evaluationSuites.get(input.id);
+    return suite?.projectId === input.projectId ? suite : undefined;
+  }
+
+  async createEvaluationRun(
+    input: Parameters<SupportRepository["createEvaluationRun"]>[0]
+  ): Promise<EvaluationRunRecord> {
+    const suite = await this.findEvaluationSuite({
+      projectId: input.projectId,
+      id: input.suite.id
+    });
+    if (!suite) {
+      throw new Error(`Evaluation suite not found: ${input.suite.id}`);
+    }
+    const timestamp = now();
+    const runId = id("evalrun");
+    const scenarioBySlug = new Map(suite.scenarios.map((scenario) => [scenario.slug, scenario]));
+    const results = input.summary.results.map((result) => {
+      const scenario = scenarioBySlug.get(result.scenarioSlug);
+      return {
+        id: id("evalresult"),
+        projectId: input.projectId,
+        runId,
+        scenarioId: scenario?.id,
+        scenarioSlug: result.scenarioSlug,
+        category: result.category,
+        critical: result.critical,
+        status: result.status,
+        score: result.score,
+        outcome: result.outcome,
+        assertions: result.assertions,
+        observed: result.observation,
+        createdAt: timestamp
+      };
+    });
+    const run: EvaluationRunRecord = {
+      id: runId,
+      projectId: input.projectId,
+      suiteId: suite.id,
+      suiteVersion: suite.version,
+      status: input.summary.status,
+      evaluatorVersion: input.summary.evaluatorVersion,
+      thresholds: input.summary.thresholds,
+      score: input.summary.score,
+      passRate: input.summary.passRate,
+      passedCount: input.summary.passedCount,
+      failedCount: input.summary.failedCount,
+      criticalFailures: input.summary.criticalFailures,
+      summary: {
+        evaluator_version: input.summary.evaluatorVersion,
+        critical_failures: input.summary.criticalFailures
+      },
+      createdBy: input.createdBy,
+      startedAt: input.startedAt,
+      completedAt: input.completedAt,
+      createdAt: timestamp,
+      results
+    };
+    this.evaluationRuns.set(run.id, run);
+    return run;
+  }
+
+  async listEvaluationRuns(input: {
+    projectId: string;
+    status?: "passed" | "failed";
+    limit?: number;
+  }): Promise<EvaluationRunSummaryRecord[]> {
+    return [...this.evaluationRuns.values()]
+      .filter((run) => run.projectId === input.projectId)
+      .filter((run) => (input.status ? run.status === input.status : true))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, input.limit ?? 50)
+      .map(({ results: _results, ...run }) => run);
+  }
+
+  async findEvaluationRun(input: {
+    projectId: string;
+    id: string;
+  }): Promise<EvaluationRunRecord | undefined> {
+    const run = this.evaluationRuns.get(input.id);
+    return run?.projectId === input.projectId ? run : undefined;
+  }
+
+  async createEvolutionProposal(input: {
+    projectId: string;
+    sourceRunId: string;
+    kind: EvolutionProposalKind;
+    title: string;
+    rationale: string;
+    artifact: JsonRecord;
+    artifactHash: string;
+    baseline?: JsonRecord;
+    createdBy?: string;
+  }): Promise<EvolutionProposalRecord> {
+    const sourceRun = await this.findEvaluationRun({
+      projectId: input.projectId,
+      id: input.sourceRunId
+    });
+    if (!sourceRun) {
+      throw new Error(`Evaluation run not found: ${input.sourceRunId}`);
+    }
+    const timestamp = now();
+    const proposal: EvolutionProposalRecord = {
+      id: id("proposal"),
+      projectId: input.projectId,
+      sourceRunId: sourceRun.id,
+      kind: input.kind,
+      status: "draft",
+      title: input.title,
+      rationale: input.rationale,
+      artifact: input.artifact,
+      artifactHash: input.artifactHash,
+      baseline: input.baseline ?? {},
+      createdBy: input.createdBy,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    this.evolutionProposals.set(proposal.id, proposal);
+    return proposal;
+  }
+
+  async listEvolutionProposals(input: {
+    projectId: string;
+    status?: EvolutionProposalStatus;
+    limit?: number;
+  }): Promise<EvolutionProposalRecord[]> {
+    return [...this.evolutionProposals.values()]
+      .filter((proposal) => proposal.projectId === input.projectId)
+      .filter((proposal) => (input.status ? proposal.status === input.status : true))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, input.limit ?? 50);
+  }
+
+  async findEvolutionProposal(input: {
+    projectId: string;
+    id: string;
+  }): Promise<EvolutionProposalRecord | undefined> {
+    const proposal = this.evolutionProposals.get(input.id);
+    return proposal?.projectId === input.projectId ? proposal : undefined;
+  }
+
+  async transitionEvolutionProposal(
+    input: Parameters<SupportRepository["transitionEvolutionProposal"]>[0]
+  ): Promise<EvolutionProposalRecord> {
+    const proposal = await this.findEvolutionProposal({
+      projectId: input.projectId,
+      id: input.id
+    });
+    if (!proposal) {
+      throw new Error(`Evolution proposal not found: ${input.id}`);
+    }
+    if (proposal.status !== input.expectedStatus) {
+      throw new GovernanceConflictError(
+        `Evolution proposal status changed: expected ${input.expectedStatus}, found ${proposal.status}`
+      );
+    }
+    if (input.regressionRunId) {
+      const regressionRun = await this.findEvaluationRun({
+        projectId: input.projectId,
+        id: input.regressionRunId
+      });
+      if (!regressionRun) {
+        throw new Error(`Evaluation run not found: ${input.regressionRunId}`);
+      }
+    }
+    const updated: EvolutionProposalRecord = {
+      ...proposal,
+      status: input.status,
+      regressionRunId: input.regressionRunId ?? proposal.regressionRunId,
+      canaryEvidence: input.canaryEvidence ?? proposal.canaryEvidence,
+      rollbackTarget: input.rollbackTarget ?? proposal.rollbackTarget,
+      reviewNote: input.reviewNote ?? proposal.reviewNote,
+      reviewedBy: input.reviewedBy ?? proposal.reviewedBy,
+      reviewedAt: input.reviewedAt ?? proposal.reviewedAt,
+      promotedAt: input.promotedAt ?? proposal.promotedAt,
+      rolledBackAt: input.rolledBackAt ?? proposal.rolledBackAt,
+      updatedAt: now()
+    };
+    this.evolutionProposals.set(updated.id, updated);
     return updated;
   }
 

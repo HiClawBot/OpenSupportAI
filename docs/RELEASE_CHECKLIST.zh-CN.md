@@ -13,15 +13,19 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm build
+pnpm eval:golden
 pnpm smoke:memory -- --help
 pnpm smoke:chatwoot -- --help
 pnpm smoke:channels -- --help
 pnpm smoke:tools -- --help
 pnpm smoke:postgres-answer
+pnpm smoke:postgres-evolution
 sh scripts/production-compose-smoke.sh
 ```
 
-`smoke:postgres-answer` 需要可用的 PostgreSQL + pgvector 与 `DATABASE_URL`。GitHub Actions 会自动启动临时 pgvector 服务，执行全部 migrations/seed，并验证消息/job 事务、worker 完成和回答重放幂等。
+`smoke:postgres-answer` 与 `smoke:postgres-evolution` 需要可用的 PostgreSQL + pgvector 与 `DATABASE_URL`。GitHub Actions 会自动启动临时 pgvector 服务，执行全部 migrations/seed，并验证消息/job 事务、worker 完成、回答重放幂等，以及提案审批、回归、灰度、晋级和回滚状态机。
+
+`eval:golden` 必须达到 `evals/golden/beta-core.v1.json` 内声明的全部阈值，且所有 critical scenario 通过。该门禁是确定性的，不依赖外部 LLM 或 model judge。
 
 GitHub Actions CI 会在 `main`、Pull Request 和 `v*` tag 上执行同一组核心检查。
 
@@ -104,6 +108,14 @@ VITE_API_URL=http://localhost:4000 pnpm --filter @opensupportai/demo-app dev
 - v1.0 公共契约文档已更新：`docs/PUBLIC_CONTRACTS.zh-CN.md`。
 - v1.0 升级指南已更新：`docs/UPGRADE_TO_V1.zh-CN.md`。
 - v1.0 生产部署指南已更新：`docs/PRODUCTION_DEPLOYMENT.zh-CN.md`。
+- `pnpm eval:golden` 的全部 critical scenario 通过，score 与 pass rate 达到语料阈值。
+- 缺少 `admin:evolution` scope 的项目 API key 无法读写评测和提案。
+- 失败 run 可以创建 draft proposal；source run 不能复用为 regression evidence。
+- 只有批准后新建、相同 suite/version 且通过的 run 可以推进到 `regression_passed`。
+- 灰度要求 deployment、scope、rollback target；只有 `outcome=passed` 才能晋级。
+- 提案状态变更会写 audit log，且任何 transition 都不会修改 knowledge document、LLM config 或 tool definition。
+- Admin Console 生产构建默认不含 demo root token，刷新页面后 token 被清除。
+- 治理评测英文与中文文档已分别更新：`docs/GOVERNED_EVOLUTION.md`、`docs/GOVERNED_EVOLUTION.zh-CN.md`。
 
 ## Docker Compose Smoke Test
 
@@ -281,4 +293,6 @@ gh release create v1.0.0 --title "OpenSupportAI v1.0.0" --notes-file docs/releas
 - v0.4.0 的 agent assist 是确定性启发式生成，不调用外部 LLM；后续可替换为可配置的模型生成与评测流程。
 - v0.8.0 已新增 Slack 入站 Events API adapter；Slack 出站回复、Email 和 Telegram provider API 仍需后续实现。
 - v0.7.0 已新增知识库重建索引 worker handler，但 retrieval 仍以 keyword scoring 为主；embedding/vector retrieval 仍需后续实现。
+- 治理评测 observations 当前由可信 runner 或管理员提交；API 不执行任意远程场景，提案也不会自动 apply 到生产。
+- 灰度证据当前由 operator 提交；自动流量分配、指标采集和长期评测趋势 dashboard 尚未实现。
 - Docker Compose 启动需要在安装 Docker 的机器上单独验证。

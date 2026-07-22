@@ -189,6 +189,48 @@ type ToolCall = {
   createdAt: string;
 };
 
+type EvaluationSuite = {
+  id: string;
+  slug: string;
+  version: number;
+  name: string;
+  status: string;
+  evaluatorVersion: string;
+  scenarios: Array<{ id: string; slug: string; category: string; critical: boolean }>;
+  createdAt: string;
+};
+
+type EvaluationRun = {
+  id: string;
+  suiteId: string;
+  suiteVersion: number;
+  status: "passed" | "failed";
+  score: number;
+  passRate: number;
+  passedCount: number;
+  failedCount: number;
+  criticalFailures: string[];
+  createdAt: string;
+};
+
+type EvolutionProposal = {
+  id: string;
+  sourceRunId: string;
+  regressionRunId?: string;
+  kind: "knowledge" | "prompt" | "tool";
+  status: string;
+  title: string;
+  rationale: string;
+  artifact: Record<string, unknown>;
+  artifactHash: string;
+  canaryEvidence?: Record<string, unknown>;
+  rollbackTarget?: Record<string, unknown>;
+  reviewNote?: string;
+  reviewedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type OpsHealth = {
   status: string;
   generated_at: string;
@@ -219,9 +261,7 @@ type ApiErrorPayload = {
 const apiUrl = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
 function App() {
-  const [adminToken, setAdminToken] = useState(
-    () => localStorage.getItem("osa_admin_token") ?? "admin_demo_key"
-  );
+  const [adminToken, setAdminToken] = useState(() => (import.meta.env.DEV ? "admin_demo_key" : ""));
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState("proj_demo");
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -248,6 +288,12 @@ function App() {
   const [jobs, setJobs] = useState<AsyncJob[]>([]);
   const [webhookEvents, setWebhookEvents] = useState<WebhookEvent[]>([]);
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
+  const [evaluationSuites, setEvaluationSuites] = useState<EvaluationSuite[]>([]);
+  const [evaluationRuns, setEvaluationRuns] = useState<EvaluationRun[]>([]);
+  const [evolutionProposals, setEvolutionProposals] = useState<EvolutionProposal[]>([]);
+  const [selectedProposalId, setSelectedProposalId] = useState<string | undefined>();
+  const [evolutionStatus, setEvolutionStatus] = useState<string | undefined>();
+  const [governanceError, setGovernanceError] = useState<string | undefined>();
   const [opsHealth, setOpsHealth] = useState<OpsHealth | undefined>();
   const [operationsError, setOperationsError] = useState<string | undefined>();
   const [status, setStatus] = useState("Loading");
@@ -258,21 +304,28 @@ function App() {
     [activeProjectId, projects]
   );
 
+  const selectedProposal = useMemo(
+    () => evolutionProposals.find((proposal) => proposal.id === selectedProposalId),
+    [evolutionProposals, selectedProposalId]
+  );
+
   useEffect(() => {
-    localStorage.setItem("osa_admin_token", adminToken);
+    if (adminToken.trim()) {
+      void loadProjects();
+    } else {
+      setProjects([]);
+      setStatus("Authentication required");
+    }
   }, [adminToken]);
 
   useEffect(() => {
-    void loadProjects();
-  }, [adminToken]);
-
-  useEffect(() => {
-    if (activeProjectId) {
+    if (activeProjectId && adminToken.trim()) {
       void Promise.all([
         loadConversations(activeProjectId),
         loadDocuments(activeProjectId),
         loadChatwootIntegration(activeProjectId),
-        loadOperations(activeProjectId)
+        loadOperations(activeProjectId),
+        loadGovernance(activeProjectId)
       ]);
     }
   }, [activeProjectId, adminToken, conversationStatusFilter, conversationQuery]);
@@ -399,6 +452,39 @@ function App() {
     } catch (loadError) {
       setOperationsError(
         loadError instanceof Error ? loadError.message : "Unable to load operations data"
+      );
+    }
+  }
+
+  async function loadGovernance(projectId: string) {
+    try {
+      setGovernanceError(undefined);
+      const [suitesPayload, runsPayload, proposalsPayload] = await Promise.all([
+        request<{ suites: EvaluationSuite[] }>(
+          `/v1/admin/projects/${projectId}/evaluations/suites?limit=20`
+        ),
+        request<{ runs: EvaluationRun[] }>(
+          `/v1/admin/projects/${projectId}/evaluations/runs?limit=50`
+        ),
+        request<{ proposals: EvolutionProposal[] }>(
+          `/v1/admin/projects/${projectId}/evolution/proposals?limit=50`
+        )
+      ]);
+      setEvaluationSuites(suitesPayload.suites);
+      setEvaluationRuns(runsPayload.runs);
+      setEvolutionProposals(proposalsPayload.proposals);
+      setSelectedProposalId((current) =>
+        proposalsPayload.proposals.some((proposal) => proposal.id === current)
+          ? current
+          : proposalsPayload.proposals[0]?.id
+      );
+    } catch (loadError) {
+      setEvaluationSuites([]);
+      setEvaluationRuns([]);
+      setEvolutionProposals([]);
+      setSelectedProposalId(undefined);
+      setGovernanceError(
+        loadError instanceof Error ? loadError.message : "Unable to load governance data"
       );
     }
   }
@@ -592,7 +678,7 @@ function App() {
             scopes: parseScopes(
               String(
                 form.get("scopes") ??
-                  "admin:project,admin:ops,admin:conversations,admin:knowledge,admin:llm,admin:integrations,admin:channels,admin:keys,admin:audit,admin:tools,admin:assist,admin:jobs,admin:webhooks"
+                  "admin:project,admin:ops,admin:conversations,admin:knowledge,admin:llm,admin:integrations,admin:channels,admin:keys,admin:audit,admin:tools,admin:assist,admin:jobs,admin:webhooks,admin:evolution"
               )
             )
           })
@@ -640,6 +726,99 @@ function App() {
     await navigator.clipboard.writeText(value);
   }
 
+  async function createEvolutionDraft(form: FormData) {
+    const sourceRunId = String(form.get("source_run_id") ?? "").trim();
+    if (!sourceRunId) {
+      setEvolutionStatus("Select a source evaluation run");
+      return;
+    }
+    try {
+      setEvolutionStatus("Creating draft");
+      const payload = await request<{ proposal: EvolutionProposal }>(
+        `/v1/admin/projects/${activeProjectId}/evolution/proposals`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            source_run_id: sourceRunId,
+            kind: String(form.get("kind") ?? "knowledge"),
+            title: String(form.get("title") ?? "").trim(),
+            rationale: String(form.get("rationale") ?? "").trim(),
+            artifact: jsonRecordFromText(String(form.get("artifact") ?? "{}"))
+          })
+        }
+      );
+      setSelectedProposalId(payload.proposal.id);
+      setEvolutionStatus("Draft created; no production artifact was changed");
+      await loadGovernance(activeProjectId);
+    } catch (proposalError) {
+      setEvolutionStatus(
+        proposalError instanceof Error ? proposalError.message : "Unable to create proposal"
+      );
+    }
+  }
+
+  async function transitionProposal(action: string, payload: Record<string, unknown> = {}) {
+    if (!selectedProposal) return;
+    try {
+      setEvolutionStatus(`Recording ${action}`);
+      await request(
+        `/v1/admin/projects/${activeProjectId}/evolution/proposals/${selectedProposal.id}/transitions`,
+        {
+          method: "POST",
+          body: JSON.stringify({ action, ...payload })
+        }
+      );
+      setEvolutionStatus(`${action} recorded`);
+      await loadGovernance(activeProjectId);
+    } catch (transitionError) {
+      setEvolutionStatus(
+        transitionError instanceof Error ? transitionError.message : "Unable to transition proposal"
+      );
+    }
+  }
+
+  async function recordRegression(form: FormData) {
+    await transitionProposal("record_regression", {
+      regression_run_id: String(form.get("regression_run_id") ?? "")
+    });
+  }
+
+  async function startCanary(form: FormData) {
+    await transitionProposal("start_canary", {
+      canary_evidence: {
+        deployment_ref: String(form.get("deployment_ref") ?? "").trim(),
+        scope: String(form.get("scope") ?? "").trim()
+      },
+      rollback_target: {
+        deployment_ref: String(form.get("rollback_ref") ?? "").trim()
+      }
+    });
+  }
+
+  async function rejectProposal(form: FormData) {
+    await transitionProposal("reject", {
+      review_note: String(form.get("review_note") ?? "").trim()
+    });
+  }
+
+  async function promoteProposal(form: FormData) {
+    await transitionProposal("promote", {
+      canary_evidence: {
+        outcome: "passed",
+        observed_cases: Number(form.get("observed_cases") ?? 0)
+      }
+    });
+  }
+
+  async function rollbackProposal(form: FormData) {
+    await transitionProposal("rollback", {
+      rollback_evidence: {
+        reason: String(form.get("reason") ?? "").trim(),
+        restored: true
+      }
+    });
+  }
+
   async function retryHandoff(handoffId: string) {
     await request(`/v1/admin/projects/${activeProjectId}/handoffs/${handoffId}/retry`, {
       method: "POST",
@@ -664,6 +843,7 @@ function App() {
         <label className="field">
           <span>Admin token</span>
           <input
+            type="password"
             autoComplete="current-password"
             value={adminToken}
             onChange={(event) => setAdminToken(event.target.value)}
@@ -681,6 +861,9 @@ function App() {
           </a>
           <a href="#operations">
             <Pulse size={18} /> Operations
+          </a>
+          <a href="#governance">
+            <ShieldCheck size={18} /> Governance
           </a>
         </nav>
       </aside>
@@ -1153,7 +1336,7 @@ function App() {
                 <span>Scopes</span>
                 <input
                   name="scopes"
-                  defaultValue="admin:project,admin:ops,admin:conversations,admin:knowledge,admin:llm,admin:integrations,admin:channels,admin:keys,admin:audit,admin:tools,admin:assist,admin:jobs,admin:webhooks"
+                  defaultValue="admin:project,admin:ops,admin:conversations,admin:knowledge,admin:llm,admin:integrations,admin:channels,admin:keys,admin:audit,admin:tools,admin:assist,admin:jobs,admin:webhooks,admin:evolution"
                 />
               </label>
               <button className="primary">
@@ -1306,6 +1489,224 @@ function App() {
           </section>
         </section>
 
+        <section className="operations" id="governance">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">Governance</p>
+              <h2>Evaluation and controlled evolution</h2>
+            </div>
+            <button className="secondary" onClick={() => void loadGovernance(activeProjectId)}>
+              <ArrowClockwise size={16} /> Refresh
+            </button>
+          </div>
+          {governanceError ? <div className="notice">{governanceError}</div> : null}
+          {evolutionStatus ? <div className="notice">{evolutionStatus}</div> : null}
+
+          <section className="split">
+            <div className="panel">
+              <div className="panel-title">
+                <ShieldCheck size={20} />
+                <h2>Evaluation evidence</h2>
+              </div>
+              <div className="status-grid slim">
+                <StatusItem label="Suites" value={String(evaluationSuites.length)} />
+                <StatusItem label="Runs" value={String(evaluationRuns.length)} />
+                <StatusItem
+                  label="Passing"
+                  value={String(evaluationRuns.filter((run) => run.status === "passed").length)}
+                />
+                <StatusItem
+                  label="Failed"
+                  value={String(evaluationRuns.filter((run) => run.status === "failed").length)}
+                />
+              </div>
+              <div className="list scroll-list">
+                {evaluationRuns.length === 0 ? <Empty text="No evaluation runs yet" /> : null}
+                {evaluationRuns.map((run) => (
+                  <div className="row static" key={run.id}>
+                    <span className="row-main">
+                      <strong>{evaluationSuiteLabel(run, evaluationSuites)}</strong>
+                      <small>
+                        Score {run.score} · {(run.passRate * 100).toFixed(0)}% pass rate
+                      </small>
+                      {run.criticalFailures.length > 0 ? (
+                        <small>Critical: {run.criticalFailures.join(", ")}</small>
+                      ) : null}
+                    </span>
+                    <span className="row-meta">
+                      <b>{run.status}</b>
+                      <small>{formatDate(run.createdAt)}</small>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <form className="panel form" action={(form) => void createEvolutionDraft(form)}>
+              <div className="panel-title">
+                <Plus size={20} />
+                <h2>Draft proposal</h2>
+              </div>
+              <label className="field">
+                <span>Source run</span>
+                <select name="source_run_id" required defaultValue="">
+                  <option value="" disabled>
+                    Select evidence
+                  </option>
+                  {evaluationRuns
+                    .filter((run) => run.status === "failed")
+                    .map((run) => (
+                      <option key={run.id} value={run.id}>
+                        {run.status} · {evaluationSuiteLabel(run, evaluationSuites)} · {run.score}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label className="field">
+                <span>Artifact kind</span>
+                <select name="kind" defaultValue="knowledge">
+                  <option value="knowledge">Knowledge</option>
+                  <option value="prompt">Prompt</option>
+                  <option value="tool">Tool</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>Title</span>
+                <input name="title" required placeholder="Clarify unsupported-answer policy" />
+              </label>
+              <label className="field">
+                <span>Rationale</span>
+                <textarea name="rationale" rows={3} required />
+              </label>
+              <label className="field">
+                <span>Draft artifact JSON</span>
+                <textarea
+                  name="artifact"
+                  rows={6}
+                  defaultValue={'{\n  "operation": "draft_patch",\n  "content": ""\n}'}
+                />
+              </label>
+              <button className="primary">
+                <Plus size={16} /> Create draft
+              </button>
+            </form>
+          </section>
+
+          <section className="split governance-workbench">
+            <div className="panel">
+              <div className="panel-title">
+                <ShieldCheck size={20} />
+                <h2>Proposals</h2>
+              </div>
+              <div className="list scroll-list">
+                {evolutionProposals.length === 0 ? <Empty text="No proposals yet" /> : null}
+                {evolutionProposals.map((proposal) => (
+                  <button
+                    className={`row ${proposal.id === selectedProposalId ? "is-selected" : ""}`}
+                    key={proposal.id}
+                    type="button"
+                    onClick={() => setSelectedProposalId(proposal.id)}
+                  >
+                    <span className="row-main">
+                      <strong>{proposal.title}</strong>
+                      <small>
+                        {proposal.kind} · {proposal.artifactHash.slice(0, 12)}
+                      </small>
+                    </span>
+                    <span className="row-meta">
+                      <b>{proposal.status}</b>
+                      <small>{formatDate(proposal.updatedAt)}</small>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="panel form">
+              <div className="panel-title">
+                <ShieldCheck size={20} />
+                <h2>Review gate</h2>
+              </div>
+              {selectedProposal ? (
+                <>
+                  <div className="proposal-summary">
+                    <strong>{selectedProposal.title}</strong>
+                    <p>{selectedProposal.rationale}</p>
+                    <code>{selectedProposal.artifactHash}</code>
+                  </div>
+                  {selectedProposal.status === "draft" ? (
+                    <div className="governance-actions">
+                      <button
+                        className="primary"
+                        type="button"
+                        onClick={() =>
+                          void transitionProposal("approve", {
+                            review_note: "Approved for regression only."
+                          })
+                        }
+                      >
+                        <ShieldCheck size={16} /> Approve for regression
+                      </button>
+                      <form className="inline-form" action={(form) => void rejectProposal(form)}>
+                        <input name="review_note" required placeholder="Rejection reason" />
+                        <button className="secondary danger">Reject</button>
+                      </form>
+                    </div>
+                  ) : null}
+                  {selectedProposal.status === "approved" ? (
+                    <form className="inline-form" action={(form) => void recordRegression(form)}>
+                      <select name="regression_run_id" required defaultValue="">
+                        <option value="" disabled>
+                          Select new passing run
+                        </option>
+                        {eligibleRegressionRuns(selectedProposal, evaluationRuns).map((run) => (
+                          <option key={run.id} value={run.id}>
+                            {evaluationSuiteLabel(run, evaluationSuites)} · {run.score}
+                          </option>
+                        ))}
+                      </select>
+                      <button className="primary">Record regression</button>
+                    </form>
+                  ) : null}
+                  {selectedProposal.status === "regression_passed" ? (
+                    <form className="inline-form" action={(form) => void startCanary(form)}>
+                      <input name="deployment_ref" required placeholder="Deployment reference" />
+                      <input name="scope" required placeholder="Canary scope" />
+                      <input name="rollback_ref" required placeholder="Rollback reference" />
+                      <button className="primary">Start canary</button>
+                    </form>
+                  ) : null}
+                  {selectedProposal.status === "canary" ? (
+                    <form className="inline-form" action={(form) => void promoteProposal(form)}>
+                      <input
+                        name="observed_cases"
+                        type="number"
+                        min="1"
+                        required
+                        placeholder="Observed cases"
+                      />
+                      <button className="primary">Promote</button>
+                    </form>
+                  ) : null}
+                  {selectedProposal.status === "canary" ||
+                  selectedProposal.status === "promoted" ? (
+                    <form className="inline-form" action={(form) => void rollbackProposal(form)}>
+                      <input name="reason" required placeholder="Rollback reason" />
+                      <button className="secondary danger">Record rollback</button>
+                    </form>
+                  ) : null}
+                  {selectedProposal.status === "rejected" ||
+                  selectedProposal.status === "rolled_back" ? (
+                    <Empty text={`Proposal closed as ${selectedProposal.status}`} />
+                  ) : null}
+                </>
+              ) : (
+                <Empty text="Select a proposal to review" />
+              )}
+            </div>
+          </section>
+        </section>
+
         <form className="create-project" action={(form) => void createProject(form)}>
           <input name="name" placeholder="New project name" />
           <button>
@@ -1384,6 +1785,28 @@ function countSummary(counts: Record<string, number>): string {
 function knowledgeChunkCount(metadata: Record<string, unknown>): number {
   const value = metadata["chunk_count"];
   return typeof value === "number" ? value : 0;
+}
+
+function evaluationSuiteLabel(run: EvaluationRun, suites: EvaluationSuite[]): string {
+  const suite = suites.find((candidate) => candidate.id === run.suiteId);
+  return suite ? `${suite.slug}@${run.suiteVersion}` : `${run.suiteId}@${run.suiteVersion}`;
+}
+
+function eligibleRegressionRuns(
+  proposal: EvolutionProposal,
+  runs: EvaluationRun[]
+): EvaluationRun[] {
+  const source = runs.find((run) => run.id === proposal.sourceRunId);
+  if (!source) return [];
+  const reviewedAt = proposal.reviewedAt ? new Date(proposal.reviewedAt).getTime() : 0;
+  return runs.filter(
+    (run) =>
+      run.id !== source.id &&
+      run.status === "passed" &&
+      run.suiteId === source.suiteId &&
+      run.suiteVersion === source.suiteVersion &&
+      new Date(run.createdAt).getTime() >= reviewedAt
+  );
 }
 
 function formatDate(value: string): string {

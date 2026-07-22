@@ -33,9 +33,12 @@
     "smoke:chatwoot": "node scripts/chatwoot-smoke.mjs",
     "smoke:channels": "node scripts/channel-webhook-smoke.mjs",
     "smoke:tools": "node scripts/tool-executor-smoke.mjs",
-    "smoke:postgres-answer": "tsx scripts/postgres-answer-smoke.ts"
+    "smoke:postgres-answer": "tsx scripts/postgres-answer-smoke.ts",
+    "smoke:postgres-evolution": "tsx scripts/postgres-evolution-smoke.ts",
+    "eval:golden": "tsx scripts/golden-evaluation.ts"
   },
   "devDependencies": {
+    "@opensupportai/evals": "workspace:*",
     "@eslint/js": "latest",
     "@types/node": "latest",
     "esbuild": "^0.28.1",

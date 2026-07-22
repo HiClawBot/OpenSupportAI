@@ -42,6 +42,12 @@ import {
   unauthorized
 } from "./errors";
 import { EventHub, formatSse } from "./event-hub";
+import {
+  createEvolutionProposal,
+  recordEvaluationRun,
+  transitionEvolutionProposal,
+  type EvolutionProposalTransition
+} from "./evolution";
 import { buildHandoffAnalytics, generateConversationInsight } from "./agent-assist";
 import {
   createOrchestrator,
@@ -52,7 +58,7 @@ import {
 import { createSafeOutboundFetch } from "./outbound";
 import { MemorySupportRepository } from "./repositories/memory";
 import { PrismaSupportRepository } from "./repositories/prisma";
-import { IdempotencyConflictError } from "./repositories/types";
+import { GovernanceConflictError, IdempotencyConflictError } from "./repositories/types";
 import {
   createMemoryRuntimeHealthProbe,
   createUnavailableRuntimeHealthProbe,
@@ -78,6 +84,9 @@ import {
   createApiKeyBodySchema,
   createAsyncJobBodySchema,
   createConversationBodySchema,
+  createEvaluationRunBodySchema,
+  createEvaluationSuiteBodySchema,
+  createEvolutionProposalBodySchema,
   createKnowledgeDocumentBodySchema,
   createProjectBodySchema,
   genericChannelWebhookBodySchema,
@@ -85,6 +94,9 @@ import {
   listAuditLogsQuerySchema,
   listAsyncJobsQuerySchema,
   listConversationsQuerySchema,
+  listEvaluationRunsQuerySchema,
+  listEvaluationSuitesQuerySchema,
+  listEvolutionProposalsQuerySchema,
   listClientMessagesQuerySchema,
   listToolCallsQuerySchema,
   listToolsQuerySchema,
@@ -92,6 +104,7 @@ import {
   reindexKnowledgeDocumentBodySchema,
   requestHandoffBodySchema,
   sendMessageBodySchema,
+  transitionEvolutionProposalBodySchema,
   updateToolDefinitionBodySchema,
   upsertChatwootIntegrationBodySchema,
   upsertGenericWebhookChannelBodySchema,
@@ -185,6 +198,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     }
     if (error instanceof ApiError) {
       reply.status(error.statusCode).send(toApiErrorResponse(error, requestId));
+      return;
+    }
+    if (error instanceof GovernanceConflictError) {
+      const apiError = conflict(error.message);
+      reply.status(apiError.statusCode).send(toApiErrorResponse(apiError, requestId));
       return;
     }
     const statusCode = (error as { statusCode?: unknown }).statusCode;
@@ -1151,6 +1169,258 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       })
     };
   });
+
+  app.get("/v1/admin/projects/:projectId/evaluations/suites", async (request) => {
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:evolution");
+    const query = listEvaluationSuitesQuerySchema.parse(request.query);
+    return {
+      suites: await repository.listEvaluationSuites({
+        projectId: project.id,
+        status: query.status,
+        limit: query.limit
+      })
+    };
+  });
+
+  app.post("/v1/admin/projects/:projectId/evaluations/suites", async (request) => {
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:evolution");
+    const body = createEvaluationSuiteBodySchema.parse(request.body);
+    const suite = await repository.createEvaluationSuite({
+      projectId: project.id,
+      slug: body.slug,
+      version: body.version,
+      name: body.name,
+      status: "active",
+      evaluatorVersion: body.evaluator_version,
+      thresholds: {
+        minScore: body.thresholds.min_score,
+        minPassRate: body.thresholds.min_pass_rate,
+        requireCriticalPass: body.thresholds.require_critical_pass
+      },
+      metadata: body.metadata,
+      createdBy: adminActorReference(identity),
+      scenarios: body.scenarios.map((scenario, orderIndex) => ({
+        slug: scenario.slug,
+        category: scenario.category,
+        critical: scenario.critical,
+        input: scenario.input,
+        expectations: {
+          outcome: scenario.expectations.outcome,
+          conversationStatus: scenario.expectations.conversation_status,
+          aiRunStatus: scenario.expectations.ai_run_status,
+          minCitations: scenario.expectations.min_citations,
+          minHandoffSessions: scenario.expectations.min_handoff_sessions,
+          toolCallStatus: scenario.expectations.tool_call_status,
+          requiredAnswerMetadata: scenario.expectations.required_answer_metadata,
+          answerIncludes: scenario.expectations.answer_includes,
+          answerExcludes: scenario.expectations.answer_excludes
+        },
+        metadata: scenario.metadata,
+        orderIndex
+      }))
+    });
+    await recordAudit(repository, request, {
+      project,
+      identity,
+      action: "evaluation_suite.created",
+      targetType: "evaluation_suite",
+      targetId: suite.id,
+      metadata: {
+        slug: suite.slug,
+        version: suite.version,
+        evaluator_version: suite.evaluatorVersion,
+        scenario_count: suite.scenarios.length
+      }
+    });
+    return { suite };
+  });
+
+  app.get("/v1/admin/projects/:projectId/evaluations/runs", async (request) => {
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:evolution");
+    const query = listEvaluationRunsQuerySchema.parse(request.query);
+    return {
+      runs: await repository.listEvaluationRuns({
+        projectId: project.id,
+        status: query.status,
+        limit: query.limit
+      })
+    };
+  });
+
+  app.get("/v1/admin/projects/:projectId/evaluations/runs/:runId", async (request) => {
+    const params = request.params as { runId: string };
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:evolution");
+    const run = await repository.findEvaluationRun({
+      projectId: project.id,
+      id: params.runId
+    });
+    if (!run) {
+      throw notFound("Evaluation run not found");
+    }
+    return { run };
+  });
+
+  app.post("/v1/admin/projects/:projectId/evaluations/runs", async (request) => {
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:evolution");
+    const body = createEvaluationRunBodySchema.parse(request.body);
+    const run = await recordEvaluationRun({
+      repository,
+      projectId: project.id,
+      suiteId: body.suite_id,
+      createdBy: adminActorReference(identity),
+      observations: body.observations.map((item) => ({
+        scenarioSlug: item.scenario_slug,
+        observation: {
+          conversationStatus: item.observation.conversation_status,
+          answer: item.observation.answer
+            ? {
+                text: item.observation.answer.text,
+                metadata: item.observation.answer.metadata,
+                sourceRefs: item.observation.answer.source_refs
+              }
+            : undefined,
+          aiRun: item.observation.ai_run
+            ? {
+                status: item.observation.ai_run.status,
+                metadata: item.observation.ai_run.metadata
+              }
+            : undefined,
+          toolCalls: item.observation.tool_calls.map((toolCall) => ({
+            status: toolCall.status,
+            toolSlug: toolCall.tool_slug
+          })),
+          handoffSessions: item.observation.handoff_sessions
+        }
+      }))
+    });
+    await recordAudit(repository, request, {
+      project,
+      identity,
+      action: "evaluation_run.recorded",
+      targetType: "evaluation_run",
+      targetId: run.id,
+      metadata: {
+        suite_id: run.suiteId,
+        suite_version: run.suiteVersion,
+        status: run.status,
+        score: run.score,
+        pass_rate: run.passRate,
+        failed_count: run.failedCount
+      }
+    });
+    return { run };
+  });
+
+  app.get("/v1/admin/projects/:projectId/evolution/proposals", async (request) => {
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:evolution");
+    const query = listEvolutionProposalsQuerySchema.parse(request.query);
+    return {
+      proposals: await repository.listEvolutionProposals({
+        projectId: project.id,
+        status: query.status,
+        limit: query.limit
+      })
+    };
+  });
+
+  app.post("/v1/admin/projects/:projectId/evolution/proposals", async (request) => {
+    const { project, identity } = await authenticateAdminProjectIdentity(
+      request,
+      repository,
+      config
+    );
+    requireAdminScope(identity, "admin:evolution");
+    const body = createEvolutionProposalBodySchema.parse(request.body);
+    const proposal = await createEvolutionProposal({
+      repository,
+      projectId: project.id,
+      sourceRunId: body.source_run_id,
+      kind: body.kind,
+      title: body.title,
+      rationale: body.rationale,
+      artifact: body.artifact,
+      baseline: body.baseline,
+      createdBy: adminActorReference(identity)
+    });
+    await recordAudit(repository, request, {
+      project,
+      identity,
+      action: "evolution_proposal.created",
+      targetType: "evolution_proposal",
+      targetId: proposal.id,
+      metadata: {
+        source_run_id: proposal.sourceRunId,
+        kind: proposal.kind,
+        artifact_hash: proposal.artifactHash
+      }
+    });
+    return { proposal };
+  });
+
+  app.post(
+    "/v1/admin/projects/:projectId/evolution/proposals/:proposalId/transitions",
+    async (request) => {
+      const params = request.params as { proposalId: string };
+      const { project, identity } = await authenticateAdminProjectIdentity(
+        request,
+        repository,
+        config
+      );
+      requireAdminScope(identity, "admin:evolution");
+      const body = transitionEvolutionProposalBodySchema.parse(request.body);
+      const transition = proposalTransitionFromBody(body);
+      const proposal = await transitionEvolutionProposal({
+        repository,
+        projectId: project.id,
+        proposalId: params.proposalId,
+        actor: adminActorReference(identity),
+        transition
+      });
+      await recordAudit(repository, request, {
+        project,
+        identity,
+        action: `evolution_proposal.${body.action}`,
+        targetType: "evolution_proposal",
+        targetId: proposal.id,
+        metadata: {
+          status: proposal.status,
+          regression_run_id: proposal.regressionRunId,
+          artifact_hash: proposal.artifactHash
+        }
+      });
+      return { proposal };
+    }
+  );
 
   app.get("/v1/admin/projects/:projectId/conversations", async (request) => {
     const { project, identity } = await authenticateAdminProjectIdentity(
@@ -2267,6 +2537,49 @@ function requireAdminScope(identity: AdminIdentity, scope: string): void {
   }
 
   throw forbidden(`Admin API key is missing required scope: ${scope}`);
+}
+
+function adminActorReference(identity: AdminIdentity): string {
+  return identity.actorType === "root_admin"
+    ? "root_admin"
+    : `api_key:${identity.actorId ?? "unknown"}`;
+}
+
+function proposalTransitionFromBody(
+  body: ReturnType<typeof transitionEvolutionProposalBodySchema.parse>
+): EvolutionProposalTransition {
+  switch (body.action) {
+    case "approve":
+      return { action: "approve", reviewNote: body.review_note };
+    case "reject":
+      return { action: "reject", reviewNote: body.review_note };
+    case "record_regression":
+      return {
+        action: "record_regression",
+        regressionRunId: body.regression_run_id,
+        reviewNote: body.review_note
+      };
+    case "start_canary":
+      return {
+        action: "start_canary",
+        canaryEvidence: body.canary_evidence,
+        rollbackTarget: body.rollback_target,
+        reviewNote: body.review_note
+      };
+    case "promote":
+      return {
+        action: "promote",
+        canaryEvidence: body.canary_evidence,
+        reviewNote: body.review_note
+      };
+    case "rollback":
+      return {
+        action: "rollback",
+        rollbackEvidence: body.rollback_evidence,
+        rollbackTarget: body.rollback_target,
+        reviewNote: body.review_note
+      };
+  }
 }
 
 async function recordAudit(

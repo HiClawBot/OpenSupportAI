@@ -5,11 +5,19 @@ import type {
   ToolDefinitionRecord
 } from "./repositories/types";
 
-export type BusinessToolResult = {
+export type BusinessToolExecutionResult = {
+  kind: "executed";
   answer: string;
   tool: ToolDefinitionRecord;
   toolCall: ToolCallRecord;
 };
+
+export type BusinessToolIdentityRequirement = {
+  kind: "needs_identity";
+  answer: string;
+};
+
+export type BusinessToolResult = BusinessToolExecutionResult | BusinessToolIdentityRequirement;
 
 export type BusinessToolOptions = {
   fetchImpl?: typeof fetch;
@@ -33,6 +41,8 @@ type OpenApiToolIntent = {
 };
 
 type ToolIntent = DemoToolIntent | OpenApiToolIntent;
+
+type ToolIntentResolution = ToolIntent | { kind: "needs_identity" };
 
 const demoOrders: Record<string, JsonRecord> = {
   "ORD-2026-1001": {
@@ -72,6 +82,13 @@ export async function maybeRunBusinessTool(
   if (!intent) {
     return undefined;
   }
+  if ("kind" in intent && intent.kind === "needs_identity") {
+    return {
+      kind: "needs_identity",
+      answer:
+        "需要先确认当前会话的身份信息，才能安全查询订阅状态。请登录后重试，或转人工客服核对账号。"
+    };
+  }
 
   const tool = await repository.findToolDefinitionBySlug({
     projectId: input.projectId,
@@ -110,6 +127,7 @@ export async function maybeRunBusinessTool(
     });
 
     return {
+      kind: "executed",
       answer,
       tool,
       toolCall
@@ -126,6 +144,7 @@ export async function maybeRunBusinessTool(
       latencyMs: Date.now() - startedAt
     });
     return {
+      kind: "executed",
       answer: `我暂时无法完成 ${tool.name} 查询。请稍后重试，或转人工继续处理。`,
       tool,
       toolCall
@@ -144,7 +163,7 @@ async function detectToolIntent(
     conversationId: string;
     text: string;
   }
-): Promise<ToolIntent | undefined> {
+): Promise<ToolIntentResolution | undefined> {
   const openApiIntent = await detectOpenApiToolIntent(repository, input);
   if (openApiIntent) {
     return openApiIntent;
@@ -173,7 +192,7 @@ async function detectToolIntent(
     ? await repository.findContact(input.projectId, conversation.contactId)
     : undefined;
   if (!contact?.externalUserId) {
-    return undefined;
+    return { kind: "needs_identity" };
   }
 
   return {
