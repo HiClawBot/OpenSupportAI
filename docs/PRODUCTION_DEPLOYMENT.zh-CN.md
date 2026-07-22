@@ -1,6 +1,6 @@
-# OpenSupportAI v1.0 生产部署指南
+# OpenSupportAI 生产 Beta 部署指南
 
-本文给出 v1.0 自托管生产部署基线。Docker Compose 适合本地演示和小规模验证；真正生产环境建议使用托管 PostgreSQL、独立反向代理、独立日志/监控和可恢复备份。
+本文给出自托管生产 Beta 基线。`docker-compose.production.yml` 是经过 CI 演练的单主机拓扑；更高 SLA 环境仍建议使用托管 PostgreSQL、独立反向代理、集中日志/监控和外部可恢复备份。
 
 ## 推荐拓扑
 
@@ -44,6 +44,8 @@ LLM_TIMEOUT_MS=45000
 RATE_LIMIT_ENABLED=true
 RATE_LIMIT_WINDOW_MS=60000
 RATE_LIMIT_MAX=120
+WORKER_HEARTBEAT_STALE_MS=30000
+QUEUE_AGE_DEGRADED_MS=120000
 ```
 
 Worker：
@@ -58,6 +60,7 @@ WORKER_ID=worker-production-1
 WORKER_POLL_INTERVAL_MS=5000
 WORKER_RETRY_DELAY_MS=30000
 WORKER_LEASE_MS=60000
+WORKER_HEARTBEAT_MS=5000
 WORKER_JOB_TYPES=answer.generate,knowledge.index
 ```
 
@@ -83,33 +86,33 @@ CHATWOOT_WEBHOOK_SECRET=replace_me
 
 OpenAPI business tool token 不应写入 tool definition。使用 `metadata.auth = { "type": "bearer_env", "env": "ENV_NAME" }`，并在 API 运行环境注入对应环境变量。
 
-## 部署步骤
+## 生产 Compose 部署步骤
 
-1. 准备 PostgreSQL，并启用 pgvector 扩展能力。
-2. 设置生产 `.env`，尤其是 `DATABASE_URL`、`ADMIN_API_TOKEN`、`ENCRYPTION_KEY`、`CLIENT_TOKEN_SECRET`、`CORS_ORIGIN`。
-3. 安装依赖并生成 Prisma client：
+1. 复制生产模板并填写所有空值。`DATABASE_URL` 的主机名使用 Compose service `postgres`，凭据中的保留字符必须 URL 编码：
 
 ```bash
-pnpm install
-pnpm exec prisma validate
-pnpm db:generate
+cp deploy/docker-compose/production.env.example .env.production
 ```
 
-4. 执行数据库 migration：
+2. 先验证最终配置，再构建并启动。Migration 会作为一次性容器先运行；API 和 worker 只有在 migration 成功后才启动：
 
 ```bash
-pnpm db:migrate
+docker compose --env-file .env.production \
+  -f deploy/docker-compose/docker-compose.production.yml config --quiet
+docker compose --env-file .env.production \
+  -f deploy/docker-compose/docker-compose.production.yml up -d --build
 ```
 
-5. 构建服务：
+3. 分别验证进程存活和组件就绪：
 
 ```bash
-pnpm build
+curl http://127.0.0.1:4000/health/live
+curl http://127.0.0.1:4000/health/ready
 ```
 
-6. 启动 API、worker、admin console；确认 worker 同时监听 `answer.generate` 与 `knowledge.index`。
-7. 通过反向代理暴露 API 和 Admin Console，强制 HTTPS。
-8. 运行发布验证脚本和关键业务路径验证。
+4. `/health/ready` 必须返回 `status=ready`，并显示 migration 与 worker 均为 `ok`。生产 Beta 只支持一个 API 与一个 worker。
+5. 通过反向代理暴露 API，强制 HTTPS。Admin Console 应作为独立静态前端部署，并把 `VITE_API_URL` 固定为 HTTPS API 地址。
+6. 运行关键业务路径和恢复演练。
 
 ## 反向代理要求
 
@@ -130,7 +133,19 @@ pnpm build
 - migration 前创建快照。
 - 监控连接数、慢查询、磁盘空间和 autovacuum。
 
-升级前必须先在 staging 环境恢复生产备份并执行 `pnpm db:migrate`。
+升级前必须先在 staging 环境恢复生产备份并执行 migration。生产 Compose 的标准步骤是：
+
+```bash
+docker compose --env-file .env.production \
+  -f deploy/docker-compose/docker-compose.production.yml \
+  exec -T postgres pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  --format=custom --no-owner --no-privileges > opensupportai.dump
+
+docker compose --env-file .env.production \
+  -f deploy/docker-compose/docker-compose.production.yml run --rm migrate
+```
+
+至少把备份恢复到独立数据库一次，并查询 `_prisma_migrations` 与 `worker_heartbeats`。如果 migration 不向后兼容，回滚必须恢复 migration 前备份；不要在生产临时编写反向 SQL。
 
 ## 安全硬化
 
@@ -150,15 +165,22 @@ pnpm build
 
 ## 观测与运维
 
-v1.0 提供基础运维 API：
+生产 Beta 提供以下运行与运维 API：
 
 ```text
+GET /health/live
+GET /health/ready
+GET /v1/admin/ops/metrics
 GET /v1/admin/projects/{project_id}/ops/health
 GET /v1/admin/projects/{project_id}/audit-log
 GET /v1/admin/projects/{project_id}/jobs
 GET /v1/admin/projects/{project_id}/webhooks/events
 GET /v1/admin/projects/{project_id}/tool-calls
 ```
+
+`/health/live` 只检查 API 进程。`/health/ready` 会检查数据库、预期 migration 和 worker heartbeat，关键项失败时返回 `503`。`/v1/admin/ops/metrics` 只允许 root admin token 访问，返回进程内存、队列数量/年龄、migration 与 worker 新鲜度，不返回租户消息或 secret。
+
+Worker 将 `worker.started`、`worker.job.started`、`worker.job.completed`、`worker.job.failed` 和 heartbeat/lease 错误输出为单行 JSON。关联字段包含 `worker_id`、`job_id`、`job_type`、`project_id`、`conversation_id`、attempt 和 duration，不包含消息正文与 provider secret。
 
 建议接入：
 
@@ -195,6 +217,14 @@ API_URL=http://localhost:4000 pnpm smoke:memory
 API_URL=http://localhost:4000 pnpm smoke:channels
 API_URL=http://localhost:4000 pnpm smoke:tools
 ```
+
+在具备 Docker 的 staging/CI 主机执行生产拓扑与恢复演练：
+
+```bash
+sh scripts/production-compose-smoke.sh
+```
+
+该脚本会启动生产 Compose、验证非 root 容器和 readiness、停止 worker 并等待 `503`、恢复 worker、备份并恢复 PostgreSQL，再重放 migration。
 
 真实 Chatwoot 环境准备好后执行：
 

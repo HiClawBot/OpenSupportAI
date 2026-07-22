@@ -42,8 +42,39 @@ export type WorkerRuntimeConfig = {
   pollIntervalMs: number;
   retryDelayMs: number;
   leaseMs: number;
+  heartbeatMs: number;
   jobTypes: string[];
 };
+
+export type WorkerHeartbeatStatus = "ready" | "draining" | "stopped";
+
+export type WorkerHeartbeatStore = {
+  write(input: {
+    workerId: string;
+    status: WorkerHeartbeatStatus;
+    jobTypes: string[];
+    currentJobId?: string;
+    startedAt: Date;
+    lastSeenAt: Date;
+    metadata: Record<string, unknown>;
+  }): Promise<void>;
+};
+
+export type WorkerLogRecord = {
+  timestamp: string;
+  level: "info" | "error";
+  event: string;
+  worker_id: string;
+  job_id?: string;
+  job_type?: string;
+  project_id?: string;
+  conversation_id?: string;
+  attempt?: number;
+  duration_ms?: number;
+  error?: string;
+};
+
+export type WorkerLogSink = (record: WorkerLogRecord) => void;
 
 export type WorkerRuntime = {
   runOnce(): Promise<"processed" | "idle" | "busy">;
@@ -99,6 +130,7 @@ export const workerRuntimeConfig: WorkerRuntimeConfig = {
   pollIntervalMs: Number(process.env["WORKER_POLL_INTERVAL_MS"] ?? 5_000),
   retryDelayMs: Number(process.env["WORKER_RETRY_DELAY_MS"] ?? 30_000),
   leaseMs: Number(process.env["WORKER_LEASE_MS"] ?? 60_000),
+  heartbeatMs: Number(process.env["WORKER_HEARTBEAT_MS"] ?? 5_000),
   jobTypes: parseJobTypes(process.env["WORKER_JOB_TYPES"])
 };
 
@@ -107,6 +139,8 @@ export function createWorkerRuntime(input: {
   handlers: Record<string, WorkerJobHandler>;
   config?: Partial<WorkerRuntimeConfig>;
   now?: () => Date;
+  heartbeatStore?: WorkerHeartbeatStore;
+  log?: WorkerLogSink;
 }): WorkerRuntime {
   const config: WorkerRuntimeConfig = {
     ...workerRuntimeConfig,
@@ -115,7 +149,44 @@ export function createWorkerRuntime(input: {
   };
   validateWorkerRuntimeConfig(config);
   const now = input.now ?? (() => new Date());
+  const log = input.log ?? defaultWorkerLog;
+  const startedAt = now();
   let activeRun: Promise<"processed" | "idle"> | undefined;
+  let currentJob: WorkerJob | undefined;
+  let heartbeatWrite = Promise.resolve();
+
+  const writeHeartbeat = (status: WorkerHeartbeatStatus): Promise<void> => {
+    if (!input.heartbeatStore) {
+      return Promise.resolve();
+    }
+    const jobId = currentJob?.id;
+    heartbeatWrite = heartbeatWrite.then(async () => {
+      try {
+        await input.heartbeatStore?.write({
+          workerId: config.workerId,
+          status,
+          jobTypes: config.jobTypes,
+          ...(jobId ? { currentJobId: jobId } : {}),
+          startedAt,
+          lastSeenAt: now(),
+          metadata: {
+            pid: process.pid,
+            runtime: "opensupportai-worker"
+          }
+        });
+      } catch (error) {
+        log({
+          timestamp: now().toISOString(),
+          level: "error",
+          event: "worker.heartbeat.failed",
+          worker_id: config.workerId,
+          ...(jobId ? { job_id: jobId } : {}),
+          error: errorMessage(error, "Worker heartbeat failed")
+        });
+      }
+    });
+    return heartbeatWrite;
+  };
 
   const processOne = async (): Promise<"processed" | "idle"> => {
     const job = await input.queue.claimNext({
@@ -126,6 +197,18 @@ export function createWorkerRuntime(input: {
     if (!job) {
       return "idle";
     }
+    currentJob = job;
+    await writeHeartbeat("ready");
+    const jobStartedAt = performance.now();
+    log(
+      workerJobLogRecord({
+        level: "info",
+        event: "worker.job.started",
+        workerId: config.workerId,
+        job,
+        timestamp: now()
+      })
+    );
 
     const handler = input.handlers[job.type];
     if (!handler) {
@@ -134,15 +217,37 @@ export function createWorkerRuntime(input: {
         workerId: config.workerId,
         error: `No handler registered for job type: ${job.type}`
       });
+      log(
+        workerJobLogRecord({
+          level: "error",
+          event: "worker.job.failed",
+          workerId: config.workerId,
+          job,
+          timestamp: now(),
+          durationMs: performance.now() - jobStartedAt,
+          error: `No handler registered for job type: ${job.type}`
+        })
+      );
+      currentJob = undefined;
+      await writeHeartbeat("ready");
       return "processed";
     }
 
-    const heartbeat = setInterval(
+    const leaseHeartbeat = setInterval(
       () => {
         void input.queue
           .renewLease({ id: job.id, workerId: config.workerId, leaseMs: config.leaseMs })
           .catch((error) => {
-            console.error(error instanceof Error ? error.message : "Worker lease renewal failed");
+            log(
+              workerJobLogRecord({
+                level: "error",
+                event: "worker.job.lease_renewal_failed",
+                workerId: config.workerId,
+                job,
+                timestamp: now(),
+                error: errorMessage(error, "Worker lease renewal failed")
+              })
+            );
           });
       },
       Math.max(100, Math.floor(config.leaseMs / 3))
@@ -154,8 +259,18 @@ export function createWorkerRuntime(input: {
         workerId: config.workerId,
         result: result ?? {}
       });
+      log(
+        workerJobLogRecord({
+          level: "info",
+          event: "worker.job.completed",
+          workerId: config.workerId,
+          job,
+          timestamp: now(),
+          durationMs: performance.now() - jobStartedAt
+        })
+      );
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown worker error";
+      const message = errorMessage(error, "Unknown worker error");
       await input.queue.fail({
         id: job.id,
         workerId: config.workerId,
@@ -165,8 +280,21 @@ export function createWorkerRuntime(input: {
             ? new Date(now().getTime() + config.retryDelayMs).toISOString()
             : undefined
       });
+      log(
+        workerJobLogRecord({
+          level: "error",
+          event: "worker.job.failed",
+          workerId: config.workerId,
+          job,
+          timestamp: now(),
+          durationMs: performance.now() - jobStartedAt,
+          error: message
+        })
+      );
     } finally {
-      clearInterval(heartbeat);
+      clearInterval(leaseHeartbeat);
+      currentJob = undefined;
+      await writeHeartbeat("ready");
     }
 
     return "processed";
@@ -187,6 +315,8 @@ export function createWorkerRuntime(input: {
     start() {
       let stopped = false;
       let timer: ReturnType<typeof setTimeout> | undefined;
+      const heartbeatTimer = setInterval(() => void writeHeartbeat("ready"), config.heartbeatMs);
+      void writeHeartbeat("ready");
       const tick = async () => {
         if (stopped) {
           return;
@@ -194,7 +324,13 @@ export function createWorkerRuntime(input: {
         try {
           await runtime.runOnce();
         } catch (error) {
-          console.error(error instanceof Error ? error.message : "Worker run failed");
+          log({
+            timestamp: now().toISOString(),
+            level: "error",
+            event: "worker.run.failed",
+            worker_id: config.workerId,
+            error: errorMessage(error, "Worker run failed")
+          });
         }
         if (!stopped) {
           timer = setTimeout(() => void tick(), config.pollIntervalMs);
@@ -208,7 +344,10 @@ export function createWorkerRuntime(input: {
           if (timer) {
             clearTimeout(timer);
           }
+          clearInterval(heartbeatTimer);
+          await writeHeartbeat("draining");
           await activeRun;
+          await writeHeartbeat("stopped");
         }
       };
     }
@@ -415,6 +554,35 @@ export function createPrismaWorkerQueue(
   };
 }
 
+export function createPrismaWorkerHeartbeatStore(
+  prisma: PrismaClient = createPrismaClient()
+): WorkerHeartbeatStore {
+  return {
+    async write(input) {
+      await prisma.workerHeartbeat.upsert({
+        where: { workerId: input.workerId },
+        create: {
+          workerId: input.workerId,
+          status: input.status,
+          jobTypes: jsonInput(input.jobTypes),
+          currentJobId: input.currentJobId,
+          startedAt: input.startedAt,
+          lastSeenAt: input.lastSeenAt,
+          metadata: jsonInput(input.metadata)
+        },
+        update: {
+          status: input.status,
+          jobTypes: jsonInput(input.jobTypes),
+          currentJobId: input.currentJobId ?? null,
+          startedAt: input.startedAt,
+          lastSeenAt: input.lastSeenAt,
+          metadata: jsonInput(input.metadata)
+        }
+      });
+    }
+  };
+}
+
 export function createPrismaKnowledgeIndexStore(
   prisma: PrismaClient = createPrismaClient()
 ): KnowledgeIndexStore {
@@ -509,7 +677,8 @@ function validateWorkerRuntimeConfig(config: WorkerRuntimeConfig): void {
   for (const [name, value] of [
     ["WORKER_POLL_INTERVAL_MS", config.pollIntervalMs],
     ["WORKER_RETRY_DELAY_MS", config.retryDelayMs],
-    ["WORKER_LEASE_MS", config.leaseMs]
+    ["WORKER_LEASE_MS", config.leaseMs],
+    ["WORKER_HEARTBEAT_MS", config.heartbeatMs]
   ] as const) {
     if (!Number.isInteger(value) || value <= 0) {
       throw new Error(`${name} must be a positive integer`);
@@ -518,6 +687,55 @@ function validateWorkerRuntimeConfig(config: WorkerRuntimeConfig): void {
   if (config.jobTypes.length === 0) {
     throw new Error("WORKER_JOB_TYPES must contain at least one implemented job type");
   }
+}
+
+export function defaultWorkerLog(record: WorkerLogRecord): void {
+  if (process.env["NODE_ENV"] === "test") {
+    return;
+  }
+  const output = JSON.stringify(record);
+  if (record.level === "error") {
+    console.error(output);
+  } else {
+    console.log(output);
+  }
+}
+
+function workerJobLogRecord(input: {
+  level: WorkerLogRecord["level"];
+  event: string;
+  workerId: string;
+  job: WorkerJob;
+  timestamp: Date;
+  durationMs?: number;
+  error?: string;
+}): WorkerLogRecord {
+  const projectId = optionalPayloadString(input.job.payload, "project_id");
+  const conversationId = optionalPayloadString(input.job.payload, "conversation_id");
+  return {
+    timestamp: input.timestamp.toISOString(),
+    level: input.level,
+    event: input.event,
+    worker_id: input.workerId,
+    job_id: input.job.id,
+    job_type: input.job.type,
+    ...(projectId ? { project_id: projectId } : {}),
+    ...(conversationId ? { conversation_id: conversationId } : {}),
+    attempt: input.job.attempts,
+    ...(input.durationMs !== undefined
+      ? { duration_ms: Math.max(0, Math.round(input.durationMs * 100) / 100) }
+      : {}),
+    ...(input.error ? { error: input.error } : {})
+  };
+}
+
+function optionalPayloadString(payload: Record<string, unknown>, key: string): string | undefined {
+  const value = payload[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
 }
 
 function requiredPayloadString(payload: Record<string, unknown>, key: string): string {
@@ -572,6 +790,7 @@ if (process.env["NODE_ENV"] !== "test" && process.env["WORKER_AUTOSTART"] !== "f
   const prisma = createPrismaClient();
   const runtime = createWorkerRuntime({
     queue: createPrismaWorkerQueue(prisma),
+    heartbeatStore: createPrismaWorkerHeartbeatStore(prisma),
     handlers: createDefaultWorkerHandlers({
       knowledgeStore: createPrismaKnowledgeIndexStore(prisma),
       answerProcessor: createPrismaAnswerJobProcessor({ prisma })
@@ -589,5 +808,10 @@ if (process.env["NODE_ENV"] !== "test" && process.env["WORKER_AUTOSTART"] !== "f
   };
   process.once("SIGINT", () => void shutdown());
   process.once("SIGTERM", () => void shutdown());
-  console.log(`OpenSupportAI worker ready; job types: ${workerRuntimeConfig.jobTypes.join(", ")}`);
+  defaultWorkerLog({
+    timestamp: new Date().toISOString(),
+    level: "info",
+    event: "worker.started",
+    worker_id: workerRuntimeConfig.workerId
+  });
 }

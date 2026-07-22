@@ -22,6 +22,8 @@ export type ApiConfig = {
   allowPrivateOutbound: boolean;
   maxConcurrentAnswersPerProject: number;
   llmTimeoutMs: number;
+  workerHeartbeatStaleMs: number;
+  queueAgeDegradedMs: number;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
@@ -49,7 +51,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     sseDatabasePollMs: positiveInteger(env["SSE_DATABASE_POLL_MS"], 1_000),
     allowPrivateOutbound: parseBoolean(env["ALLOW_PRIVATE_OUTBOUND"], nodeEnv !== "production"),
     maxConcurrentAnswersPerProject: positiveInteger(env["MAX_CONCURRENT_ANSWERS_PER_PROJECT"], 4),
-    llmTimeoutMs: positiveInteger(env["LLM_TIMEOUT_MS"], 45_000)
+    llmTimeoutMs: positiveInteger(env["LLM_TIMEOUT_MS"], 45_000),
+    workerHeartbeatStaleMs: positiveInteger(env["WORKER_HEARTBEAT_STALE_MS"], 30_000),
+    queueAgeDegradedMs: positiveInteger(env["QUEUE_AGE_DEGRADED_MS"], 120_000)
   };
 
   validateConfig(config, env);
@@ -152,7 +156,17 @@ function positiveInteger(value: string | undefined, fallback: number): number {
 }
 
 function assertProductionSecret(name: string, value: string, forbidden: Set<string>): void {
-  if (value.length < 32 || forbidden.has(value) || new Set(value).size < 12) {
+  const normalized = value.toLowerCase();
+  const looksLikePlaceholder =
+    value.includes("<") ||
+    value.includes(">") ||
+    /replace|change[-_ ]?me|high[-_ ]?entropy/.test(normalized);
+  if (
+    value.length < 32 ||
+    forbidden.has(value) ||
+    new Set(value).size < 12 ||
+    looksLikePlaceholder
+  ) {
     throw new Error(`${name} must be an explicit high-entropy value of at least 32 characters`);
   }
 }

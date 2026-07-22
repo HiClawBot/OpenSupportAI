@@ -65,10 +65,10 @@ flowchart LR
 
 - PostgreSQL
 - pgvector
-- Redis
-- Object Storage
 - LLM Provider
 - External Helpdesk
+
+Redis 与 Object Storage 仍是后续扩展方向，不属于生产 Beta 核心 runtime 依赖。当前支持的最小拓扑以 PostgreSQL 同时承担业务事实源、job queue、消息补拉游标和 worker heartbeat。
 
 ---
 
@@ -87,6 +87,16 @@ SSE event 广播与持久化消息补拉
 handoff 触发
 worker 驱动 AI orchestrator
 ```
+
+### Runtime Readiness
+
+```text
+liveness = API 进程可响应
+readiness = database + expected migration + current complete worker
+queue degradation = 观测告警，不主动摘除 API
+```
+
+Worker 每隔 `WORKER_HEARTBEAT_MS` 写入 `worker_heartbeats`，并在排空和停止时写入显式状态。API 使用 `WORKER_HEARTBEAT_STALE_MS` 判断 worker 是否过期，同时要求 job type 集合包含 `answer.generate` 与 `knowledge.index`。这种判断不依赖“最近是否刚好有 job”，因此空闲 worker 也能被正确识别。
 
 ### 状态机
 

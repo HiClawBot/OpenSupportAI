@@ -53,6 +53,11 @@ import { createSafeOutboundFetch } from "./outbound";
 import { MemorySupportRepository } from "./repositories/memory";
 import { PrismaSupportRepository } from "./repositories/prisma";
 import { IdempotencyConflictError } from "./repositories/types";
+import {
+  createMemoryRuntimeHealthProbe,
+  createUnavailableRuntimeHealthProbe,
+  type RuntimeHealthProbe
+} from "./runtime-health";
 import type {
   ApiKeyRecord,
   AuditLogRecord,
@@ -102,6 +107,7 @@ export type BuildAppOptions = {
   chatwootFetch?: typeof fetch;
   llmFetch?: typeof fetch;
   toolFetch?: typeof fetch;
+  runtimeHealthProbe?: RuntimeHealthProbe;
 };
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
@@ -112,6 +118,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       ? new MemorySupportRepository()
       : new PrismaSupportRepository());
   const eventHub = options.eventHub ?? new EventHub();
+  const runtimeHealthProbe =
+    options.runtimeHealthProbe ??
+    (config.storageMode === "memory"
+      ? createMemoryRuntimeHealthProbe()
+      : createUnavailableRuntimeHealthProbe());
   const chatwootFetch = createSafeOutboundFetch({
     allowPrivateNetwork: config.allowPrivateOutbound,
     fetchImpl: options.chatwootFetch
@@ -190,6 +201,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   app.get("/health", async () => ({ status: "ok", service: "@opensupportai/api" }));
   app.get("/v1/health", async () => ({ status: "ok", service: "@opensupportai/api" }));
+  app.get("/health/live", async () => ({ status: "ok", service: "@opensupportai/api" }));
+  app.get("/health/ready", async (_request, reply) => {
+    const snapshot = await runtimeHealthProbe();
+    if (snapshot.status !== "ready") {
+      reply.status(503);
+    }
+    return publicRuntimeHealth(snapshot);
+  });
 
   app.post("/v1/client/conversations", async (request) => {
     const body = createConversationBodySchema.parse(request.body);
@@ -286,6 +305,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       eventHub,
       orchestrator,
       config,
+      log: request.log,
+      requestId: request.id,
       projectId: project.id,
       conversationId: conversation.id,
       idempotencyKey: requestIdempotencyKey(request),
@@ -495,6 +516,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         eventHub,
         orchestrator,
         config,
+        log: request.log,
+        requestId: request.id,
         projectId: project.id,
         conversationId: conversation.id,
         message: {
@@ -625,6 +648,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         eventHub,
         orchestrator,
         config,
+        log: request.log,
+        requestId: request.id,
         projectId: project.id,
         conversationId: conversation.id,
         message: {
@@ -690,6 +715,22 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     requireAdminScope(identity, "admin:project");
     return {
       projects: identity.project ? [identity.project] : await repository.listProjects()
+    };
+  });
+
+  app.get("/v1/admin/ops/metrics", async (request) => {
+    const identity = await authenticateAdminIdentity(request, repository, config);
+    requireRootAdmin(identity);
+    const runtime = await runtimeHealthProbe();
+    const memory = process.memoryUsage();
+    return {
+      generated_at: new Date().toISOString(),
+      runtime,
+      process: {
+        uptime_seconds: Math.floor(process.uptime()),
+        resident_memory_bytes: memory.rss,
+        heap_used_bytes: memory.heapUsed
+      }
     };
   });
 
@@ -1772,6 +1813,8 @@ async function acceptEndUserMessage(input: {
   eventHub: EventHub;
   orchestrator: Orchestrator;
   config: ApiConfig;
+  log?: { info(fields: Record<string, unknown>, message?: string): void };
+  requestId?: string;
   projectId: string;
   conversationId: string;
   message: CreateMessageInput;
@@ -1781,6 +1824,7 @@ async function acceptEndUserMessage(input: {
   const useWorker =
     input.config.answerExecutionMode === "worker" && !detectHandoffIntent(input.message.text);
   let result: { message: MessageRecord; created: boolean };
+  let jobId: string | undefined;
 
   try {
     if (useWorker) {
@@ -1799,6 +1843,7 @@ async function acceptEndUserMessage(input: {
           maxAttempts: 3
         }
       });
+      jobId = accepted.job.id;
       result = { message: accepted.message, created: accepted.created };
     } else if (input.idempotencyKey) {
       result = await input.repository.createIdempotentMessage({
@@ -1821,6 +1866,20 @@ async function acceptEndUserMessage(input: {
   } catch (error) {
     throwIdempotencyConflict(error);
   }
+
+  input.log?.info(
+    {
+      event: "message.accepted",
+      request_id: input.requestId,
+      project_id: input.projectId,
+      conversation_id: input.conversationId,
+      message_id: result.message.id,
+      ...(jobId ? { job_id: jobId } : {}),
+      answer_execution: useWorker ? "worker" : "inline",
+      idempotent_replay: !result.created
+    },
+    "End-user message accepted"
+  );
 
   if (!result.created) {
     return result;
@@ -2320,6 +2379,23 @@ function countBy<T>(items: T[], keyForItem: (item: T) => string): Record<string,
   }, {});
 }
 
+function publicRuntimeHealth(snapshot: Awaited<ReturnType<RuntimeHealthProbe>>) {
+  return {
+    status: snapshot.status,
+    generated_at: snapshot.generated_at,
+    reasons: snapshot.reasons,
+    checks: {
+      database: { status: snapshot.checks.database.status },
+      migration: {
+        status: snapshot.checks.migration.status,
+        expected: snapshot.checks.migration.expected
+      },
+      worker: { status: snapshot.checks.worker.status },
+      queue: { status: snapshot.checks.queue.status }
+    }
+  };
+}
+
 type RateLimitBucket = {
   windowStart: number;
   count: number;
@@ -2369,7 +2445,9 @@ function registerRateLimit(app: FastifyInstance, config: ApiConfig): void {
 }
 
 function isRateLimitExempt(url: string): boolean {
-  return url === "/health" || url === "/v1/health";
+  return (
+    url === "/health" || url === "/v1/health" || url === "/health/live" || url === "/health/ready"
+  );
 }
 
 function rateLimitKey(request: FastifyRequest): string {

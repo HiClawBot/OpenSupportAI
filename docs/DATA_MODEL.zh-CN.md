@@ -441,6 +441,28 @@ project_id + type + deduplication_key unique
 
 ---
 
+## worker_heartbeats
+
+```text
+worker_id       string primary key
+status          string      -- ready / draining / stopped
+job_types       jsonb
+current_job_id  string nullable
+started_at      timestamp
+last_seen_at    timestamp
+metadata        jsonb
+```
+
+`worker_id` 是部署实例的稳定标识。生产 readiness 要求至少一个未过期的 `ready` worker，并且其 `job_types` 同时包含 `answer.generate` 与 `knowledge.index`。`current_job_id` 只用于日志与运行关联，不建立外键；该表不保存消息正文、provider 配置或 secret。
+
+索引：
+
+```text
+status + last_seen_at
+```
+
+---
+
 ## tool_definitions
 
 ```text

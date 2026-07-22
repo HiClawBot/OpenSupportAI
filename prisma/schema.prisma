@@ -451,3 +451,16 @@ model AsyncJob {
   @@index([type, status])
   @@map("async_jobs")
 }
+
+model WorkerHeartbeat {
+  workerId     String   @id @map("worker_id")
+  status       String
+  jobTypes     Json     @default("[]") @map("job_types")
+  currentJobId String?  @map("current_job_id")
+  startedAt    DateTime @map("started_at")
+  lastSeenAt   DateTime @map("last_seen_at")
+  metadata     Json     @default("{}")
+
+  @@index([status, lastSeenAt])
+  @@map("worker_heartbeats")
+}
