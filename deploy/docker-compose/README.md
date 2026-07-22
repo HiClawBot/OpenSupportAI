@@ -1,6 +1,6 @@
 # Docker Compose
 
-This stack is the v0.1 self-hosted demo path.
+This stack is the v1 self-hosted evaluation path.
 
 ## Services
 
@@ -75,7 +75,8 @@ The script reads `.env` through `dotenv`, creates a smoke-test conversation, req
 
 ## Notes
 
-- The API defaults to Prisma storage in Docker.
+- The API defaults to Prisma storage and `ANSWER_EXECUTION_MODE=worker` in Docker. Keep both the API and worker running; accepted user messages are answered through durable `answer.generate` jobs.
+- SSE connections poll persisted messages, so AI answers written by the worker reach connected clients without a shared in-process event bus.
 - For no-database local development, use `OPENSUPPORTAI_STORAGE=memory` with the API dev server instead.
 - Replace all default secrets before using this stack beyond local development: `ADMIN_API_TOKEN`, `ENCRYPTION_KEY`, PostgreSQL credentials, MinIO credentials, LLM API keys, Chatwoot API tokens, and webhook secrets.
 - Put the API and frontends behind TLS and a production reverse proxy before exposing them publicly.

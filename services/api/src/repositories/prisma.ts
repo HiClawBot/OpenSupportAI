@@ -525,6 +525,43 @@ export class PrismaSupportRepository implements SupportRepository {
     return messages.map(mapMessage);
   }
 
+  async findMessage(
+    projectId: string,
+    conversationId: string,
+    messageId: string
+  ): Promise<MessageRecord | undefined> {
+    const message = await this.prisma.message.findFirst({
+      where: { id: messageId, projectId, conversationId }
+    });
+    return message ? mapMessage(message) : undefined;
+  }
+
+  async findMessageByIdempotencyKey(input: {
+    projectId: string;
+    conversationId: string;
+    idempotencyKey: string;
+  }): Promise<MessageRecord | undefined> {
+    const message = await this.prisma.message.findFirst({
+      where: {
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        idempotencyKey: input.idempotencyKey
+      }
+    });
+    return message ? mapMessage(message) : undefined;
+  }
+
+  async findLatestMessage(
+    projectId: string,
+    conversationId: string
+  ): Promise<MessageRecord | undefined> {
+    const message = await this.prisma.message.findFirst({
+      where: { projectId, conversationId, visibility: "public" },
+      orderBy: { sequence: "desc" }
+    });
+    return message ? mapMessage(message) : undefined;
+  }
+
   async createMessage(input: {
     projectId: string;
     conversationId: string;
@@ -608,6 +645,94 @@ export class PrismaSupportRepository implements SupportRepository {
       assertMatchingIdempotencyHash(message.idempotencyHash, input.idempotencyHash);
       return { message: mapMessage(message), created: false };
     }
+  }
+
+  async createMessageWithAsyncJob(input: {
+    projectId: string;
+    conversationId: string;
+    idempotencyKey?: string;
+    idempotencyHash?: string;
+    message: CreateMessageInput;
+    job: {
+      type: string;
+      payload?: JsonRecord;
+      maxAttempts?: number;
+    };
+  }): Promise<{ message: MessageRecord; job: AsyncJobRecord; created: boolean }> {
+    if (Boolean(input.idempotencyKey) !== Boolean(input.idempotencyHash)) {
+      throw new Error("Message idempotency key and hash must be provided together");
+    }
+
+    return this.prisma.$transaction(async (transaction) => {
+      let message = null;
+      if (input.idempotencyKey) {
+        await transaction.$queryRaw(Prisma.sql`
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${`${input.projectId}:${input.conversationId}:${input.idempotencyKey}`}, 0)
+          )::text AS "locked"
+        `);
+        message = await transaction.message.findUnique({
+          where: {
+            conversationId_idempotencyKey: {
+              conversationId: input.conversationId,
+              idempotencyKey: input.idempotencyKey
+            }
+          }
+        });
+      }
+
+      const created = !message;
+      if (message) {
+        assertMatchingIdempotencyHash(message.idempotencyHash, input.idempotencyHash ?? "");
+      } else {
+        message = await transaction.message.create({
+          data: {
+            id: id("msg"),
+            projectId: input.projectId,
+            conversationId: input.conversationId,
+            role: input.message.role,
+            visibility: input.message.visibility ?? "public",
+            contentType: "text",
+            content: jsonInput({ text: input.message.text }),
+            sourceRefs: input.message.sourceRefs as unknown as Prisma.InputJsonValue,
+            idempotencyKey: input.idempotencyKey,
+            idempotencyHash: input.idempotencyHash,
+            metadata: jsonInput(input.message.metadata ?? {})
+          }
+        });
+        await transaction.conversation.updateMany({
+          where: { id: input.conversationId, projectId: input.projectId },
+          data: { lastMessageAt: message.createdAt }
+        });
+      }
+
+      const deduplicationKey = `message:${message.id}`;
+      const job = await transaction.asyncJob.upsert({
+        where: {
+          projectId_type_deduplicationKey: {
+            projectId: input.projectId,
+            type: input.job.type,
+            deduplicationKey
+          }
+        },
+        update: {},
+        create: {
+          id: id("job"),
+          projectId: input.projectId,
+          type: input.job.type,
+          deduplicationKey,
+          payload: jsonInput({
+            ...input.job.payload,
+            project_id: input.projectId,
+            conversation_id: input.conversationId,
+            message_id: message.id
+          }),
+          maxAttempts: input.job.maxAttempts ?? 3
+        }
+      });
+
+      return { message: mapMessage(message), job: mapAsyncJob(job), created };
+    });
   }
 
   async createKnowledgeDocument(
@@ -1282,6 +1407,7 @@ export class PrismaSupportRepository implements SupportRepository {
   async createAsyncJob(input: {
     projectId: string;
     type: string;
+    deduplicationKey?: string;
     payload?: JsonRecord;
     runAt?: string;
     maxAttempts?: number;
@@ -1291,6 +1417,7 @@ export class PrismaSupportRepository implements SupportRepository {
         id: id("job"),
         projectId: input.projectId,
         type: input.type,
+        deduplicationKey: input.deduplicationKey,
         payload: jsonInput(input.payload ?? {}),
         runAt: input.runAt ? new Date(input.runAt) : undefined,
         maxAttempts: input.maxAttempts ?? 3
@@ -1728,6 +1855,7 @@ function mapAsyncJob(job: NonNullable<PrismaAsyncJob>): AsyncJobRecord {
     id: job.id,
     projectId: job.projectId,
     type: job.type,
+    deduplicationKey: job.deduplicationKey ?? undefined,
     status: job.status as AsyncJobStatus,
     payload: jsonRecord(job.payload),
     result: job.result ? jsonRecord(job.result) : undefined,

@@ -1,11 +1,13 @@
 import "dotenv/config";
 
 export type StorageMode = "memory" | "prisma";
+export type AnswerExecutionMode = "inline" | "worker";
 
 export type ApiConfig = {
   nodeEnv: string;
   port: number;
   storageMode: StorageMode;
+  answerExecutionMode: AnswerExecutionMode;
   adminToken: string;
   encryptionKey: string;
   clientTokenSecret: string;
@@ -16,6 +18,7 @@ export type ApiConfig = {
   conversationTokenTtlSeconds: number;
   streamTokenTtlSeconds: number;
   sseHeartbeatMs: number;
+  sseDatabasePollMs: number;
   allowPrivateOutbound: boolean;
   maxConcurrentAnswersPerProject: number;
   llmTimeoutMs: number;
@@ -29,6 +32,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     nodeEnv,
     port: Number(env["PORT"] ?? 4000),
     storageMode,
+    answerExecutionMode: parseAnswerExecutionMode(env["ANSWER_EXECUTION_MODE"], storageMode),
     adminToken: env["ADMIN_API_TOKEN"] ?? "admin_demo_key",
     encryptionKey,
     clientTokenSecret: env["CLIENT_TOKEN_SECRET"] ?? "replace_with_32_byte_client_token_secret",
@@ -42,6 +46,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     ),
     streamTokenTtlSeconds: positiveInteger(env["STREAM_TOKEN_TTL_SECONDS"], 60),
     sseHeartbeatMs: positiveInteger(env["SSE_HEARTBEAT_MS"], 15_000),
+    sseDatabasePollMs: positiveInteger(env["SSE_DATABASE_POLL_MS"], 1_000),
     allowPrivateOutbound: parseBoolean(env["ALLOW_PRIVATE_OUTBOUND"], nodeEnv !== "production"),
     maxConcurrentAnswersPerProject: positiveInteger(env["MAX_CONCURRENT_ANSWERS_PER_PROJECT"], 4),
     llmTimeoutMs: positiveInteger(env["LLM_TIMEOUT_MS"], 45_000)
@@ -65,6 +70,9 @@ export function validateConfig(config: ApiConfig, env: NodeJS.ProcessEnv = proce
 
   if (config.storageMode !== "prisma") {
     throw new Error("Production requires OPENSUPPORTAI_STORAGE=prisma");
+  }
+  if (config.answerExecutionMode !== "worker") {
+    throw new Error("Production requires ANSWER_EXECUTION_MODE=worker");
   }
   if (!env["DATABASE_URL"]?.trim()) {
     throw new Error("Production requires DATABASE_URL");
@@ -99,6 +107,19 @@ function parseStorageMode(value: string | undefined, nodeEnv: string | undefined
   }
 
   return nodeEnv === "test" ? "memory" : "prisma";
+}
+
+function parseAnswerExecutionMode(
+  value: string | undefined,
+  storageMode: StorageMode
+): AnswerExecutionMode {
+  if (value === "inline" || value === "worker") {
+    return value;
+  }
+  if (value !== undefined) {
+    throw new Error("ANSWER_EXECUTION_MODE must be inline or worker");
+  }
+  return storageMode === "prisma" ? "worker" : "inline";
 }
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {

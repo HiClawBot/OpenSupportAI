@@ -13,6 +13,7 @@ export type BusinessToolResult = {
 
 export type BusinessToolOptions = {
   fetchImpl?: typeof fetch;
+  allowMutations?: boolean;
 };
 
 type DemoToolIntent =
@@ -257,6 +258,9 @@ async function executeOpenApiTool(
   const path = tool.path;
   if (!path) {
     throw new Error("OpenAPI tool path is not configured");
+  }
+  if (method !== "GET" && options.allowMutations === false) {
+    throw new Error("OpenAPI tool mutations are disabled in asynchronous answer workers");
   }
   if (method !== "GET" && !hasMutationApproval(tool)) {
     throw new Error("OpenAPI tool mutation requires persisted operator approval");

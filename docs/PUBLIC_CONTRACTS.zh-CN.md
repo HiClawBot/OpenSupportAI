@@ -73,6 +73,8 @@ POST /v1/webhooks/chatwoot/{project_id}
 - Admin API 继续支持 `Authorization: Bearer <admin-token-or-api-key>`。
 - Webhook endpoint 继续保持 project/public-key scoped 的鉴权边界。
 - 创建会话和发送消息支持可选 `Idempotency-Key`；同 key 不同请求体返回 `409`。
+- 发送消息的 `status: accepted` 表示用户消息与后续处理请求已持久化，不承诺 AI 回答已在 HTTP 响应返回前完成。最终回答通过消息列表和 SSE 的 `ai.message.completed` 获取。
+- Prisma 生产模式以 `answer.generate` durable job 执行回答；同一源消息即使重试也只写入一个最终 AI message。
 - 消息列表支持向后兼容的 `limit`/`after` 游标，并可返回 `next_cursor`。
 - Webhook retry 地址保留，但在 provider-specific replay handler 完成前明确返回 `501`，不会创建 placeholder job。
 
@@ -137,6 +139,7 @@ v1.0 稳定以下 adapter 边界：
 - Generic webhook channel adapter：secret 校验、payload 归一化、event id 幂等、本地 conversation 复用。
 - Slack inbound channel adapter：Slack Events API timestamp/signature 校验、URL verification、message event 入站归一化、event id 幂等。
 - OpenAPI-style business tool executor：active tool allowlist、intent 抽取、host allowlist、timeout、response shaping、answer template、bearer-env auth、mutation guard、completed/failed tool-call 记录。
+- Durable `answer.generate` worker 只执行 `GET` 工具；非 `GET` mutation 在具备端到端幂等协议前安全失败并记录 failed tool-call。
 
 Email 和 Telegram 当前仍是 adapter catalog stub，不属于 v1.0 已实现 provider API。
 

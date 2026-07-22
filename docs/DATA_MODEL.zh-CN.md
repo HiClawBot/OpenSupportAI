@@ -411,6 +411,7 @@ status + created_at
 id                 string primary key
 project_id         string references projects(id)
 type               string
+deduplication_key  string nullable
 status             string      -- queued / running / completed / failed / cancelled
 payload            jsonb
 result             jsonb nullable
@@ -427,12 +428,15 @@ updated_at         timestamp
 
 Worker 通过 `FOR UPDATE SKIP LOCKED` 原子领取任务。运行中的任务必须由当前 `locked_by` owner 续租、完成或失败；过期租约可被重新领取，已耗尽最大尝试次数的任务会进入 `failed`。
 
+`answer.generate` 使用 `message:{source_message_id}` 作为去重键。用户消息、canonical job payload 与任务记录在同一个事务中提交；最终 AI message 使用源消息派生的幂等键，保证任务重试不会重复回答。
+
 索引：
 
 ```text
 project_id + status
 status + run_at
 type + status
+project_id + type + deduplication_key unique
 ```
 
 ---

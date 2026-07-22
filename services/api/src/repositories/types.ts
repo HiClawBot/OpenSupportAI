@@ -248,6 +248,7 @@ export type AsyncJobRecord = {
   id: string;
   projectId: string;
   type: string;
+  deduplicationKey?: string;
   status: AsyncJobStatus;
   payload: JsonRecord;
   result?: JsonRecord;
@@ -336,6 +337,17 @@ export type SupportRepository = {
     conversationId: string,
     options?: { limit?: number; after?: string }
   ): Promise<MessageRecord[]>;
+  findMessage(
+    projectId: string,
+    conversationId: string,
+    messageId: string
+  ): Promise<MessageRecord | undefined>;
+  findMessageByIdempotencyKey(input: {
+    projectId: string;
+    conversationId: string;
+    idempotencyKey: string;
+  }): Promise<MessageRecord | undefined>;
+  findLatestMessage(projectId: string, conversationId: string): Promise<MessageRecord | undefined>;
   createMessage(input: {
     projectId: string;
     conversationId: string;
@@ -348,6 +360,18 @@ export type SupportRepository = {
     idempotencyHash: string;
     message: CreateMessageInput;
   }): Promise<{ message: MessageRecord; created: boolean }>;
+  createMessageWithAsyncJob(input: {
+    projectId: string;
+    conversationId: string;
+    idempotencyKey?: string;
+    idempotencyHash?: string;
+    message: CreateMessageInput;
+    job: {
+      type: string;
+      payload?: JsonRecord;
+      maxAttempts?: number;
+    };
+  }): Promise<{ message: MessageRecord; job: AsyncJobRecord; created: boolean }>;
   createKnowledgeDocument(
     projectId: string,
     input: CreateKnowledgeDocumentInput
@@ -514,6 +538,7 @@ export type SupportRepository = {
   createAsyncJob(input: {
     projectId: string;
     type: string;
+    deduplicationKey?: string;
     payload?: JsonRecord;
     runAt?: string;
     maxAttempts?: number;

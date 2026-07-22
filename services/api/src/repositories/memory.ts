@@ -63,6 +63,7 @@ export class MemorySupportRepository implements SupportRepository {
   private readonly toolCalls = new Map<string, ToolCallRecord>();
   private readonly conversationInsights = new Map<string, ConversationInsightRecord>();
   private readonly asyncJobs = new Map<string, AsyncJobRecord>();
+  private readonly messageOutboxTails = new Map<string, Promise<void>>();
 
   async seedDemo(): Promise<void> {
     if (this.projects.has("proj_demo")) {
@@ -411,6 +412,44 @@ export class MemorySupportRepository implements SupportRepository {
     return messages.slice(cursorIndex + 1, cursorIndex + 1 + boundedMessageLimit(options.limit));
   }
 
+  async findMessage(
+    projectId: string,
+    conversationId: string,
+    messageId: string
+  ): Promise<MessageRecord | undefined> {
+    const message = this.messages.get(messageId);
+    return message?.projectId === projectId && message.conversationId === conversationId
+      ? message
+      : undefined;
+  }
+
+  async findMessageByIdempotencyKey(input: {
+    projectId: string;
+    conversationId: string;
+    idempotencyKey: string;
+  }): Promise<MessageRecord | undefined> {
+    return [...this.messages.values()].find(
+      (message) =>
+        message.projectId === input.projectId &&
+        message.conversationId === input.conversationId &&
+        message.idempotencyKey === input.idempotencyKey
+    );
+  }
+
+  async findLatestMessage(
+    projectId: string,
+    conversationId: string
+  ): Promise<MessageRecord | undefined> {
+    return [...this.messages.values()]
+      .filter(
+        (message) =>
+          message.projectId === projectId &&
+          message.conversationId === conversationId &&
+          message.visibility === "public"
+      )
+      .at(-1);
+  }
+
   async createMessage(input: {
     projectId: string;
     conversationId: string;
@@ -467,6 +506,62 @@ export class MemorySupportRepository implements SupportRepository {
     };
     this.messages.set(message.id, idempotentMessage);
     return { message: idempotentMessage, created: true };
+  }
+
+  async createMessageWithAsyncJob(input: {
+    projectId: string;
+    conversationId: string;
+    idempotencyKey?: string;
+    idempotencyHash?: string;
+    message: CreateMessageInput;
+    job: {
+      type: string;
+      payload?: JsonRecord;
+      maxAttempts?: number;
+    };
+  }): Promise<{ message: MessageRecord; job: AsyncJobRecord; created: boolean }> {
+    if (Boolean(input.idempotencyKey) !== Boolean(input.idempotencyHash)) {
+      throw new Error("Message idempotency key and hash must be provided together");
+    }
+    const create = async () => {
+      const result = input.idempotencyKey
+        ? await this.createIdempotentMessage({
+            ...input,
+            idempotencyKey: input.idempotencyKey,
+            idempotencyHash: input.idempotencyHash ?? ""
+          })
+        : { message: await this.createMessage(input), created: true };
+      const deduplicationKey = `message:${result.message.id}`;
+      const existingJob = [...this.asyncJobs.values()].find(
+        (job) =>
+          job.projectId === input.projectId &&
+          job.type === input.job.type &&
+          job.deduplicationKey === deduplicationKey
+      );
+      if (existingJob) {
+        return { ...result, job: existingJob };
+      }
+      const job = await this.createAsyncJob({
+        projectId: input.projectId,
+        type: input.job.type,
+        deduplicationKey,
+        payload: {
+          ...input.job.payload,
+          project_id: input.projectId,
+          conversation_id: input.conversationId,
+          message_id: result.message.id
+        },
+        maxAttempts: input.job.maxAttempts
+      });
+      return { ...result, job };
+    };
+
+    return input.idempotencyKey
+      ? this.serializeMessageOutbox(
+          `${input.projectId}:${input.conversationId}:${input.idempotencyKey}`,
+          create
+        )
+      : create();
   }
 
   async createKnowledgeDocument(
@@ -1018,6 +1113,7 @@ export class MemorySupportRepository implements SupportRepository {
   async createAsyncJob(input: {
     projectId: string;
     type: string;
+    deduplicationKey?: string;
     payload?: JsonRecord;
     runAt?: string;
     maxAttempts?: number;
@@ -1028,6 +1124,7 @@ export class MemorySupportRepository implements SupportRepository {
       id: id("job"),
       projectId: input.projectId,
       type: input.type,
+      deduplicationKey: input.deduplicationKey,
       status: "queued",
       payload: input.payload ?? {},
       attempts: 0,
@@ -1220,6 +1317,25 @@ export class MemorySupportRepository implements SupportRepository {
       throw new Error(`Async job lease is not owned by this worker: ${jobId}`);
     }
     return job;
+  }
+
+  private async serializeMessageOutbox<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.messageOutboxTails.get(key) ?? Promise.resolve();
+    let release: () => void = () => undefined;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => current);
+    this.messageOutboxTails.set(key, tail);
+    await previous;
+    try {
+      return await task();
+    } finally {
+      release();
+      if (this.messageOutboxTails.get(key) === tail) {
+        this.messageOutboxTails.delete(key);
+      }
+    }
   }
 }
 

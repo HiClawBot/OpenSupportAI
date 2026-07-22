@@ -2,6 +2,44 @@ import { describe, expect, it } from "vitest";
 import { MemorySupportRepository } from "./memory";
 
 describe("memory repository reliability contracts", () => {
+  it("creates one source message and one answer job for repeated idempotent writes", async () => {
+    const repository = await seededRepository();
+    const contact = await repository.upsertContact("proj_demo", {
+      externalUserId: "outbox_user"
+    });
+    const conversation = await repository.createConversation({
+      projectId: "proj_demo",
+      inboxId: "inbox_default",
+      contactId: contact.id
+    });
+    const accept = () =>
+      repository.createMessageWithAsyncJob({
+        projectId: "proj_demo",
+        conversationId: conversation.id,
+        idempotencyKey: "outbox-message-1",
+        idempotencyHash: "same-body-hash",
+        message: { role: "end_user", text: "怎么取消订阅？" },
+        job: { type: "answer.generate" }
+      });
+
+    const [first, duplicate] = await Promise.all([accept(), accept()]);
+    expect(first.message.id).toBe(duplicate.message.id);
+    expect(first.job.id).toBe(duplicate.job.id);
+    expect([first.created, duplicate.created].sort()).toEqual([false, true]);
+    await expect(
+      repository.listAsyncJobs({ projectId: "proj_demo", type: "answer.generate" })
+    ).resolves.toEqual([
+      expect.objectContaining({
+        deduplicationKey: `message:${first.message.id}`,
+        payload: expect.objectContaining({
+          project_id: "proj_demo",
+          conversation_id: conversation.id,
+          message_id: first.message.id
+        })
+      })
+    ]);
+  });
+
   it("claims a queued job only once and fences the owner", async () => {
     const repository = await seededRepository();
     const now = "2026-07-22T00:00:00.000Z";
