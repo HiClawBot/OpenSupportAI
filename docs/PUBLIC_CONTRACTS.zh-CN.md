@@ -129,7 +129,7 @@ const controller = init({
 controller.destroy();
 ```
 
-`userToken` 作为 `conversationToken` 的兼容别名暂时保留，但已废弃。Widget 将会话 capability 保存在当前标签页的 `sessionStorage`；Widget DOM、Shadow DOM 内部 class name 和内部渲染结构不属于稳定公共契约。
+`userToken` 作为 `conversationToken` 的兼容别名暂时保留，但已废弃。Widget 将会话 capability 与过期时间保存在当前标签页的 `sessionStorage`；过期或被拒绝的 capability 可从界面清除并创建新会话，临时网络错误可重试。`locale` 以 `zh` 开头时显示纯中文控件，其余值显示纯英文控件；未提供时读取浏览器语言。Widget DOM、Shadow DOM 内部 class name 和内部渲染结构不属于稳定公共契约。
 
 ## 稳定 Adapter 契约
 
