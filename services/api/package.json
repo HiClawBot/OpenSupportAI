@@ -3,10 +3,16 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./answer-runtime": {
+      "types": "./dist/answer-runtime.d.ts",
+      "default": "./dist/answer-runtime.js"
+    }
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "dev:demo": "tsx watch src/demo.ts",
-    "build": "tsc -p tsconfig.json && esbuild src/index.ts --bundle --platform=node --format=esm --sourcemap --outfile=dist/index.js --external:@prisma/client --external:@prisma/adapter-pg --external:fastify --external:@fastify/cors --external:dotenv/config",
+    "build": "tsc -p tsconfig.json && esbuild src/index.ts --bundle --platform=node --format=esm --sourcemap --outfile=dist/index.js --external:@prisma/client --external:@prisma/adapter-pg --external:fastify --external:@fastify/cors --external:dotenv/config && esbuild src/answer-runtime.ts --bundle --platform=node --format=esm --sourcemap --outfile=dist/answer-runtime.js --external:@prisma/client --external:@prisma/adapter-pg",
     "lint": "eslint .",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit",

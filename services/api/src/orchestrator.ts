@@ -15,7 +15,7 @@ export type Orchestrator = {
     projectId: string;
     conversationId: string;
     message: MessageRecord;
-  }): Promise<void>;
+  }): Promise<MessageRecord | undefined>;
 };
 
 export type RequestHandoffHandler = (input: {
@@ -51,6 +51,7 @@ export function createOrchestrator(
     requestHandoff?: RequestHandoffHandler;
     generateGroundedAnswer?: GroundedAnswerGenerator;
     businessToolFetch?: typeof fetch;
+    allowBusinessToolMutations?: boolean;
     maxConcurrentAnswersPerProject?: number;
   } = {}
 ): Orchestrator {
@@ -70,10 +71,18 @@ export function createOrchestrator(
 
   return {
     async respondToUserMessage(input) {
+      const existingAnswer = await repository.findMessageByIdempotencyKey({
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        idempotencyKey: answerMessageIdempotencyKey(input.message.id)
+      });
+      if (existingAnswer) {
+        publishCompletion(eventHub, input.projectId, input.conversationId, existingAnswer);
+        return existingAnswer;
+      }
       const activeAnswers = activeAnswersByProject.get(input.projectId) ?? 0;
       if (activeAnswers >= maxConcurrentAnswersPerProject) {
-        await respondAtCapacity(repository, eventHub, input);
-        return;
+        return respondAtCapacity(repository, eventHub, input);
       }
       activeAnswersByProject.set(input.projectId, activeAnswers + 1);
       try {
@@ -98,7 +107,7 @@ export function createOrchestrator(
             conversationId: input.conversationId,
             reason: "user_requested"
           });
-          return;
+          return undefined;
         }
 
         const startedAt = Date.now();
@@ -110,83 +119,82 @@ export function createOrchestrator(
             text
           },
           {
-            fetchImpl: options.businessToolFetch
+            fetchImpl: options.businessToolFetch,
+            allowMutations: options.allowBusinessToolMutations
           }
         );
         if (toolResult) {
-          const message = await repository.createMessage({
-            projectId: input.projectId,
-            conversationId: input.conversationId,
-            message: {
-              role: "ai_agent",
-              text: toolResult.answer,
-              metadata: {
-                grounded: true,
-                tool_slug: toolResult.tool.slug,
-                tool_call_id: toolResult.toolCall.id
-              }
-            }
-          });
-
-          await repository.createAiRun({
-            projectId: input.projectId,
-            conversationId: input.conversationId,
-            messageId: message.id,
-            provider: "opensupportai",
-            model: "demo-business-tool",
-            promptVersion: "v0.3",
-            inputTokens: text.length,
-            outputTokens: toolResult.answer.length,
-            latencyMs: Date.now() - startedAt,
-            retrievedChunkIds: [],
-            confidence: 0.9,
-            status: "completed",
+          const answerResult = await createAnswerMessage(repository, input, {
+            role: "ai_agent",
+            text: toolResult.answer,
             metadata: {
+              grounded: true,
               tool_slug: toolResult.tool.slug,
               tool_call_id: toolResult.toolCall.id
             }
           });
+          const message = answerResult.message;
+
+          if (answerResult.created) {
+            await repository.createAiRun({
+              projectId: input.projectId,
+              conversationId: input.conversationId,
+              messageId: message.id,
+              provider: "opensupportai",
+              model: "demo-business-tool",
+              promptVersion: "v0.3",
+              inputTokens: text.length,
+              outputTokens: toolResult.answer.length,
+              latencyMs: Date.now() - startedAt,
+              retrievedChunkIds: [],
+              confidence: 0.9,
+              status: "completed",
+              metadata: {
+                tool_slug: toolResult.tool.slug,
+                tool_call_id: toolResult.toolCall.id
+              }
+            });
+          }
 
           publishCompletion(eventHub, input.projectId, input.conversationId, message);
-          return;
+          return message;
         }
 
         const chunks = await repository.retrieveKnowledge(input.projectId, text, 6);
         const provider = await repository.getActiveLlmProvider(input.projectId);
 
         if (chunks.length === 0) {
-          const message = await repository.createMessage({
-            projectId: input.projectId,
-            conversationId: input.conversationId,
-            message: {
-              role: "ai_agent",
-              text: "我暂时无法根据当前知识库确认答案。为了避免误导你，建议转人工客服处理。",
-              metadata: {
-                no_hit: true
-              }
-            }
-          });
-
-          await repository.createAiRun({
-            projectId: input.projectId,
-            conversationId: input.conversationId,
-            messageId: message.id,
-            provider: provider?.provider ?? "opensupportai",
-            model: provider?.model ?? "no-knowledge-fallback",
-            promptVersion: "v0.1",
-            inputTokens: text.length,
-            outputTokens: textFromMessage(message).length,
-            latencyMs: Date.now() - startedAt,
-            retrievedChunkIds: [],
-            confidence: 0,
-            status: "skipped",
+          const answerResult = await createAnswerMessage(repository, input, {
+            role: "ai_agent",
+            text: "我暂时无法根据当前知识库确认答案。为了避免误导你，建议转人工客服处理。",
             metadata: {
-              policy: "rag_no_hit_no_hallucination"
+              no_hit: true
             }
           });
+          const message = answerResult.message;
+
+          if (answerResult.created) {
+            await repository.createAiRun({
+              projectId: input.projectId,
+              conversationId: input.conversationId,
+              messageId: message.id,
+              provider: provider?.provider ?? "opensupportai",
+              model: provider?.model ?? "no-knowledge-fallback",
+              promptVersion: "v0.1",
+              inputTokens: text.length,
+              outputTokens: textFromMessage(message).length,
+              latencyMs: Date.now() - startedAt,
+              retrievedChunkIds: [],
+              confidence: 0,
+              status: "skipped",
+              metadata: {
+                policy: "rag_no_hit_no_hallucination"
+              }
+            });
+          }
 
           publishCompletion(eventHub, input.projectId, input.conversationId, message);
-          return;
+          return message;
         }
 
         const generation = await generateGroundedAnswer({
@@ -209,40 +217,39 @@ export function createOrchestrator(
         }
 
         const sourceRefs = chunks.map(sourceRefFromChunk);
-        const message = await repository.createMessage({
-          projectId: input.projectId,
-          conversationId: input.conversationId,
-          message: {
-            role: "ai_agent",
-            text: answer,
-            sourceRefs,
-            metadata: {
-              grounded: true,
-              generated_by: generation.metadata?.["generated_by"] ?? "grounded_answer_v0.6"
-            }
-          }
-        });
-
-        await repository.createAiRun({
-          projectId: input.projectId,
-          conversationId: input.conversationId,
-          messageId: message.id,
-          provider: generation.provider,
-          model: generation.model,
-          promptVersion: generation.promptVersion,
-          inputTokens: generation.inputTokens ?? text.length,
-          outputTokens: generation.outputTokens ?? answer.length,
-          latencyMs: Date.now() - startedAt,
-          retrievedChunkIds: chunks.map((chunk) => chunk.id),
-          confidence: generation.confidence ?? Math.min(1, 0.45 + chunks.length * 0.12),
-          status: "completed",
+        const answerResult = await createAnswerMessage(repository, input, {
+          role: "ai_agent",
+          text: answer,
+          sourceRefs,
           metadata: {
-            ...generation.metadata,
-            source_chunk_count: chunks.length
+            grounded: true,
+            generated_by: generation.metadata?.["generated_by"] ?? "grounded_answer_v0.6"
           }
         });
+        const message = answerResult.message;
 
+        if (answerResult.created) {
+          await repository.createAiRun({
+            projectId: input.projectId,
+            conversationId: input.conversationId,
+            messageId: message.id,
+            provider: generation.provider,
+            model: generation.model,
+            promptVersion: generation.promptVersion,
+            inputTokens: generation.inputTokens ?? text.length,
+            outputTokens: generation.outputTokens ?? answer.length,
+            latencyMs: Date.now() - startedAt,
+            retrievedChunkIds: chunks.map((chunk) => chunk.id),
+            confidence: generation.confidence ?? Math.min(1, 0.45 + chunks.length * 0.12),
+            status: "completed",
+            metadata: {
+              ...generation.metadata,
+              source_chunk_count: chunks.length
+            }
+          });
+        }
         publishCompletion(eventHub, input.projectId, input.conversationId, message);
+        return message;
       } finally {
         const remaining = (activeAnswersByProject.get(input.projectId) ?? 1) - 1;
         if (remaining > 0) {
@@ -259,41 +266,41 @@ async function respondAtCapacity(
   repository: SupportRepository,
   eventHub: EventHub,
   input: { projectId: string; conversationId: string; message: MessageRecord }
-): Promise<void> {
+): Promise<MessageRecord> {
   const text = "当前请求较多，我暂时无法处理这条消息。请稍后重试，或转人工客服继续处理。";
-  const message = await repository.createMessage({
-    projectId: input.projectId,
-    conversationId: input.conversationId,
-    message: {
-      role: "ai_agent",
-      text,
-      metadata: {
-        degraded: true,
-        reason: "project_concurrency_limit",
-        retryable: true
-      }
-    }
-  });
-  await repository.createAiRun({
-    projectId: input.projectId,
-    conversationId: input.conversationId,
-    messageId: message.id,
-    provider: "opensupportai",
-    model: "project-concurrency-gate",
-    promptVersion: "v1.1-beta",
-    inputTokens: textFromMessage(input.message).length,
-    outputTokens: text.length,
-    retrievedChunkIds: [],
-    confidence: 0,
-    status: "failed",
-    error: "Project answer concurrency limit reached",
+  const answerResult = await createAnswerMessage(repository, input, {
+    role: "ai_agent",
+    text,
     metadata: {
       degraded: true,
       reason: "project_concurrency_limit",
       retryable: true
     }
   });
+  const message = answerResult.message;
+  if (answerResult.created) {
+    await repository.createAiRun({
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      messageId: message.id,
+      provider: "opensupportai",
+      model: "project-concurrency-gate",
+      promptVersion: "v1.1-beta",
+      inputTokens: textFromMessage(input.message).length,
+      outputTokens: text.length,
+      retrievedChunkIds: [],
+      confidence: 0,
+      status: "failed",
+      error: "Project answer concurrency limit reached",
+      metadata: {
+        degraded: true,
+        reason: "project_concurrency_limit",
+        retryable: true
+      }
+    });
+  }
   publishCompletion(eventHub, input.projectId, input.conversationId, message);
+  return message;
 }
 
 export async function requestHandoff(
@@ -339,8 +346,26 @@ function textFromMessage(message: MessageRecord): string {
   return typeof text === "string" ? text : "";
 }
 
-function detectHandoffIntent(text: string): boolean {
+export function detectHandoffIntent(text: string): boolean {
   return /转人工|人工|真人|客服|human|agent/i.test(text);
+}
+
+export function answerMessageIdempotencyKey(sourceMessageId: string): string {
+  return `answer:${sourceMessageId}`;
+}
+
+async function createAnswerMessage(
+  repository: SupportRepository,
+  input: { projectId: string; conversationId: string; message: MessageRecord },
+  message: Parameters<SupportRepository["createMessage"]>[0]["message"]
+): Promise<{ message: MessageRecord; created: boolean }> {
+  return repository.createIdempotentMessage({
+    projectId: input.projectId,
+    conversationId: input.conversationId,
+    idempotencyKey: answerMessageIdempotencyKey(input.message.id),
+    idempotencyHash: `answer-v1:${input.message.id}`,
+    message
+  });
 }
 
 function buildGroundedAnswer(chunks: KnowledgeChunkRecord[]): string {

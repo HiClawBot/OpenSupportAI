@@ -17,7 +17,10 @@ pnpm smoke:memory -- --help
 pnpm smoke:chatwoot -- --help
 pnpm smoke:channels -- --help
 pnpm smoke:tools -- --help
+pnpm smoke:postgres-answer
 ```
+
+`smoke:postgres-answer` 需要可用的 PostgreSQL + pgvector 与 `DATABASE_URL`。GitHub Actions 会自动启动临时 pgvector 服务，执行全部 migrations/seed，并验证消息/job 事务、worker 完成和回答重放幂等。
 
 GitHub Actions CI 会在 `main`、Pull Request 和 `v*` tag 上执行同一组核心检查。
 
@@ -51,6 +54,9 @@ VITE_API_URL=http://localhost:4000 pnpm --filter @opensupportai/demo-app dev
 - 管理台 knowledge document 列表能看到 status、chunk count、error/source 摘要，并可触发 reindex。
 - 管理端 `POST /v1/admin/projects/{project_id}/knowledge/documents/{document_id}/reindex` 会创建 `knowledge.index` async job，并将文档状态标记为 `pending`。
 - Worker 的 `knowledge.index` handler 会把文档标记为 `indexing`、重建 chunks，并最终标记为 `indexed` 或 `failed`。
+- Prisma 模式发送普通用户消息时，用户消息与 `answer.generate` job 在一个事务中提交，HTTP 响应无需等待 LLM 或工具执行。
+- Worker 完成 `answer.generate` 后会写入唯一 AI message；同一 job 重放不会产生重复回答或重复 AI run。
+- API 与 worker 不共享 EventHub 时，已打开的 SSE 连接仍能通过持久化消息补拉收到 `ai.message.completed`。
 - 管理台会话列表的状态筛选、搜索、刷新、队列指标、最近消息预览和失败 handoff 计数可正常显示。
 - `pnpm smoke:memory` 在内存模式 API 启动后可跑通。
 - 若启用 `RATE_LIMIT_ENABLED=true`，超过阈值时 API 返回 `429/rate_limited`。
@@ -63,13 +69,15 @@ VITE_API_URL=http://localhost:4000 pnpm --filter @opensupportai/demo-app dev
 - 创建会话和发送消息在复用同一 `Idempotency-Key` 时只产生一条记录；同 key 不同请求体返回 `409`。
 - 消息列表 `limit`/`after` 分页无重复，且只在存在下一页时返回 `next_cursor`。
 - 两个 worker 并发领取同一 queued job 时只有一个成功；错误 owner 不能续租、完成或失败该 job。
+- 生产环境包含 API 与 worker，且 `WORKER_JOB_TYPES=answer.generate,knowledge.index`。
 - 构建后执行 `NODE_ENV=test node services/api/dist/index.js` 与 `NODE_ENV=test WORKER_AUTOSTART=false node services/worker/dist/index.js` 均可正常退出。
 - 管理端 `GET/POST/PATCH /v1/admin/projects/{project_id}/tools` 可列出、upsert、启停工具 allowlist。
 - Widget 中输入 `请帮我查订单 ORD-2026-1001` 会触发 `demo.order_lookup` 并返回订单状态。
 - Widget 中输入 `我的订阅状态是什么？` 会触发 `demo.subscription_lookup` 并返回订阅状态。
 - 管理端可 upsert `kind=openapi` 的 active tool，metadata 中配置 `intent`、`allowed_hosts`、timeout、response shaping 和 answer template。
 - 用户消息命中 OpenAPI tool intent 后，会调用 allowlist HTTP endpoint，写入 `status=completed` tool-call，并用 HTTP 响应生成回复。
-- 非 `GET` OpenAPI tool 只有同时配置 `metadata.allow_mutation=true` 与完整 `metadata.mutation_approval` 时才会执行，否则记录 `status=failed` tool-call 和安全失败回复。
+- Inline 模式下，非 `GET` OpenAPI tool 只有同时配置 `metadata.allow_mutation=true` 与完整 `metadata.mutation_approval` 时才会执行，否则记录 `status=failed` tool-call 和安全失败回复。
+- Durable `answer.generate` worker 不执行非 `GET` OpenAPI tool，即使存在 approval 也会记录安全失败且不发起出站请求。
 - Public key 不能读取已有会话；会话 capability 不能跨 conversation 使用，conversation token 也不能直接用于 SSE。
 - LLM、Chatwoot 与 OpenAPI tool 出站请求会阻断非 HTTP(S)、URL 凭据、生产私网地址和跨源重定向。
 - 管理端 `GET /v1/admin/projects/{project_id}/tool-calls` 可查看工具调用日志。

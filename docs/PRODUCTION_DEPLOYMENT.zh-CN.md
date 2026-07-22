@@ -10,10 +10,8 @@ Browser / Widget / Admin Console
 Reverse Proxy / Load Balancer
         ↓
 OpenSupportAI API
-        ↓
-PostgreSQL + pgvector
-        ↓
-Worker
+        ↕
+PostgreSQL + pgvector ← Worker
 
 External:
 LLM Provider
@@ -30,6 +28,7 @@ API：
 NODE_ENV=production
 PORT=4000
 OPENSUPPORTAI_STORAGE=prisma
+ANSWER_EXECUTION_MODE=worker
 DATABASE_URL=postgresql://...
 ADMIN_API_TOKEN=replace_with_high_entropy_secret
 ENCRYPTION_KEY=replace_with_stable_high_entropy_key
@@ -38,6 +37,7 @@ CORS_ORIGIN=https://support-admin.example.com
 CONVERSATION_TOKEN_TTL_SECONDS=604800
 STREAM_TOKEN_TTL_SECONDS=60
 SSE_HEARTBEAT_MS=15000
+SSE_DATABASE_POLL_MS=1000
 ALLOW_PRIVATE_OUTBOUND=false
 MAX_CONCURRENT_ANSWERS_PER_PROJECT=4
 LLM_TIMEOUT_MS=45000
@@ -50,14 +50,20 @@ Worker：
 
 ```env
 DATABASE_URL=postgresql://...
+ENCRYPTION_KEY=replace_with_stable_high_entropy_key
+ALLOW_PRIVATE_OUTBOUND=false
+MAX_CONCURRENT_ANSWERS_PER_PROJECT=4
+LLM_TIMEOUT_MS=45000
 WORKER_ID=worker-production-1
 WORKER_POLL_INTERVAL_MS=5000
 WORKER_RETRY_DELAY_MS=30000
 WORKER_LEASE_MS=60000
-WORKER_JOB_TYPES=knowledge.index
+WORKER_JOB_TYPES=answer.generate,knowledge.index
 ```
 
-`WORKER_LEASE_MS` 必须大于常规 job handler 的 heartbeat 间隔；worker 每约三分之一租约周期续租。`MAX_CONCURRENT_ANSWERS_PER_PROJECT` 用于限制单个项目占用 API 内的回答生成槽位，超过限制时会记录失败 AI run 并返回可重试的降级消息。
+普通入站消息与 `answer.generate` job 在同一个 PostgreSQL 事务中提交。API 返回 `status=accepted` 后，worker 执行 RAG、工具和 LLM 编排，并用源消息派生的幂等键写入唯一最终回答。API 的 SSE 连接按 `SSE_DATABASE_POLL_MS` 补拉持久化消息，因此 API 与 worker 不需要共享进程内事件总线。
+
+`WORKER_LEASE_MS` 必须大于常规 job handler 的 heartbeat 间隔；worker 每约三分之一租约周期续租。`MAX_CONCURRENT_ANSWERS_PER_PROJECT` 用于限制单个 worker 进程中同一项目的回答生成槽位。需要跨多个 worker 实例的全局并发配额时，应在上线前增加数据库级配额控制；当前 Beta 基线建议单 worker 实例。
 
 Admin Console / Demo App：
 
@@ -101,7 +107,7 @@ pnpm db:migrate
 pnpm build
 ```
 
-6. 启动 API、worker、admin console。
+6. 启动 API、worker、admin console；确认 worker 同时监听 `answer.generate` 与 `knowledge.index`。
 7. 通过反向代理暴露 API 和 Admin Console，强制 HTTPS。
 8. 运行发布验证脚本和关键业务路径验证。
 
@@ -139,6 +145,7 @@ pnpm build
 - Webhook secret/signature 校验必须开启。
 - `ALLOW_PRIVATE_OUTBOUND=false`，除非 Chatwoot 或内部工具确实部署在受控私网中并完成风险评审。
 - OpenAPI tools 必须配置 `allowed_hosts`；mutation 工具还必须有持久化 operator approval 记录。
+- `answer.generate` worker 当前只允许 `GET` 工具。即使已有 operator approval，非 `GET` 工具也会安全失败，避免租约重试重复远端副作用；生产 Beta 的 mutation 应走人工流程。
 - 高风险退款、删除或改套餐操作仍应通过人工流程处理。
 
 ## 观测与运维
@@ -157,6 +164,7 @@ GET /v1/admin/projects/{project_id}/tool-calls
 
 - API access log。
 - Worker job success/failure metrics。
+- `answer.generate` queue age、attempts 和端到端回答延迟。
 - Webhook failed event alert。
 - Handoff failed session alert。
 - LLM provider error/latency alert。

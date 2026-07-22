@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createDefaultWorkerHandlers,
+  createAnswerGenerateHandler,
   createKnowledgeIndexHandler,
   createWorkerRuntime,
   workerRuntimeConfig,
@@ -48,7 +49,7 @@ function createQueue(jobs: WorkerJob[]): WorkerJobQueue & {
 describe("worker runtime", () => {
   it("uses bounded default runtime settings", () => {
     expect(workerRuntimeConfig.leaseMs).toBe(60_000);
-    expect(workerRuntimeConfig.jobTypes).toEqual(["knowledge.index"]);
+    expect(workerRuntimeConfig.jobTypes).toEqual(["answer.generate", "knowledge.index"]);
   });
 
   it("rejects invalid timing configuration", () => {
@@ -251,6 +252,35 @@ describe("worker runtime", () => {
       knowledgeStore: createKnowledgeStore([])
     });
     expect(Object.keys(handlers)).toEqual(["knowledge.index"]);
+  });
+
+  it("passes answer generation payloads to the shared processor", async () => {
+    const payload = {
+      project_id: "proj_1",
+      conversation_id: "conv_1",
+      message_id: "msg_1"
+    };
+    const handler = createAnswerGenerateHandler(async (received) => ({
+      project_id: String(received["project_id"]),
+      conversation_id: String(received["conversation_id"]),
+      source_message_id: String(received["message_id"]),
+      answer_message_id: "msg_answer",
+      status: "completed"
+    }));
+
+    await expect(
+      handler({
+        id: "job_answer",
+        type: "answer.generate",
+        status: "running",
+        payload,
+        attempts: 1,
+        maxAttempts: 3
+      })
+    ).resolves.toMatchObject({
+      source_message_id: "msg_1",
+      answer_message_id: "msg_answer"
+    });
   });
 
   it("indexes knowledge document jobs by rebuilding chunks", async () => {

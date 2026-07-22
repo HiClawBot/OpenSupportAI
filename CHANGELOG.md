@@ -4,6 +4,9 @@
 
 English:
 
+- Moved normal Prisma-backed answer generation behind durable `answer.generate` jobs while preserving the existing accepted message response contract.
+- Added a transactional user-message/job outbox, source-message answer idempotency, worker retries, and persisted-message SSE delivery across API/worker processes.
+- Restricted retryable answer workers to read-only business tools so remote mutations cannot be repeated after a lease retry.
 - Added conversation-scoped capabilities and short-lived SSE stream tokens; project public keys can no longer read or mutate existing conversations.
 - Removed automatic demo seeding from normal API startup and added explicit `dev:demo` startup.
 - Added production fail-fast validation for persistence, secrets, CORS, token TTLs, and outbound-network policy.
@@ -17,6 +20,9 @@ English:
 
 中文：
 
+- 将 Prisma 模式下的普通回答生成迁移到 durable `answer.generate` job，同时保持现有消息 accepted 响应契约。
+- 新增用户消息/job 事务 outbox、基于源消息的回答幂等、worker 重试，以及跨 API/worker 进程的持久化消息 SSE 投递。
+- 将可重试 answer worker 限制为只读业务工具，避免租约重试重复远端 mutation。
 - 新增 conversation-scoped capability 与短期 SSE stream token；项目 public key 不再能够读取或修改已有会话。
 - 普通 API 启动不再自动写入 demo 数据，新增显式 `dev:demo` 启动方式。
 - 新增生产启动 fail-fast 校验，覆盖持久化、密钥、CORS、token TTL 和出站网络策略。

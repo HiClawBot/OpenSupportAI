@@ -11,6 +11,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@opensupportai/api": "workspace:*",
     "@opensupportai/protocol": "workspace:*",
     "@opensupportai/rag": "workspace:*",
     "@prisma/adapter-pg": "7.8.0",

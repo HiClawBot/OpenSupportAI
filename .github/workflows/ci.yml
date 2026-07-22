@@ -14,6 +14,22 @@ jobs:
     name: Validate
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      DATABASE_URL: postgresql://opensupportai:opensupportai@localhost:5432/opensupportai
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: opensupportai
+          POSTGRES_PASSWORD: opensupportai
+          POSTGRES_DB: opensupportai
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U opensupportai -d opensupportai"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Checkout
@@ -55,7 +71,17 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Apply database migrations
+        run: pnpm db:migrate
+
+      - name: Seed integration database
+        run: pnpm db:seed
+
+      - name: Verify PostgreSQL answer runtime
+        run: pnpm smoke:postgres-answer
+
       - name: Verify service entrypoints
         run: |
           NODE_ENV=test node services/api/dist/index.js
+          NODE_ENV=test pnpm --dir services/worker exec node -e "import('@opensupportai/api/answer-runtime')"
           NODE_ENV=test WORKER_AUTOSTART=false node services/worker/dist/index.js

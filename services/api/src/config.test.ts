@@ -16,6 +16,7 @@ describe("API configuration", () => {
     const config = loadConfig({ NODE_ENV: "test" });
 
     expect(config.storageMode).toBe("memory");
+    expect(config.answerExecutionMode).toBe("inline");
     expect(config.allowPrivateOutbound).toBe(true);
     expect(config.streamTokenTtlSeconds).toBe(60);
   });
@@ -24,8 +25,18 @@ describe("API configuration", () => {
     const config = loadConfig(productionEnv);
 
     expect(config.storageMode).toBe("prisma");
+    expect(config.answerExecutionMode).toBe("worker");
     expect(config.corsOrigin).toBe("https://support.example.com");
     expect(config.allowPrivateOutbound).toBe(false);
+  });
+
+  it("requires background answer execution in production", () => {
+    expect(() =>
+      loadConfig({
+        ...productionEnv,
+        ANSWER_EXECUTION_MODE: "inline"
+      })
+    ).toThrow("ANSWER_EXECUTION_MODE=worker");
   });
 
   it("rejects production demo secrets, missing persistence, and wildcard CORS", () => {

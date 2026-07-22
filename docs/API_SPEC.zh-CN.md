@@ -218,14 +218,14 @@ Idempotency-Key: <stable-request-key>
 }
 ```
 
-消息幂等语义与创建会话一致。重复请求不会再次保存消息、触发 orchestrator 或发布事件；key 冲突返回 `409 invalid_request`。
+消息幂等语义与创建会话一致。重复请求不会再次保存消息或创建回答任务；key 冲突返回 `409 invalid_request`。`status: accepted` 表示消息和后续处理请求已持久化，不表示 AI 回答已经完成。
 
 发送消息后，后端应：
 
 ```text
-保存用户消息
-触发 AI Orchestrator 或 handoff
-通过 SSE 返回后续事件
+在同一事务中保存用户消息并创建 answer.generate job
+由 Worker 执行 AI Orchestrator；显式 handoff 请求保持同步处理
+通过消息列表或 SSE 返回持久化的后续事件
 ```
 
 ---
@@ -257,7 +257,7 @@ GET /v1/client/conversations/{conversation_id}/events?stream_token=osa_v1...
 Accept: text/event-stream
 ```
 
-浏览器 EventSource URL 只携带短期 stream token，不携带 project public key 或 conversation token。服务端发送 heartbeat 和 event id；SDK/Widget 断流时回退到认证轮询，并换取新 token 重连。
+浏览器 EventSource URL 只携带短期 stream token，不携带 project public key 或 conversation token。服务端发送 heartbeat 和 event id，并按持久化消息游标补拉 worker 写入的结果；SDK/Widget 断流时回退到认证轮询，并换取新 token 重连。
 
 事件示例：
 

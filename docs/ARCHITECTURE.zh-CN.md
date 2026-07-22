@@ -25,7 +25,9 @@ flowchart LR
   U[End User] --> W[Widget / SDK]
   W --> API[API Gateway]
   API --> C[Conversation Service]
-  API --> AI[AI Orchestrator]
+  C -->|message + answer job transaction| DB[(PostgreSQL)]
+  DB --> WK[Worker]
+  WK --> AI[AI Orchestrator]
   API --> A[Admin API]
   AI --> R[RAG Service]
   AI --> L[LLM Gateway]
@@ -34,9 +36,8 @@ flowchart LR
   H --> CW[Chatwoot]
   H --> TD[Tiledesk]
   H --> ZA[Zammad]
-  C --> DB[(PostgreSQL)]
   R --> V[(pgvector)]
-  API --> Q[(Redis)]
+  DB -->|persisted message cursor| API
   R --> S[(Object Storage)]
 ```
 
@@ -80,11 +81,11 @@ Conversation Service 是客服系统事实源。
 ```text
 contact 管理
 conversation 生命周期
-message 写入
+message 与 answer job 事务写入
 conversation 状态机
-SSE event 广播
+SSE event 广播与持久化消息补拉
 handoff 触发
-AI orchestrator 触发
+worker 驱动 AI orchestrator
 ```
 
 ### 状态机

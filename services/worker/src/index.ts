@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
+import {
+  ANSWER_GENERATE_JOB_TYPE,
+  createPrismaAnswerJobProcessor,
+  type AnswerJobProcessor
+} from "@opensupportai/api/answer-runtime";
 import { indexTextDocument } from "@opensupportai/rag";
 import { createPrismaClient } from "./prisma-client";
 
@@ -292,11 +297,19 @@ export function createKnowledgeIndexHandler(store: KnowledgeIndexStore): WorkerJ
   };
 }
 
+export function createAnswerGenerateHandler(processor: AnswerJobProcessor): WorkerJobHandler {
+  return async (job) => processor(job.payload);
+}
+
 export function createDefaultWorkerHandlers(input: {
   knowledgeStore: KnowledgeIndexStore;
+  answerProcessor?: AnswerJobProcessor;
 }): Record<string, WorkerJobHandler> {
   return {
-    "knowledge.index": createKnowledgeIndexHandler(input.knowledgeStore)
+    "knowledge.index": createKnowledgeIndexHandler(input.knowledgeStore),
+    ...(input.answerProcessor
+      ? { [ANSWER_GENERATE_JOB_TYPE]: createAnswerGenerateHandler(input.answerProcessor) }
+      : {})
   };
 }
 
@@ -481,7 +494,7 @@ export function createPrismaKnowledgeIndexStore(
 
 function parseJobTypes(value: string | undefined): string[] {
   if (!value) {
-    return ["knowledge.index"];
+    return [ANSWER_GENERATE_JOB_TYPE, "knowledge.index"];
   }
   return value
     .split(",")
@@ -560,7 +573,8 @@ if (process.env["NODE_ENV"] !== "test" && process.env["WORKER_AUTOSTART"] !== "f
   const runtime = createWorkerRuntime({
     queue: createPrismaWorkerQueue(prisma),
     handlers: createDefaultWorkerHandlers({
-      knowledgeStore: createPrismaKnowledgeIndexStore(prisma)
+      knowledgeStore: createPrismaKnowledgeIndexStore(prisma),
+      answerProcessor: createPrismaAnswerJobProcessor({ prisma })
     })
   });
   const controller = runtime.start();

@@ -29,7 +29,8 @@
     "smoke:memory": "node scripts/memory-smoke.mjs",
     "smoke:chatwoot": "node scripts/chatwoot-smoke.mjs",
     "smoke:channels": "node scripts/channel-webhook-smoke.mjs",
-    "smoke:tools": "node scripts/tool-executor-smoke.mjs"
+    "smoke:tools": "node scripts/tool-executor-smoke.mjs",
+    "smoke:postgres-answer": "tsx scripts/postgres-answer-smoke.ts"
   },
   "devDependencies": {
     "@eslint/js": "latest",

@@ -10,11 +10,11 @@ import {
   type StubChannelProvider
 } from "@opensupportai/adapter-channels";
 import { createChatwootAdapter, type ChatwootAdapterConfig } from "@opensupportai/adapter-chatwoot";
-import { OpenAICompatibleClient } from "@opensupportai/llm";
 import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import type {
   ChannelProvider,
+  ClientEvent,
   ConversationStatus,
   HandoffReason,
   NormalizedInboundChannelMessage
@@ -29,6 +29,7 @@ import {
 } from "./auth";
 import { issueClientToken } from "./client-tokens";
 import { type ApiConfig, loadConfig } from "./config";
+import { ANSWER_GENERATE_JOB_TYPE, createLlmGroundedAnswerGenerator } from "./answer-runtime";
 import { decryptJson, encryptJson, hashSecret } from "./crypto";
 import {
   ApiError,
@@ -42,7 +43,12 @@ import {
 } from "./errors";
 import { EventHub, formatSse } from "./event-hub";
 import { buildHandoffAnalytics, generateConversationInsight } from "./agent-assist";
-import { createOrchestrator, requestHandoff, type GroundedAnswerGenerator } from "./orchestrator";
+import {
+  createOrchestrator,
+  detectHandoffIntent,
+  requestHandoff,
+  type Orchestrator
+} from "./orchestrator";
 import { createSafeOutboundFetch } from "./outbound";
 import { MemorySupportRepository } from "./repositories/memory";
 import { PrismaSupportRepository } from "./repositories/prisma";
@@ -52,12 +58,11 @@ import type {
   AuditLogRecord,
   ContactRecord,
   ConversationRecord,
+  CreateMessageInput,
   HandoffSessionRecord,
   InboxRecord,
   IntegrationConfigRecord,
   JsonRecord,
-  KnowledgeChunkRecord,
-  LlmProviderRecord,
   MessageRecord,
   ProjectRecord,
   SupportRepository,
@@ -276,60 +281,26 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       params.conversationId
     );
 
-    const key = requestIdempotencyKey(request);
-    let message: MessageRecord;
-    let created = true;
-    try {
-      if (key) {
-        const result = await repository.createIdempotentMessage({
-          projectId: project.id,
-          conversationId: conversation.id,
-          idempotencyKey: key,
-          idempotencyHash: hashSecret(JSON.stringify(body)),
-          message: {
-            role: "end_user",
-            text: body.text
-          }
-        });
-        message = result.message;
-        created = result.created;
-      } else {
-        message = await repository.createMessage({
-          projectId: project.id,
-          conversationId: conversation.id,
-          message: {
-            role: "end_user",
-            text: body.text
-          }
-        });
-      }
-    } catch (error) {
-      throwIdempotencyConflict(error);
-    }
-    if (!created) {
-      return {
-        message_id: message.id,
-        conversation_id: conversation.id,
-        status: "accepted",
-        idempotent: true
-      };
-    }
-    eventHub.publish(project.id, conversation.id, {
-      event: "message.created",
-      data: { message }
-    });
-
-    await orchestrator.respondToUserMessage({
+    const result = await acceptEndUserMessage({
+      repository,
+      eventHub,
+      orchestrator,
+      config,
       projectId: project.id,
       conversationId: conversation.id,
-      message
+      idempotencyKey: requestIdempotencyKey(request),
+      idempotencyHash: hashSecret(JSON.stringify(body)),
+      message: {
+        role: "end_user",
+        text: body.text
+      }
     });
 
     return {
-      message_id: message.id,
+      message_id: result.message.id,
       conversation_id: conversation.id,
       status: "accepted",
-      idempotent: false
+      idempotent: !result.created
     };
   });
 
@@ -356,7 +327,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   app.get("/v1/client/conversations/:conversationId/events", async (request, reply) => {
     const params = request.params as { conversationId: string };
-    const query = request.query as { once?: string };
+    const query = request.query as { once?: string; after?: string };
     const { project, conversation } = await authenticateStream(
       request,
       repository,
@@ -377,11 +348,18 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
     writeSseHeaders(request, reply, config);
     let closed = false;
-    const send = (event: Parameters<typeof formatSse>[0]) => {
+    const deliveredMessageIds = new Set<string>();
+    let persistedCursor =
+      query.after ?? (await repository.findLatestMessage(project.id, conversation.id))?.id;
+    const send = (event: ClientEvent) => {
       if (!closed) {
+        const eventMessage = messageFromClientEvent(event);
+        if (eventMessage) {
+          deliveredMessageIds.add(eventMessage.id);
+        }
         reply.raw.write(
           formatSse(event, {
-            id: crypto.randomUUID()
+            id: eventMessage?.id ?? crypto.randomUUID()
           })
         );
       }
@@ -401,12 +379,39 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         reply.raw.write(`: heartbeat ${Date.now()}\n\n`);
       }
     }, config.sseHeartbeatMs);
+    let polling = false;
+    const persistedPoll = setInterval(() => {
+      if (closed || polling) {
+        return;
+      }
+      polling = true;
+      void repository
+        .listMessages(project.id, conversation.id, {
+          after: persistedCursor,
+          limit: 100
+        })
+        .then((messages) => {
+          for (const message of messages) {
+            persistedCursor = message.id;
+            if (!deliveredMessageIds.has(message.id)) {
+              send(clientEventForMessage(message));
+            }
+          }
+        })
+        .catch((error) => {
+          request.log.error(error, "Failed to poll persisted conversation messages");
+        })
+        .finally(() => {
+          polling = false;
+        });
+    }, config.sseDatabasePollMs);
     const cleanup = () => {
       if (closed) {
         return;
       }
       closed = true;
       clearInterval(heartbeat);
+      clearInterval(persistedPoll);
       unsubscribe();
     };
     request.raw.once("close", cleanup);
@@ -485,7 +490,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         inbox,
         normalized
       });
-      const message = await repository.createMessage({
+      const { message } = await acceptEndUserMessage({
+        repository,
+        eventHub,
+        orchestrator,
+        config,
         projectId: project.id,
         conversationId: conversation.id,
         message: {
@@ -496,16 +505,6 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
             channel: channelMessageMetadata(normalized)
           }
         }
-      });
-      eventHub.publish(project.id, conversation.id, {
-        event: "message.created",
-        data: { message }
-      });
-
-      await orchestrator.respondToUserMessage({
-        projectId: project.id,
-        conversationId: conversation.id,
-        message
       });
 
       await repository.markWebhookEvent({
@@ -621,7 +620,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         inbox,
         normalized
       });
-      const message = await repository.createMessage({
+      const { message } = await acceptEndUserMessage({
+        repository,
+        eventHub,
+        orchestrator,
+        config,
         projectId: project.id,
         conversationId: conversation.id,
         message: {
@@ -632,16 +635,6 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
             channel: channelMessageMetadata(normalized)
           }
         }
-      });
-      eventHub.publish(project.id, conversation.id, {
-        event: "message.created",
-        data: { message }
-      });
-
-      await orchestrator.respondToUserMessage({
-        projectId: project.id,
-        conversationId: conversation.id,
-        message
       });
 
       await repository.markWebhookEvent({
@@ -1774,6 +1767,100 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   return app;
 }
 
+async function acceptEndUserMessage(input: {
+  repository: SupportRepository;
+  eventHub: EventHub;
+  orchestrator: Orchestrator;
+  config: ApiConfig;
+  projectId: string;
+  conversationId: string;
+  message: CreateMessageInput;
+  idempotencyKey?: string;
+  idempotencyHash?: string;
+}): Promise<{ message: MessageRecord; created: boolean }> {
+  const useWorker =
+    input.config.answerExecutionMode === "worker" && !detectHandoffIntent(input.message.text);
+  let result: { message: MessageRecord; created: boolean };
+
+  try {
+    if (useWorker) {
+      const accepted = await input.repository.createMessageWithAsyncJob({
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        ...(input.idempotencyKey
+          ? {
+              idempotencyKey: input.idempotencyKey,
+              idempotencyHash: input.idempotencyHash ?? ""
+            }
+          : {}),
+        message: input.message,
+        job: {
+          type: ANSWER_GENERATE_JOB_TYPE,
+          maxAttempts: 3
+        }
+      });
+      result = { message: accepted.message, created: accepted.created };
+    } else if (input.idempotencyKey) {
+      result = await input.repository.createIdempotentMessage({
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        idempotencyKey: input.idempotencyKey,
+        idempotencyHash: input.idempotencyHash ?? "",
+        message: input.message
+      });
+    } else {
+      result = {
+        message: await input.repository.createMessage({
+          projectId: input.projectId,
+          conversationId: input.conversationId,
+          message: input.message
+        }),
+        created: true
+      };
+    }
+  } catch (error) {
+    throwIdempotencyConflict(error);
+  }
+
+  if (!result.created) {
+    return result;
+  }
+
+  input.eventHub.publish(input.projectId, input.conversationId, {
+    event: "message.created",
+    data: { message: result.message }
+  });
+  if (!useWorker) {
+    await input.orchestrator.respondToUserMessage({
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      message: result.message
+    });
+  }
+  return result;
+}
+
+function messageFromClientEvent(event: ClientEvent): MessageRecord | undefined {
+  if (
+    event.event !== "message.created" &&
+    event.event !== "ai.message.completed" &&
+    event.event !== "human.message.created"
+  ) {
+    return undefined;
+  }
+  return event.data.message as MessageRecord;
+}
+
+function clientEventForMessage(message: MessageRecord): ClientEvent {
+  if (message.role === "ai_agent") {
+    return { event: "ai.message.completed", data: { message } };
+  }
+  if (message.role === "human_agent") {
+    return { event: "human.message.created", data: { message } };
+  }
+  return { event: "message.created", data: { message } };
+}
+
 async function requestHandoffWithConfiguredProvider(input: {
   repository: SupportRepository;
   eventHub: EventHub;
@@ -1991,90 +2078,6 @@ async function completeChatwootHandoff(input: {
 
     return failedSession;
   }
-}
-
-function createLlmGroundedAnswerGenerator(
-  config: ApiConfig,
-  fetchImpl?: typeof fetch
-): GroundedAnswerGenerator {
-  return async ({ userText, chunks, provider }) => {
-    if (!provider) {
-      throw new Error("LLM provider is required");
-    }
-
-    const client = new OpenAICompatibleClient({
-      baseUrl: provider.baseUrl,
-      apiKey: llmApiKey(provider, config),
-      model: provider.model,
-      embeddingModel: provider.embeddingModel,
-      timeoutMs: config.llmTimeoutMs,
-      fetchImpl
-    });
-    const response = await client.generate({
-      model: provider.model,
-      temperature: 0.2,
-      messages: groundedAnswerMessages(userText, chunks)
-    });
-
-    return {
-      answer: response.text,
-      provider: provider.provider,
-      model: response.model,
-      promptVersion: "v0.6",
-      inputTokens: response.usage?.promptTokens,
-      outputTokens: response.usage?.completionTokens,
-      confidence: Math.min(1, 0.6 + chunks.length * 0.08),
-      metadata: {
-        generated_by: "openai_compatible_grounded_answer_v0.6",
-        llm_base_url: provider.baseUrl,
-        embedding_model: provider.embeddingModel
-      }
-    };
-  };
-}
-
-function groundedAnswerMessages(
-  userText: string,
-  chunks: KnowledgeChunkRecord[]
-): Array<{ role: "system" | "user"; content: string }> {
-  return [
-    {
-      role: "system",
-      content: [
-        "You are OpenSupportAI, a support assistant embedded in a product.",
-        "Answer only from the provided knowledge snippets.",
-        "If the snippets do not answer the question, say you cannot confirm from the current knowledge base and suggest human handoff.",
-        "Keep the answer concise, practical, and in the same language as the customer."
-      ].join(" ")
-    },
-    {
-      role: "user",
-      content: [
-        `Customer question:\n${userText}`,
-        "Knowledge snippets:",
-        chunks
-          .map((chunk, index) => {
-            const title =
-              typeof chunk.metadata["title"] === "string" ? ` (${chunk.metadata["title"]})` : "";
-            return `[${index + 1}]${title}\n${chunk.content}`;
-          })
-          .join("\n\n")
-      ].join("\n\n")
-    }
-  ];
-}
-
-function llmApiKey(provider: LlmProviderRecord, config: ApiConfig): string {
-  if (provider.apiKeyEncrypted.startsWith("v1.")) {
-    return requiredConfigString(
-      decryptJson(provider.apiKeyEncrypted, config.encryptionKey),
-      "api_key"
-    );
-  }
-  if (provider.baseUrl === "demo://local") {
-    return provider.apiKeyEncrypted;
-  }
-  throw new Error("Unsupported LLM API key format");
 }
 
 function chatwootAdapterConfig(

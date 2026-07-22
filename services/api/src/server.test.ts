@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createHmac } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import { createAnswerJobProcessor } from "./answer-runtime";
 import { type ApiConfig } from "./config";
 import { issueClientToken } from "./client-tokens";
 import { MemorySupportRepository } from "./repositories/memory";
@@ -11,6 +12,7 @@ const testConfig: ApiConfig = {
   nodeEnv: "test",
   port: 0,
   storageMode: "memory",
+  answerExecutionMode: "inline",
   adminToken: "admin_demo_key",
   encryptionKey: "test_encryption_key",
   clientTokenSecret: "test_client_token_secret_at_least_32_chars",
@@ -21,6 +23,7 @@ const testConfig: ApiConfig = {
   conversationTokenTtlSeconds: 3600,
   streamTokenTtlSeconds: 60,
   sseHeartbeatMs: 15_000,
+  sseDatabasePollMs: 10,
   allowPrivateOutbound: true,
   maxConcurrentAnswersPerProject: 4,
   llmTimeoutMs: 45_000
@@ -328,6 +331,90 @@ describe("OpenSupportAI API", () => {
     expect(secondPage.messages.length).toBeGreaterThan(0);
     const firstPageIds = new Set(firstPage.messages.map((message) => message.id));
     expect(secondPage.messages.some((message) => firstPageIds.has(message.id))).toBe(false);
+  });
+
+  it("accepts messages into one durable answer job in worker mode", async () => {
+    const repository = new MemorySupportRepository();
+    const workerModeApp = await buildSeededApp({
+      repository,
+      config: { answerExecutionMode: "worker" }
+    });
+    await workerModeApp.ready();
+
+    const streamController = new AbortController();
+    try {
+      const conversationResponse = await workerModeApp.inject({
+        method: "POST",
+        url: "/v1/client/conversations",
+        headers: { "x-opensupportai-public-key": "pk_demo" },
+        payload: {
+          project_id: "proj_demo",
+          inbox_id: "inbox_default",
+          contact: { external_user_id: "async_answer_user" }
+        }
+      });
+      const conversation = conversationResponse.json<{
+        conversation_id: string;
+        conversation_token: string;
+      }>();
+      const send = () =>
+        workerModeApp.inject({
+          method: "POST",
+          url: `/v1/client/conversations/${conversation.conversation_id}/messages`,
+          headers: {
+            authorization: `Bearer ${conversation.conversation_token}`,
+            "idempotency-key": "async-answer-message-1"
+          },
+          payload: { type: "text", text: "怎么取消订阅？" }
+        });
+
+      const first = await send();
+      const duplicate = await send();
+      const firstPayload = first.json<{ message_id: string; status: string }>();
+      expect(first.statusCode).toBe(200);
+      expect(firstPayload.status).toBe("accepted");
+      expect(duplicate.json<{ idempotent: boolean }>().idempotent).toBe(true);
+
+      const messages = await repository.listMessages("proj_demo", conversation.conversation_id);
+      const jobs = await repository.listAsyncJobs({
+        projectId: "proj_demo",
+        type: "answer.generate"
+      });
+      expect(messages.map((message) => message.role)).toEqual(["end_user"]);
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]?.payload).toMatchObject({
+        conversation_id: conversation.conversation_id,
+        message_id: firstPayload.message_id
+      });
+
+      const streamTokenResponse = await workerModeApp.inject({
+        method: "POST",
+        url: `/v1/client/conversations/${conversation.conversation_id}/stream-token`,
+        headers: { authorization: `Bearer ${conversation.conversation_token}` }
+      });
+      const streamToken = streamTokenResponse.json<{ stream_token: string }>().stream_token;
+      const address = await workerModeApp.listen({ host: "127.0.0.1", port: 0 });
+      const streamResponse = await fetch(
+        `${address}/v1/client/conversations/${conversation.conversation_id}/events?stream_token=${encodeURIComponent(streamToken)}`,
+        { signal: streamController.signal }
+      );
+      const completionEvent = readSseUntil(streamResponse, "event: ai.message.completed", 2_000);
+      const processor = createAnswerJobProcessor({
+        repository,
+        config: {
+          encryptionKey: "test_encryption_key",
+          allowPrivateOutbound: true,
+          llmTimeoutMs: 1_000,
+          maxConcurrentAnswersPerProject: 1
+        }
+      });
+      const answer = await processor(jobs[0]?.payload ?? {});
+
+      await expect(completionEvent).resolves.toContain(answer.answer_message_id);
+    } finally {
+      streamController.abort();
+      await workerModeApp.close();
+    }
   });
 
   it("does not seed demo credentials during normal application startup", async () => {
@@ -2682,6 +2769,43 @@ describe("OpenSupportAI API", () => {
     });
   });
 });
+
+async function readSseUntil(
+  response: Response,
+  expected: string,
+  timeoutMs: number
+): Promise<string> {
+  if (!response.body) {
+    throw new Error("SSE response body is unavailable");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let body = "";
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${expected}`)), timeoutMs);
+  });
+  const read = async () => {
+    while (true) {
+      const chunk = await reader.read();
+      body += decoder.decode(chunk.value, { stream: !chunk.done });
+      if (body.includes(expected)) {
+        return body;
+      }
+      if (chunk.done) {
+        throw new Error(`SSE stream ended before ${expected}`);
+      }
+    }
+  };
+
+  try {
+    return await Promise.race([read(), deadline]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+}
 
 describe("request logging", () => {
   it("redacts stream credentials without hiding other query context", () => {

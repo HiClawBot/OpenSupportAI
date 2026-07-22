@@ -214,6 +214,9 @@ importers:
 
   services/worker:
     dependencies:
+      "@opensupportai/api":
+        specifier: workspace:*
+        version: link:../api
       "@opensupportai/protocol":
         specifier: workspace:*
         version: link:../../packages/protocol
