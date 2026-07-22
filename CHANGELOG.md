@@ -29,6 +29,8 @@ English:
 - Added `pg_trgm`, trigger-maintained lexical search text, FTS/trigram indexes, and a real PostgreSQL retrieval smoke covering Chinese, English, no-hit, document state, and tenant isolation.
 - Added pure English/Chinese Widget copy, recoverable network/session-expiry states, and desktop/mobile Chromium coverage for Widget and the complete governed proposal lifecycle.
 - Prevented concurrent Admin Console governance transitions while an operator action is in flight.
+- Added bounded idempotency/load, LLM/tool outage, worker-down queue recovery, and resumable soak probes with machine-readable reports.
+- Expanded the production Compose gate to execute the operational probes before backup, restore, and migration replay.
 
 中文：
 
@@ -57,6 +59,8 @@ English:
 - 新增 `pg_trgm`、trigger 维护的 lexical search text、FTS/trigram 索引，以及覆盖中英文、no-hit、文档状态和租户隔离的真实 PostgreSQL retrieval smoke。
 - 新增纯英文/中文 Widget 文案、可恢复的网络/会话过期状态，以及覆盖 Widget 和完整治理提案生命周期的桌面/移动 Chromium 测试。
 - Admin Console 治理操作执行期间禁止并发 transition。
+- 新增有界幂等/负载、LLM/工具故障、Worker 停机队列恢复和可持续运行的 soak 探针，并输出机器可读报告。
+- 扩展生产 Compose 门禁，在备份、恢复和 migration 重放前执行全部运维探针。
 
 ## v1.0.0 - 2026-06-18
 

@@ -120,8 +120,10 @@ jobs:
       CORS_ORIGIN: http://localhost:3000
       API_PORT: 4400
       WORKER_ID: worker-ci-1
+      WORKER_POLL_INTERVAL_MS: 250
       WORKER_HEARTBEAT_MS: 1000
       WORKER_HEARTBEAT_STALE_MS: 6000
+      BETA_LOAD_ANSWER_P95_MS: 15000
 
     steps:
       - name: Checkout

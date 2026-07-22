@@ -208,6 +208,10 @@ pnpm smoke:memory -- --help
 pnpm smoke:chatwoot -- --help
 pnpm smoke:channels -- --help
 pnpm smoke:tools -- --help
+pnpm smoke:load -- --help
+pnpm smoke:faults -- --help
+pnpm smoke:worker-recovery -- --help
+pnpm soak:beta -- --help
 ```
 
 在 staging 内存模式或临时环境执行：
@@ -224,7 +228,9 @@ API_URL=http://localhost:4000 pnpm smoke:tools
 sh scripts/production-compose-smoke.sh
 ```
 
-该脚本会启动生产 Compose、验证非 root 容器和 readiness、停止 worker 并等待 `503`、恢复 worker、备份并恢复 PostgreSQL，再重放 migration。
+该脚本会启动生产 Compose、验证非 root 容器和 readiness，执行有界负载与幂等竞争，验证 LLM/工具故障回退，在 worker 停机期间接收并积压任务，恢复 worker 后验证唯一回答，运行短时 soak 工具检查，备份并恢复 PostgreSQL，最后重放 migration。
+
+短时 Compose soak 不能替代发布前连续 24 小时 staging soak。完整阈值、报告结构和命令见 [BETA_OPERATIONS.zh-CN.md](./BETA_OPERATIONS.zh-CN.md)。
 
 真实 Chatwoot 环境准备好后执行：
 
