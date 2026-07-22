@@ -54,3 +54,8 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Verify service entrypoints
+        run: |
+          NODE_ENV=test node services/api/dist/index.js
+          NODE_ENV=test WORKER_AUTOSTART=false node services/worker/dist/index.js

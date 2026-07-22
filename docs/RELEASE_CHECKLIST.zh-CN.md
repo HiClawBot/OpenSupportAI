@@ -59,7 +59,11 @@ VITE_API_URL=http://localhost:4000 pnpm --filter @opensupportai/demo-app dev
 - 使用新建的项目级 API key 访问 `/v1/admin/projects` 只返回自己的项目，撤销后无法继续认证。
 - 管理端 `GET /v1/admin/projects/{project_id}/ops/health` 返回 `status: ok`。
 - 管理端 `GET /v1/admin/projects/{project_id}/audit-log` 能看到关键写操作。
-- 管理端 `GET /v1/admin/projects/{project_id}/webhooks/events` 可查看 webhook event，retry 端点会创建 `webhook.retry` async job。
+- 管理端 `GET /v1/admin/projects/{project_id}/webhooks/events` 可查看 webhook event；保留的 retry 端点返回 `501`，且不会创建 placeholder job。
+- 创建会话和发送消息在复用同一 `Idempotency-Key` 时只产生一条记录；同 key 不同请求体返回 `409`。
+- 消息列表 `limit`/`after` 分页无重复，且只在存在下一页时返回 `next_cursor`。
+- 两个 worker 并发领取同一 queued job 时只有一个成功；错误 owner 不能续租、完成或失败该 job。
+- 构建后执行 `NODE_ENV=test node services/api/dist/index.js` 与 `NODE_ENV=test WORKER_AUTOSTART=false node services/worker/dist/index.js` 均可正常退出。
 - 管理端 `GET/POST/PATCH /v1/admin/projects/{project_id}/tools` 可列出、upsert、启停工具 allowlist。
 - Widget 中输入 `请帮我查订单 ORD-2026-1001` 会触发 `demo.order_lookup` 并返回订单状态。
 - Widget 中输入 `我的订阅状态是什么？` 会触发 `demo.subscription_lookup` 并返回订阅状态。
@@ -246,8 +250,8 @@ gh release create v1.0.0 --title "OpenSupportAI v1.0.0" --notes-file docs/releas
 
 - Widget 当前产物是 ESM-first，不是 legacy UMD 全局脚本。
 - PDF/URL 知识源在文档中作为方向保留，v0.1 API 主要支持直接提交 markdown/text 内容。
-- Worker runtime 已有基础 claim/handler/retry 语义，v0.7.0 已接入真实知识库 indexing handler；`webhook.retry` 实际重放处理器仍需后续实现。
-- v0.2.0 的 webhook retry 已完成管理端调度，实际重放处理器会在后续 worker 迭代中实现。
+- Worker runtime 已具备 PostgreSQL 原子 claim、租约续期、stale recovery、owner fencing 和 graceful drain；v0.7.0 的知识库 indexing handler 继续作为当前真实 job 类型。
+- Webhook replay 仍需 provider-specific 处理器；当前管理端不显示操作，保留 API 明确返回 `501`，不会再调度 placeholder job。
 - v0.9.0 已接入 `openapi` tool definition 的 HTTP 执行器，但还没有自动 OpenAPI spec import、模型规划器、工具级密钥加密存储或人工审批流；生产部署建议通过环境变量注入 token 并只开放只读工具。
 - v0.4.0 的 agent assist 是确定性启发式生成，不调用外部 LLM；后续可替换为可配置的模型生成与评测流程。
 - v0.8.0 已新增 Slack 入站 Events API adapter；Slack 出站回复、Email 和 Telegram provider API 仍需后续实现。

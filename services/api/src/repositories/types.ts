@@ -12,6 +12,13 @@ import type {
 
 export type JsonRecord = Record<string, unknown>;
 
+export class IdempotencyConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "IdempotencyConflictError";
+  }
+}
+
 export type ProjectRecord = {
   id: string;
   organizationId: string;
@@ -53,12 +60,16 @@ export type ConversationRecord = {
   assigneeType: "ai" | "human" | "none";
   metadata: JsonRecord;
   lastMessageAt?: string;
+  idempotencyKey?: string;
+  idempotencyHash?: string;
   createdAt: string;
   updatedAt: string;
 };
 
 export type MessageRecord = Message & {
   projectId: string;
+  idempotencyKey?: string;
+  idempotencyHash?: string;
 };
 
 export type KnowledgeDocumentRecord = {
@@ -148,10 +159,12 @@ export type WebhookEventRecord = {
   provider: string;
   externalEventId?: string;
   payload: JsonRecord;
-  status: "received" | "processed" | "failed" | "ignored";
+  status: "received" | "processing" | "processed" | "failed" | "ignored";
   error?: string;
+  attempts: number;
   createdAt: string;
   processedAt?: string;
+  processingStartedAt?: string;
 };
 
 export type ApiKeyRecord = {
@@ -243,6 +256,7 @@ export type AsyncJobRecord = {
   runAt: string;
   lockedBy?: string;
   lockedAt?: string;
+  leaseExpiresAt?: string;
   error?: string;
   createdAt: string;
   updatedAt: string;
@@ -298,6 +312,14 @@ export type SupportRepository = {
     contactId: string;
     metadata?: JsonRecord;
   }): Promise<ConversationRecord>;
+  createIdempotentConversation(input: {
+    projectId: string;
+    inboxId: string;
+    contactId: string;
+    idempotencyKey: string;
+    idempotencyHash: string;
+    metadata?: JsonRecord;
+  }): Promise<{ conversation: ConversationRecord; created: boolean }>;
   findConversation(
     projectId: string,
     conversationId: string
@@ -309,12 +331,23 @@ export type SupportRepository = {
     status: ConversationStatus;
     assigneeType?: ConversationRecord["assigneeType"];
   }): Promise<ConversationRecord>;
-  listMessages(projectId: string, conversationId: string): Promise<MessageRecord[]>;
+  listMessages(
+    projectId: string,
+    conversationId: string,
+    options?: { limit?: number; after?: string }
+  ): Promise<MessageRecord[]>;
   createMessage(input: {
     projectId: string;
     conversationId: string;
     message: CreateMessageInput;
   }): Promise<MessageRecord>;
+  createIdempotentMessage(input: {
+    projectId: string;
+    conversationId: string;
+    idempotencyKey: string;
+    idempotencyHash: string;
+    message: CreateMessageInput;
+  }): Promise<{ message: MessageRecord; created: boolean }>;
   createKnowledgeDocument(
     projectId: string,
     input: CreateKnowledgeDocumentInput
@@ -386,6 +419,11 @@ export type SupportRepository = {
     status: WebhookEventRecord["status"];
     error?: string;
   }): Promise<WebhookEventRecord>;
+  claimWebhookEvent(input: {
+    projectId: string;
+    id: string;
+    now?: string;
+  }): Promise<{ event: WebhookEventRecord; claimed: boolean }>;
   findWebhookEvent(input: {
     projectId: string;
     id: string;
@@ -490,7 +528,23 @@ export type SupportRepository = {
     workerId: string;
     types?: string[];
     now?: string;
+    leaseMs?: number;
   }): Promise<AsyncJobRecord | undefined>;
-  completeAsyncJob(input: { id: string; result?: JsonRecord }): Promise<AsyncJobRecord>;
-  failAsyncJob(input: { id: string; error: string; retryAt?: string }): Promise<AsyncJobRecord>;
+  renewAsyncJobLease(input: {
+    id: string;
+    workerId: string;
+    now?: string;
+    leaseMs?: number;
+  }): Promise<AsyncJobRecord>;
+  completeAsyncJob(input: {
+    id: string;
+    workerId: string;
+    result?: JsonRecord;
+  }): Promise<AsyncJobRecord>;
+  failAsyncJob(input: {
+    id: string;
+    workerId: string;
+    error: string;
+    retryAt?: string;
+  }): Promise<AsyncJobRecord>;
 };

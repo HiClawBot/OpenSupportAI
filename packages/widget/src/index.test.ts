@@ -42,13 +42,19 @@ describe("OpenSupportAI widget", () => {
       publicKey: "pk_demo"
     });
 
-    const conversation = await client.createConversation({});
-    await client.sendMessage({ conversationId: conversation.conversationId, text: "Hello" });
+    const conversation = await client.createConversation({ idempotencyKey: "widget-create" });
+    await client.sendMessage({
+      conversationId: conversation.conversationId,
+      text: "Hello",
+      idempotencyKey: "widget-message"
+    });
 
     expect(new Headers(calls[0]?.init?.headers).get("x-opensupportai-public-key")).toBe("pk_demo");
     expect(new Headers(calls[1]?.init?.headers).get("authorization")).toBe(
       "Bearer widget_conversation_secret"
     );
     expect(new Headers(calls[1]?.init?.headers).get("x-opensupportai-public-key")).toBeNull();
+    expect(new Headers(calls[0]?.init?.headers).get("idempotency-key")).toBe("widget-create");
+    expect(new Headers(calls[1]?.init?.headers).get("idempotency-key")).toBe("widget-message");
   });
 });

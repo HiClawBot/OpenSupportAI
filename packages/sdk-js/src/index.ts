@@ -29,15 +29,18 @@ export type CreateConversationInput = {
     avatarUrl?: string;
   };
   metadata?: Record<string, unknown>;
+  idempotencyKey?: string;
 };
 
 export type SendMessageInput = {
   conversationId: string;
   text: string;
+  idempotencyKey?: string;
 };
 
 export type ListMessagesResponse = {
   messages: Message[];
+  nextCursor?: string;
 };
 
 type ApiCreateConversationResponse = {
@@ -45,12 +48,19 @@ type ApiCreateConversationResponse = {
   status: ConversationStatus;
   conversation_token: string;
   conversation_token_expires_at: string;
+  idempotent?: boolean;
 };
 
 type ApiSendMessageResponse = {
   message_id: string;
   conversation_id: string;
   status: "accepted";
+  idempotent?: boolean;
+};
+
+type ApiListMessagesResponse = {
+  messages: Message[];
+  next_cursor?: string;
 };
 
 type ApiRequestHandoffResponse = {
@@ -81,7 +91,8 @@ export class OpenSupportAIClient {
             avatar_url: input.contact?.avatarUrl
           },
           metadata: input.metadata ?? {}
-        })
+        }),
+        headers: input.idempotencyKey ? { "Idempotency-Key": input.idempotencyKey } : undefined
       },
       { kind: "project" }
     );
@@ -91,7 +102,8 @@ export class OpenSupportAIClient {
       conversationId: response.conversation_id,
       status: response.status,
       conversationToken: response.conversation_token,
-      conversationTokenExpiresAt: response.conversation_token_expires_at
+      conversationTokenExpiresAt: response.conversation_token_expires_at,
+      idempotent: response.idempotent
     };
   }
 
@@ -103,7 +115,8 @@ export class OpenSupportAIClient {
         body: JSON.stringify({
           type: "text",
           text: input.text
-        })
+        }),
+        headers: input.idempotencyKey ? { "Idempotency-Key": input.idempotencyKey } : undefined
       },
       { kind: "conversation", conversationId: input.conversationId }
     );
@@ -111,7 +124,8 @@ export class OpenSupportAIClient {
     return {
       messageId: response.message_id,
       conversationId: response.conversation_id,
-      status: response.status
+      status: response.status,
+      idempotent: response.idempotent
     };
   }
 
@@ -134,9 +148,19 @@ export class OpenSupportAIClient {
     };
   }
 
-  listMessages(conversationId: string): Promise<ListMessagesResponse> {
-    return this.request(
-      `/v1/client/conversations/${conversationId}/messages`,
+  async listMessages(
+    conversationId: string,
+    options: { limit?: number; after?: string } = {}
+  ): Promise<ListMessagesResponse> {
+    const query = new URLSearchParams();
+    if (options.limit) {
+      query.set("limit", String(options.limit));
+    }
+    if (options.after) {
+      query.set("after", options.after);
+    }
+    const response = await this.request<ApiListMessagesResponse>(
+      `/v1/client/conversations/${conversationId}/messages${query.size ? `?${query}` : ""}`,
       {
         method: "GET"
       },
@@ -145,6 +169,10 @@ export class OpenSupportAIClient {
         conversationId
       }
     );
+    return {
+      messages: response.messages,
+      nextCursor: response.next_cursor
+    };
   }
 
   subscribe(conversationId: string, handler: EventHandler): () => void {
@@ -152,6 +180,7 @@ export class OpenSupportAIClient {
     let pollTimer: ReturnType<typeof setInterval> | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let reconnectAttempts = 0;
+    let pollCursor: string | undefined;
     let stopped = false;
     const seenMessageIds = new Set<string>();
     const eventNames = [
@@ -172,7 +201,10 @@ export class OpenSupportAIClient {
     };
     const poll = async () => {
       try {
-        const response = await this.listMessages(conversationId);
+        const response = await this.listMessages(conversationId, {
+          limit: 100,
+          after: pollCursor
+        });
         for (const message of response.messages) {
           if (seenMessageIds.has(message.id)) {
             continue;
@@ -188,6 +220,7 @@ export class OpenSupportAIClient {
             data: { message }
           });
         }
+        pollCursor = response.nextCursor ?? response.messages.at(-1)?.id ?? pollCursor;
       } catch {
         // A later poll or stream reconnect can recover without surfacing duplicate UI errors.
       }
@@ -283,12 +316,16 @@ export class OpenSupportAIClient {
           conversationId: string;
         }
   ): Promise<T> {
+    const headers = new Headers(init.headers);
+    if (init.body !== undefined) {
+      headers.set("Content-Type", "application/json");
+    }
+    for (const [name, value] of Object.entries(this.authHeaders(auth))) {
+      headers.set(name, value);
+    }
     const response = await fetch(`${this.options.apiUrl}${path}`, {
       ...init,
-      headers: {
-        ...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
-        ...this.authHeaders(auth)
-      }
+      headers
     });
 
     if (!response.ok) {

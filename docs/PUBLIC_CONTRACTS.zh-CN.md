@@ -72,6 +72,9 @@ POST /v1/webhooks/chatwoot/{project_id}
 - SSE endpoint 仅接受通过 conversation capability 换取的短期 stream token。
 - Admin API 继续支持 `Authorization: Bearer <admin-token-or-api-key>`。
 - Webhook endpoint 继续保持 project/public-key scoped 的鉴权边界。
+- 创建会话和发送消息支持可选 `Idempotency-Key`；同 key 不同请求体返回 `409`。
+- 消息列表支持向后兼容的 `limit`/`after` 游标，并可返回 `next_cursor`。
+- Webhook retry 地址保留，但在 provider-specific replay handler 完成前明确返回 `501`，不会创建 placeholder job。
 
 ## 稳定 SDK 契约
 
@@ -85,9 +88,9 @@ new OpenSupportAIClient({
   conversationToken
 });
 
-client.createConversation({ inboxId, contact, metadata });
-client.sendMessage({ conversationId, text });
-client.listMessages(conversationId);
+client.createConversation({ inboxId, contact, metadata, idempotencyKey });
+client.sendMessage({ conversationId, text, idempotencyKey });
+client.listMessages(conversationId, { limit, after });
 client.requestHandoff({ conversationId, reason, note });
 client.subscribe(conversationId, handler);
 ```
@@ -143,7 +146,7 @@ Email 和 Telegram 当前仍是 adapter catalog stub，不属于 v1.0 已实现 
 
 - 内部 repository 接口和内存存储实现。
 - Admin Console 内部组件结构和 CSS class name。
-- `webhook.retry` 的真实重放处理器。
+- Provider-specific webhook replay handler；保留 endpoint 当前只返回明确的 `501`。
 - 自动 OpenAPI spec import、模型工具规划器和高风险工具人工审批流。
 - Embedding/vector retrieval 的最终生产实现；当前检索仍有确定性 keyword fallback。
 - Slack 出站回复、Email provider API、Telegram provider API。

@@ -625,7 +625,7 @@ function App() {
       await request(`/v1/admin/projects/${activeProjectId}/jobs`, {
         method: "POST",
         body: JSON.stringify({
-          type: String(form.get("type") ?? "webhook.retry").trim(),
+          type: String(form.get("type") ?? "knowledge.index").trim(),
           payload: jsonRecordFromText(String(form.get("payload") ?? "{}")),
           max_attempts: Number(form.get("max_attempts") ?? 3)
         })
@@ -633,20 +633,6 @@ function App() {
       await loadOperations(activeProjectId);
     } catch (jobError) {
       setOperationsError(jobError instanceof Error ? jobError.message : "Unable to create job");
-    }
-  }
-
-  async function retryWebhookEvent(eventId: string) {
-    try {
-      await request(`/v1/admin/projects/${activeProjectId}/webhooks/events/${eventId}/retry`, {
-        method: "POST",
-        body: JSON.stringify({})
-      });
-      await loadOperations(activeProjectId);
-    } catch (retryError) {
-      setOperationsError(
-        retryError instanceof Error ? retryError.message : "Unable to schedule webhook retry"
-      );
     }
   }
 
@@ -1221,7 +1207,7 @@ function App() {
                 <h2>Jobs</h2>
               </div>
               <form className="inline-form" action={(form) => void createJob(form)}>
-                <input name="type" defaultValue="webhook.retry" />
+                <input name="type" defaultValue="knowledge.index" readOnly />
                 <input name="max_attempts" type="number" min="1" max="10" defaultValue="3" />
                 <textarea name="payload" rows={3} defaultValue="{}" />
                 <button className="secondary">Queue job</button>
@@ -1261,14 +1247,6 @@ function App() {
                     </span>
                     <span className="row-meta">
                       <b>{event.status}</b>
-                      {event.status !== "processed" ? (
-                        <button
-                          className="secondary compact"
-                          onClick={() => void retryWebhookEvent(event.id)}
-                        >
-                          Retry
-                        </button>
-                      ) : null}
                     </span>
                   </div>
                 ))}

@@ -1,7 +1,15 @@
 import { createHash } from "node:crypto";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 
-const prisma = new PrismaClient();
+const databaseUrl = process.env["DATABASE_URL"];
+if (!databaseUrl) {
+  throw new Error("DATABASE_URL is required to seed the database");
+}
+
+const prisma = new PrismaClient({
+  adapter: new PrismaPg({ connectionString: databaseUrl })
+});
 
 function hashSecret(value: string): string {
   return createHash("sha256").update(value).digest("hex");

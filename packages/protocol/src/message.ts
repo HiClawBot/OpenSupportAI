@@ -26,10 +26,12 @@ export type SourceReference = {
 export type SendMessageInput = {
   conversationId: string;
   text: string;
+  idempotencyKey?: string;
 };
 
 export type SendMessageResponse = {
   messageId: string;
   conversationId: string;
   status: "accepted";
+  idempotent?: boolean;
 };

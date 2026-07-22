@@ -9,6 +9,11 @@ English:
 - Added production fail-fast validation for persistence, secrets, CORS, token TTLs, and outbound-network policy.
 - Added explicit scopes across admin routes, centralized SSRF-resistant outbound requests, and persisted operator approval for mutation tools.
 - Added SDK/Widget SSE reconnection with authenticated polling fallback and regression coverage for native EventSource errors.
+- Added persisted conversation/message idempotency, stable message cursor pagination, project-level answer concurrency control, and bounded LLM requests.
+- Added atomic PostgreSQL job claims, leases, heartbeats, stale recovery, owner fencing, and graceful worker drain.
+- Added tenant-safe relational constraints, contact deduplication migration, project-scoped handoff mappings, and race-safe webhook claims.
+- Replaced the placeholder webhook retry flow with an authenticated `501` response until real provider replay handlers exist.
+- Fixed Prisma 7 PostgreSQL runtime initialization and bundled API/worker production entrypoints so Docker's `node dist/index.js` command is executable.
 
 中文：
 
@@ -17,6 +22,11 @@ English:
 - 新增生产启动 fail-fast 校验，覆盖持久化、密钥、CORS、token TTL 和出站网络策略。
 - 为管理端路由补齐显式 scope，并增加统一 SSRF 防护和 mutation tool 的持久化 operator approval。
 - SDK/Widget 新增 SSE 重连、认证轮询 fallback，以及原生 EventSource error 回归测试。
+- 新增会话/消息持久化幂等、稳定消息游标分页、项目级回答并发控制和有界 LLM 请求。
+- 新增 PostgreSQL 原子 job claim、租约、heartbeat、stale recovery、owner fencing 和 worker 优雅排空。
+- 新增租户关系约束、contact 去重 migration、项目级 handoff mapping 和 race-safe webhook claim。
+- 移除 placeholder webhook retry 流程；在真实 provider replay handler 完成前，鉴权后的保留接口返回 `501`。
+- 修复 Prisma 7 PostgreSQL runtime 初始化，并打包 API/worker 生产入口，确保 Docker 的 `node dist/index.js` 命令可执行。
 
 ## v1.0.0 - 2026-06-18
 

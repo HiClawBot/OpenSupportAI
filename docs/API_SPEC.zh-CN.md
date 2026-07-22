@@ -118,6 +118,7 @@ X-Slack-Signature: v0=...
 ```http
 POST /v1/client/conversations
 Content-Type: application/json
+Idempotency-Key: <stable-request-key>
 ```
 
 请求：
@@ -145,18 +146,23 @@ Content-Type: application/json
   "conversation_id": "conv_123",
   "status": "open",
   "conversation_token": "osa_v1...",
-  "conversation_token_expires_at": "2026-07-28T12:00:00.000Z"
+  "conversation_token_expires_at": "2026-07-28T12:00:00.000Z",
+  "idempotent": false
 }
 ```
+
+`Idempotency-Key` 可选，建议由客户端为一次逻辑创建操作生成并在网络重试时复用。相同 key 与相同请求体返回原会话并设置 `idempotent=true`；相同 key 搭配不同请求体返回 `409 invalid_request`。
 
 ---
 
 ### 获取消息列表
 
 ```http
-GET /v1/client/conversations/{conversation_id}/messages
+GET /v1/client/conversations/{conversation_id}/messages?limit=50&after={message_id}
 Authorization: Bearer <conversation_token>
 ```
+
+`limit` 默认 `50`、最大 `100`。`after` 是上一页返回的 `next_cursor`；消息按持久化 sequence 稳定排序。
 
 响应：
 
@@ -174,9 +180,12 @@ Authorization: Bearer <conversation_token>
       },
       "created_at": "2026-06-17T10:00:00.000Z"
     }
-  ]
+  ],
+  "next_cursor": "msg_1"
 }
 ```
+
+仅当还有下一页时返回 `next_cursor`。
 
 ---
 
@@ -186,6 +195,7 @@ Authorization: Bearer <conversation_token>
 POST /v1/client/conversations/{conversation_id}/messages
 Authorization: Bearer <conversation_token>
 Content-Type: application/json
+Idempotency-Key: <stable-request-key>
 ```
 
 请求：
@@ -203,9 +213,12 @@ Content-Type: application/json
 {
   "message_id": "msg_123",
   "conversation_id": "conv_123",
-  "status": "accepted"
+  "status": "accepted",
+  "idempotent": false
 }
 ```
+
+消息幂等语义与创建会话一致。重复请求不会再次保存消息、触发 orchestrator 或发布事件；key 冲突返回 `409 invalid_request`。
 
 发送消息后，后端应：
 
@@ -1524,7 +1537,7 @@ GET /v1/admin/projects/{project_id}/jobs?status=queued&type=knowledge.index&limi
 | 参数     | 说明                                                            |
 | -------- | --------------------------------------------------------------- |
 | `status` | 可选。`queued`、`running`、`completed`、`failed`、`cancelled`。 |
-| `type`   | 可选。任务类型，例如 `knowledge.index`、`webhook.retry`。       |
+| `type`   | 可选。当前可执行任务类型为 `knowledge.index`。                  |
 | `limit`  | 可选。默认 `50`，最大 `100`。                                   |
 
 响应：
@@ -1553,11 +1566,11 @@ GET /v1/admin/projects/{project_id}/webhooks/events?provider=chatwoot&status=fai
 
 查询参数：
 
-| 参数       | 说明                                                 |
-| ---------- | ---------------------------------------------------- |
-| `provider` | 可选。例如 `chatwoot`。                              |
-| `status`   | 可选。`received`、`processed`、`failed`、`ignored`。 |
-| `limit`    | 可选。默认 `50`，最大 `100`。                        |
+| 参数       | 说明                                                               |
+| ---------- | ------------------------------------------------------------------ |
+| `provider` | 可选。例如 `chatwoot`。                                            |
+| `status`   | 可选。`received`、`processing`、`processed`、`failed`、`ignored`。 |
+| `limit`    | 可选。默认 `50`，最大 `100`。                                      |
 
 响应：
 
@@ -1570,6 +1583,7 @@ GET /v1/admin/projects/{project_id}/webhooks/events?provider=chatwoot&status=fai
       "provider": "chatwoot",
       "externalEventId": "cw_123",
       "status": "failed",
+      "attempts": 1,
       "error": "No local conversation reference",
       "createdAt": "2026-06-18T00:00:00.000Z"
     }
@@ -1579,42 +1593,26 @@ GET /v1/admin/projects/{project_id}/webhooks/events?provider=chatwoot&status=fai
 
 ---
 
-### 调度 Webhook Event Retry
+### Webhook Event Replay 保留接口
 
 ```http
 POST /v1/admin/projects/{project_id}/webhooks/events/{event_id}/retry
-Content-Type: application/json
+Authorization: Bearer <admin-token-or-api-key>
 ```
 
-请求：
+当前响应：
 
 ```json
 {
-  "run_at": "2026-06-18T00:05:00.000Z"
-}
-```
-
-响应：
-
-```json
-{
-  "webhook_event": {
-    "id": "webhook_123",
-    "status": "received"
-  },
-  "job": {
-    "id": "job_123",
-    "type": "webhook.retry",
-    "status": "queued",
-    "payload": {
-      "webhook_event_id": "webhook_123",
-      "provider": "chatwoot"
-    }
+  "error": {
+    "code": "invalid_request",
+    "message": "Webhook replay is unavailable until provider-specific replay handlers are implemented",
+    "requestId": "req_123"
   }
 }
 ```
 
-已 `processed` 的 webhook event 不需要 retry，会返回 `invalid_request`。
+状态码为 `501`。该接口在 provider-specific replay handler 和共享处理管线完成前不会创建 async job，避免把 placeholder job 误报为成功重放。失败事件仍可通过列表接口查看。
 
 ---
 

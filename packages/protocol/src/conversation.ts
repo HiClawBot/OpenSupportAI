@@ -24,6 +24,7 @@ export type CreateConversationInput = {
     email?: string;
   };
   metadata?: Record<string, unknown>;
+  idempotencyKey?: string;
 };
 
 export type CreateConversationResponse = {
@@ -31,4 +32,5 @@ export type CreateConversationResponse = {
   status: ConversationStatus;
   conversationToken: string;
   conversationTokenExpiresAt: string;
+  idempotent?: boolean;
 };

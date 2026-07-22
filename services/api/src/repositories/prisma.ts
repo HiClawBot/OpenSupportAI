@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { chunkText, scoreChunk, tokenize } from "../knowledge-text";
+import { IdempotencyConflictError } from "./types";
 import type {
   AdminApiKeyLookup,
   AiRunRecord,
@@ -36,6 +37,7 @@ import type {
   MessageVisibility,
   SourceReference
 } from "@opensupportai/protocol";
+import { createPrismaClient } from "../prisma-client";
 
 function id(prefix: string): string {
   return `${prefix}_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
@@ -86,7 +88,7 @@ function sourceReferences(value: unknown): SourceReference[] | undefined {
 }
 
 export class PrismaSupportRepository implements SupportRepository {
-  constructor(private readonly prisma: PrismaClient = new PrismaClient()) {}
+  constructor(private readonly prisma: PrismaClient = createPrismaClient()) {}
 
   async seedDemo(): Promise<void> {
     const organization = await this.prisma.organization.upsert({
@@ -317,41 +319,67 @@ export class PrismaSupportRepository implements SupportRepository {
   }
 
   async upsertContact(projectId: string, input: ContactInput): Promise<ContactRecord> {
+    const normalizedInput = {
+      ...input,
+      email: input.email?.trim().toLowerCase()
+    };
     const existing = await this.prisma.contact.findFirst({
       where: {
         projectId,
         OR: [
-          ...(input.externalUserId ? [{ externalUserId: input.externalUserId }] : []),
-          ...(input.email ? [{ email: input.email }] : [])
+          ...(normalizedInput.externalUserId
+            ? [{ externalUserId: normalizedInput.externalUserId }]
+            : []),
+          ...(normalizedInput.email ? [{ email: normalizedInput.email }] : [])
         ]
       }
     });
 
-    const contact = existing
-      ? await this.prisma.contact.update({
-          where: { id: existing.id },
-          data: {
-            externalUserId: input.externalUserId ?? existing.externalUserId,
-            name: input.name ?? existing.name,
-            email: input.email ?? existing.email,
-            avatarUrl: input.avatarUrl ?? existing.avatarUrl,
-            metadata: jsonInput({
-              ...jsonRecord(existing.metadata),
-              ...(input.metadata ?? {})
-            })
-          }
-        })
-      : await this.prisma.contact.create({
+    let contact;
+    if (existing) {
+      contact = await this.prisma.contact.update({
+        where: { id: existing.id },
+        data: {
+          externalUserId: normalizedInput.externalUserId ?? existing.externalUserId,
+          name: normalizedInput.name ?? existing.name,
+          email: normalizedInput.email ?? existing.email,
+          avatarUrl: normalizedInput.avatarUrl ?? existing.avatarUrl,
+          metadata: jsonInput({
+            ...jsonRecord(existing.metadata),
+            ...(normalizedInput.metadata ?? {})
+          })
+        }
+      });
+    } else {
+      try {
+        contact = await this.prisma.contact.create({
           data: {
             id: id("contact"),
             projectId,
-            externalUserId: input.externalUserId,
-            name: input.name,
-            email: input.email,
-            avatarUrl: input.avatarUrl,
-            metadata: jsonInput(input.metadata ?? {})
+            externalUserId: normalizedInput.externalUserId,
+            name: normalizedInput.name,
+            email: normalizedInput.email,
+            avatarUrl: normalizedInput.avatarUrl,
+            metadata: jsonInput(normalizedInput.metadata ?? {})
           }
         });
+      } catch (error) {
+        if (!isPrismaUniqueConflict(error)) {
+          throw error;
+        }
+        contact = await this.prisma.contact.findFirstOrThrow({
+          where: {
+            projectId,
+            OR: [
+              ...(normalizedInput.externalUserId
+                ? [{ externalUserId: normalizedInput.externalUserId }]
+                : []),
+              ...(normalizedInput.email ? [{ email: normalizedInput.email }] : [])
+            ]
+          }
+        });
+      }
+    }
 
     return mapContact(contact);
   }
@@ -372,6 +400,57 @@ export class PrismaSupportRepository implements SupportRepository {
       }
     });
     return mapConversation(conversation);
+  }
+
+  async createIdempotentConversation(input: {
+    projectId: string;
+    inboxId: string;
+    contactId: string;
+    idempotencyKey: string;
+    idempotencyHash: string;
+    metadata?: JsonRecord;
+  }): Promise<{ conversation: ConversationRecord; created: boolean }> {
+    const existing = await this.prisma.conversation.findUnique({
+      where: {
+        projectId_idempotencyKey: {
+          projectId: input.projectId,
+          idempotencyKey: input.idempotencyKey
+        }
+      }
+    });
+    if (existing) {
+      assertMatchingIdempotencyHash(existing.idempotencyHash, input.idempotencyHash);
+      return { conversation: mapConversation(existing), created: false };
+    }
+
+    try {
+      const conversation = await this.prisma.conversation.create({
+        data: {
+          id: id("conv"),
+          projectId: input.projectId,
+          inboxId: input.inboxId,
+          contactId: input.contactId,
+          idempotencyKey: input.idempotencyKey,
+          idempotencyHash: input.idempotencyHash,
+          metadata: jsonInput(input.metadata ?? {})
+        }
+      });
+      return { conversation: mapConversation(conversation), created: true };
+    } catch (error) {
+      if (!isPrismaUniqueConflict(error)) {
+        throw error;
+      }
+      const conversation = await this.prisma.conversation.findUniqueOrThrow({
+        where: {
+          projectId_idempotencyKey: {
+            projectId: input.projectId,
+            idempotencyKey: input.idempotencyKey
+          }
+        }
+      });
+      assertMatchingIdempotencyHash(conversation.idempotencyHash, input.idempotencyHash);
+      return { conversation: mapConversation(conversation), created: false };
+    }
   }
 
   async findConversation(
@@ -419,14 +498,29 @@ export class PrismaSupportRepository implements SupportRepository {
     return mapConversation(conversation[0]);
   }
 
-  async listMessages(projectId: string, conversationId: string): Promise<MessageRecord[]> {
+  async listMessages(
+    projectId: string,
+    conversationId: string,
+    options: { limit?: number; after?: string } = {}
+  ): Promise<MessageRecord[]> {
+    const limit = boundedMessageLimit(options.limit);
+    if (options.after) {
+      const cursor = await this.prisma.message.findFirst({
+        where: { id: options.after, projectId, conversationId }
+      });
+      if (!cursor) {
+        return [];
+      }
+    }
     const messages = await this.prisma.message.findMany({
       where: {
         projectId,
         conversationId,
         visibility: "public"
       },
-      orderBy: { createdAt: "asc" }
+      orderBy: { sequence: "asc" },
+      take: limit,
+      ...(options.after ? { cursor: { id: options.after }, skip: 1 } : {})
     });
     return messages.map(mapMessage);
   }
@@ -456,6 +550,64 @@ export class PrismaSupportRepository implements SupportRepository {
     });
 
     return mapMessage(message);
+  }
+
+  async createIdempotentMessage(input: {
+    projectId: string;
+    conversationId: string;
+    idempotencyKey: string;
+    idempotencyHash: string;
+    message: CreateMessageInput;
+  }): Promise<{ message: MessageRecord; created: boolean }> {
+    const existing = await this.prisma.message.findUnique({
+      where: {
+        conversationId_idempotencyKey: {
+          conversationId: input.conversationId,
+          idempotencyKey: input.idempotencyKey
+        }
+      }
+    });
+    if (existing) {
+      assertMatchingIdempotencyHash(existing.idempotencyHash, input.idempotencyHash);
+      return { message: mapMessage(existing), created: false };
+    }
+
+    try {
+      const message = await this.prisma.message.create({
+        data: {
+          id: id("msg"),
+          projectId: input.projectId,
+          conversationId: input.conversationId,
+          role: input.message.role,
+          visibility: input.message.visibility ?? "public",
+          contentType: "text",
+          content: jsonInput({ text: input.message.text }),
+          sourceRefs: input.message.sourceRefs as unknown as Prisma.InputJsonValue,
+          idempotencyKey: input.idempotencyKey,
+          idempotencyHash: input.idempotencyHash,
+          metadata: jsonInput(input.message.metadata ?? {})
+        }
+      });
+      await this.prisma.conversation.updateMany({
+        where: { id: input.conversationId, projectId: input.projectId },
+        data: { lastMessageAt: message.createdAt }
+      });
+      return { message: mapMessage(message), created: true };
+    } catch (error) {
+      if (!isPrismaUniqueConflict(error)) {
+        throw error;
+      }
+      const message = await this.prisma.message.findUniqueOrThrow({
+        where: {
+          conversationId_idempotencyKey: {
+            conversationId: input.conversationId,
+            idempotencyKey: input.idempotencyKey
+          }
+        }
+      });
+      assertMatchingIdempotencyHash(message.idempotencyHash, input.idempotencyHash);
+      return { message: mapMessage(message), created: false };
+    }
   }
 
   async createKnowledgeDocument(
@@ -775,16 +927,32 @@ export class PrismaSupportRepository implements SupportRepository {
       }
     }
 
-    const event = await this.prisma.webhookEvent.create({
-      data: {
-        id: id("webhook"),
-        projectId: input.projectId,
-        provider: input.provider,
-        externalEventId: input.externalEventId,
-        payload: jsonInput(input.payload)
+    try {
+      const event = await this.prisma.webhookEvent.create({
+        data: {
+          id: id("webhook"),
+          projectId: input.projectId,
+          provider: input.provider,
+          externalEventId: input.externalEventId,
+          payload: jsonInput(input.payload)
+        }
+      });
+      return mapWebhookEvent(event);
+    } catch (error) {
+      if (!input.externalEventId || !isPrismaUniqueConflict(error)) {
+        throw error;
       }
-    });
-    return mapWebhookEvent(event);
+      const event = await this.prisma.webhookEvent.findUniqueOrThrow({
+        where: {
+          projectId_provider_externalEventId: {
+            projectId: input.projectId,
+            provider: input.provider,
+            externalEventId: input.externalEventId
+          }
+        }
+      });
+      return mapWebhookEvent(event);
+    }
   }
 
   async markWebhookEvent(input: {
@@ -796,11 +964,39 @@ export class PrismaSupportRepository implements SupportRepository {
       where: { id: input.id },
       data: {
         status: input.status,
-        error: input.error,
-        processedAt: new Date()
+        error: input.error ?? null,
+        processedAt: ["processed", "failed", "ignored"].includes(input.status) ? new Date() : null
       }
     });
     return mapWebhookEvent(event);
+  }
+
+  async claimWebhookEvent(input: {
+    projectId: string;
+    id: string;
+    now?: string;
+  }): Promise<{ event: WebhookEventRecord; claimed: boolean }> {
+    const claimed = await this.prisma.webhookEvent.updateManyAndReturn({
+      where: {
+        id: input.id,
+        projectId: input.projectId,
+        status: "received"
+      },
+      data: {
+        status: "processing",
+        attempts: { increment: 1 },
+        processingStartedAt: input.now ? new Date(input.now) : new Date(),
+        processedAt: null,
+        error: null
+      }
+    });
+    if (claimed[0]) {
+      return { event: mapWebhookEvent(claimed[0]), claimed: true };
+    }
+    const event = await this.prisma.webhookEvent.findFirstOrThrow({
+      where: { id: input.id, projectId: input.projectId }
+    });
+    return { event: mapWebhookEvent(event), claimed: false };
   }
 
   async findWebhookEvent(input: {
@@ -1125,68 +1321,121 @@ export class PrismaSupportRepository implements SupportRepository {
     workerId: string;
     types?: string[];
     now?: string;
+    leaseMs?: number;
   }): Promise<AsyncJobRecord | undefined> {
     const nowValue = input.now ? new Date(input.now) : new Date();
-    const job = await this.prisma.asyncJob.findFirst({
+    const leaseExpiresAt = new Date(nowValue.getTime() + (input.leaseMs ?? 60_000));
+    await this.prisma.asyncJob.updateMany({
       where: {
-        status: "queued",
-        runAt: { lte: nowValue },
-        ...(input.types?.length ? { type: { in: input.types } } : {})
-      },
-      orderBy: [{ runAt: "asc" }, { createdAt: "asc" }]
-    });
-    if (!job) {
-      return undefined;
-    }
-
-    const updated = await this.prisma.asyncJob.update({
-      where: { id: job.id },
-      data: {
         status: "running",
-        attempts: { increment: 1 },
-        lockedBy: input.workerId,
-        lockedAt: nowValue
+        leaseExpiresAt: { lte: nowValue },
+        attempts: { gte: this.prisma.asyncJob.fields.maxAttempts }
+      },
+      data: {
+        status: "failed",
+        lockedBy: null,
+        lockedAt: null,
+        leaseExpiresAt: null,
+        error: "Job lease expired after the maximum number of attempts"
       }
     });
-    return mapAsyncJob(updated);
+
+    const typeFilter = input.types?.length
+      ? Prisma.sql`AND "type" IN (${Prisma.join(input.types)})`
+      : Prisma.empty;
+    const claimed = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      WITH candidate AS (
+        SELECT "id"
+        FROM "async_jobs"
+        WHERE (
+          ("status" = 'queued' AND "run_at" <= ${nowValue})
+          OR ("status" = 'running' AND "lease_expires_at" <= ${nowValue})
+        )
+        AND "attempts" < "max_attempts"
+        ${typeFilter}
+        ORDER BY "run_at" ASC, "created_at" ASC
+        FOR UPDATE SKIP LOCKED
+        LIMIT 1
+      )
+      UPDATE "async_jobs" AS job
+      SET
+        "status" = 'running',
+        "attempts" = job."attempts" + 1,
+        "locked_by" = ${input.workerId},
+        "locked_at" = ${nowValue},
+        "lease_expires_at" = ${leaseExpiresAt},
+        "updated_at" = ${nowValue}
+      FROM candidate
+      WHERE job."id" = candidate."id"
+      RETURNING job."id"
+    `);
+    if (!claimed[0]) {
+      return undefined;
+    }
+    return mapAsyncJob(
+      await this.prisma.asyncJob.findUniqueOrThrow({ where: { id: claimed[0].id } })
+    );
   }
 
-  async completeAsyncJob(input: { id: string; result?: JsonRecord }): Promise<AsyncJobRecord> {
-    const job = await this.prisma.asyncJob.update({
-      where: { id: input.id },
+  async renewAsyncJobLease(input: {
+    id: string;
+    workerId: string;
+    now?: string;
+    leaseMs?: number;
+  }): Promise<AsyncJobRecord> {
+    const nowValue = input.now ? new Date(input.now) : new Date();
+    const jobs = await this.prisma.asyncJob.updateManyAndReturn({
+      where: { id: input.id, status: "running", lockedBy: input.workerId },
+      data: { leaseExpiresAt: new Date(nowValue.getTime() + (input.leaseMs ?? 60_000)) }
+    });
+    return mapAsyncJob(requireOwnedJob(jobs[0], input.id));
+  }
+
+  async completeAsyncJob(input: {
+    id: string;
+    workerId: string;
+    result?: JsonRecord;
+  }): Promise<AsyncJobRecord> {
+    const jobs = await this.prisma.asyncJob.updateManyAndReturn({
+      where: { id: input.id, status: "running", lockedBy: input.workerId },
       data: {
         status: "completed",
         result: jsonInput(input.result ?? {}),
         lockedBy: null,
         lockedAt: null,
+        leaseExpiresAt: null,
         error: null
       }
     });
-    return mapAsyncJob(job);
+    return mapAsyncJob(requireOwnedJob(jobs[0], input.id));
   }
 
   async failAsyncJob(input: {
     id: string;
+    workerId: string;
     error: string;
     retryAt?: string;
   }): Promise<AsyncJobRecord> {
-    const existing = await this.prisma.asyncJob.findUnique({ where: { id: input.id } });
+    const existing = await this.prisma.asyncJob.findFirst({
+      where: { id: input.id, status: "running", lockedBy: input.workerId }
+    });
     if (!existing) {
-      throw new Error(`Async job not found: ${input.id}`);
+      throw new Error(`Async job lease is not owned by this worker: ${input.id}`);
     }
 
     const shouldRetry = Boolean(input.retryAt) && existing.attempts < existing.maxAttempts;
-    const job = await this.prisma.asyncJob.update({
-      where: { id: input.id },
+    const jobs = await this.prisma.asyncJob.updateManyAndReturn({
+      where: { id: input.id, status: "running", lockedBy: input.workerId },
       data: {
         status: shouldRetry ? "queued" : "failed",
         runAt: shouldRetry && input.retryAt ? new Date(input.retryAt) : existing.runAt,
         lockedBy: null,
         lockedAt: null,
+        leaseExpiresAt: null,
         error: input.error
       }
     });
-    return mapAsyncJob(job);
+    return mapAsyncJob(requireOwnedJob(jobs[0], input.id));
   }
 }
 
@@ -1256,6 +1505,8 @@ function mapConversation(conversation: NonNullable<PrismaConversation>): Convers
     assigneeType: conversation.assigneeType as ConversationRecord["assigneeType"],
     metadata: jsonRecord(conversation.metadata),
     lastMessageAt: iso(conversation.lastMessageAt),
+    idempotencyKey: conversation.idempotencyKey ?? undefined,
+    idempotencyHash: conversation.idempotencyHash ?? undefined,
     createdAt: conversation.createdAt.toISOString(),
     updatedAt: conversation.updatedAt.toISOString()
   };
@@ -1271,6 +1522,8 @@ function mapMessage(message: NonNullable<PrismaMessage>): MessageRecord {
     contentType: "text",
     content: jsonRecord(message.content),
     sourceRefs: sourceReferences(message.sourceRefs),
+    idempotencyKey: message.idempotencyKey ?? undefined,
+    idempotencyHash: message.idempotencyHash ?? undefined,
     metadata: jsonRecord(message.metadata),
     createdAt: message.createdAt.toISOString()
   };
@@ -1381,8 +1634,10 @@ function mapWebhookEvent(event: NonNullable<PrismaWebhookEvent>): WebhookEventRe
     payload: jsonRecord(event.payload),
     status: event.status as WebhookEventRecord["status"],
     error: event.error ?? undefined,
+    attempts: event.attempts,
     createdAt: event.createdAt.toISOString(),
-    processedAt: iso(event.processedAt)
+    processedAt: iso(event.processedAt),
+    processingStartedAt: iso(event.processingStartedAt)
   };
 }
 
@@ -1481,10 +1736,34 @@ function mapAsyncJob(job: NonNullable<PrismaAsyncJob>): AsyncJobRecord {
     runAt: job.runAt.toISOString(),
     lockedBy: job.lockedBy ?? undefined,
     lockedAt: iso(job.lockedAt),
+    leaseExpiresAt: iso(job.leaseExpiresAt),
     error: job.error ?? undefined,
     createdAt: job.createdAt.toISOString(),
     updatedAt: job.updatedAt.toISOString()
   };
+}
+
+function boundedMessageLimit(limit: number | undefined): number {
+  return Math.max(1, Math.min(limit ?? 200, 201));
+}
+
+function assertMatchingIdempotencyHash(existing: string | null, requested: string): void {
+  if (existing !== requested) {
+    throw new IdempotencyConflictError(
+      "Idempotency key was already used with a different request payload"
+    );
+  }
+}
+
+function isPrismaUniqueConflict(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+}
+
+function requireOwnedJob<T>(job: T | undefined, id: string): T {
+  if (!job) {
+    throw new Error(`Async job lease is not owned by this worker: ${id}`);
+  }
+  return job;
 }
 
 function demoToolDefinitions(
