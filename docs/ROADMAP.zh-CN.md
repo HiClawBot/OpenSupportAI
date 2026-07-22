@@ -1,5 +1,47 @@
 # OpenSupportAI Roadmap
 
+## 当前成熟度与愿景对齐
+
+OpenSupportAI 的核心定位是“可嵌入、自托管、可接管、可治理进化的 AI 客服运行时”，而不是完整 CRM 或全渠道工单平台。
+
+当前公开 tag 为 `v1.0.0`，公共 API/SDK/Widget 契约已经稳定；但代码成熟度应定义为可控 staging candidate，不应描述为无人值守生产就绪。下一条公开成熟度发布线计划为 `v1.1.0-beta.1`。
+
+Beta 支持范围保持收敛：
+
+```text
+一个 API + 一个 worker + PostgreSQL/pgvector
+Web Widget 与 Headless SDK
+一个 OpenAI-compatible provider
+Markdown/Text 知识源
+只读业务工具
+Generic webhook 入站
+可选 Chatwoot 人工接管
+确定性质量门禁与人工治理进化
+```
+
+Beta 明确不承诺：多 API 横向扩展、自动 mutation tool、Email/Telegram 完整 provider、URL/PDF 生产采集、全自治进化、完整 CRM。
+
+## Beta 施工状态
+
+### 已完成
+
+- 生产配置 fail-fast、conversation capability、短期 SSE token、显式 admin scope 和统一出站网络防护。
+- PostgreSQL 原子 job claim、lease、heartbeat、stale recovery、owner fencing、幂等消息/会话和持久化回答 worker。
+- 非 root 生产镜像、one-shot migration、readiness、worker loss 检测、备份恢复和 CI Compose 演练。
+- 七场景关键 golden corpus、确定性 CI 阈值、持久化 evaluation evidence，以及带人工审批、回归、灰度、晋级和回滚的提案状态机。
+- Admin Console 治理工作区；生产 root token 不持久化，proposal 不自动修改生产状态。
+
+### `v1.1.0-beta.1` 发布前剩余
+
+1. 用有界 PostgreSQL 全文/词法检索替换 Prisma broad substring scan，校准阈值、引用和 no-hit。
+2. 补齐 Widget locale、错误恢复和 Governance 浏览器自动化覆盖。
+3. 执行低流量 load test、LLM/tool/worker fault injection、恢复演练和 24 小时 staging soak。
+4. 关闭全部 P0/P1，生成双语 release notes、checksums/SBOM 和可追溯发布证据。
+
+发布原则：模型可以提出候选改进，但不能审批自己的变更，也不能绕过回归、灰度和回滚门禁直接修改生产状态。
+
+---
+
 ## v0.1：端到端闭环
 
 目标：让开发者可以本地运行 demo，并完成 AI 问答 + 转人工闭环。
@@ -13,7 +55,7 @@ Conversation API
 SSE events
 OpenAI-compatible LLM Adapter
 Markdown/Text Knowledge Ingestion
-pgvector Retrieval
+Keyword Retrieval（pgvector schema 已准备，生产词法检索仍在施工）
 AI Orchestrator
 Chatwoot Adapter
 Admin Console 简版
@@ -119,9 +161,11 @@ Mobile SDK 方案
 
 ---
 
-## v1.0：稳定发行（当前）
+## v1.0：公共契约稳定发行（已发布）
 
 目标：稳定 API、稳定 SDK、稳定部署方案。
+
+说明：契约稳定表示兼容性边界已经冻结，不等同于运行时已达到无人值守生产就绪。生产成熟度继续由 Beta 发布门禁评估。
 
 ### 范围
 
@@ -143,6 +187,9 @@ Mobile SDK 方案
 Helm Chart
 性能压测报告
 更完整的观测集成
+有界 PostgreSQL 词法检索与后续 hybrid/vector retrieval
+评测趋势与 release evidence dashboard
+自动化 canary 指标采集（仍保留人工审批）
 自动 OpenAPI spec import
 高风险工具人工审批流
 Slack 出站回复

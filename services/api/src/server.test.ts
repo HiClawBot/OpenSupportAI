@@ -2843,7 +2843,280 @@ describe("OpenSupportAI API", () => {
       }
     });
   });
+
+  it("persists governed evaluation, approval, canary, promotion, and rollback evidence", async () => {
+    const restrictedKeyResponse = await app.inject({
+      method: "POST",
+      url: "/v1/admin/projects/proj_demo/api-keys",
+      headers: { authorization: "Bearer admin_demo_key" },
+      payload: {
+        name: "No evolution access",
+        scopes: ["admin:project"]
+      }
+    });
+    const restrictedKey = restrictedKeyResponse.json<{ key: string }>().key;
+    const restrictedResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/evaluations/suites",
+      headers: { authorization: `Bearer ${restrictedKey}` }
+    });
+    expect(restrictedResponse.statusCode).toBe(403);
+
+    const knowledgeBefore = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/knowledge/documents",
+      headers: { authorization: "Bearer admin_demo_key" }
+    });
+    const knowledgeCount = knowledgeBefore.json<{ documents: unknown[] }>().documents.length;
+    const suiteResponse = await app.inject({
+      method: "POST",
+      url: "/v1/admin/projects/proj_demo/evaluations/suites",
+      headers: { authorization: "Bearer admin_demo_key" },
+      payload: {
+        slug: "governance-api-test",
+        version: 1,
+        name: "Governance API test",
+        evaluator_version: "osa-deterministic-v1",
+        thresholds: {
+          min_score: 100,
+          min_pass_rate: 1,
+          require_critical_pass: true
+        },
+        scenarios: [
+          {
+            slug: "safe-refusal",
+            category: "ambiguity",
+            critical: true,
+            input: { text: "Unknown question" },
+            expectations: {
+              outcome: "no_hit",
+              conversation_status: "open",
+              ai_run_status: "skipped",
+              required_answer_metadata: { no_hit: true }
+            }
+          }
+        ]
+      }
+    });
+    expect(suiteResponse.statusCode).toBe(200);
+    const suiteId = suiteResponse.json<{ suite: { id: string } }>().suite.id;
+
+    const sourceRunResponse = await app.inject({
+      method: "POST",
+      url: "/v1/admin/projects/proj_demo/evaluations/runs",
+      headers: { authorization: "Bearer admin_demo_key" },
+      payload: evaluationRunPayload(suiteId, {
+        conversation_status: "open",
+        answer: {
+          text: "Unsupported grounded answer",
+          metadata: { grounded: true },
+          source_refs: [{ documentId: "doc_wrong" }]
+        },
+        ai_run: { status: "completed", metadata: {} },
+        tool_calls: [],
+        handoff_sessions: 0
+      })
+    });
+    expect(sourceRunResponse.statusCode).toBe(200);
+    const sourceRun = sourceRunResponse.json<{
+      run: { id: string; status: string; criticalFailures: string[] };
+    }>().run;
+    expect(sourceRun).toMatchObject({
+      status: "failed",
+      criticalFailures: ["safe-refusal"]
+    });
+
+    const runsListResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/evaluations/runs",
+      headers: { authorization: "Bearer admin_demo_key" }
+    });
+    const listedSourceRun = runsListResponse
+      .json<{ runs: Array<{ id: string; results?: unknown[] }> }>()
+      .runs.find((run) => run.id === sourceRun.id);
+    expect(listedSourceRun?.results).toBeUndefined();
+
+    const runDetailResponse = await app.inject({
+      method: "GET",
+      url: `/v1/admin/projects/proj_demo/evaluations/runs/${sourceRun.id}`,
+      headers: { authorization: "Bearer admin_demo_key" }
+    });
+    expect(runDetailResponse.json<{ run: { results: unknown[] } }>().run.results).toHaveLength(1);
+
+    const proposalResponse = await app.inject({
+      method: "POST",
+      url: "/v1/admin/projects/proj_demo/evolution/proposals",
+      headers: { authorization: "Bearer admin_demo_key" },
+      payload: {
+        source_run_id: sourceRun.id,
+        kind: "knowledge",
+        title: "Clarify unsupported-answer policy",
+        rationale: "The critical safe-refusal scenario failed.",
+        artifact: {
+          operation: "draft_patch",
+          target: "unsupported-answer-policy",
+          content: "Refuse when no source can support the answer."
+        },
+        baseline: {
+          source_run_id: "forged_run",
+          suite_version: 999,
+          operator_note: "Preserve custom non-authoritative context."
+        }
+      }
+    });
+    expect(proposalResponse.statusCode).toBe(200);
+    const proposal = proposalResponse.json<{
+      proposal: {
+        id: string;
+        status: string;
+        artifactHash: string;
+        baseline: Record<string, unknown>;
+      };
+    }>().proposal;
+    expect(proposal.status).toBe("draft");
+    expect(proposal.artifactHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(proposal.baseline).toMatchObject({
+      source_run_id: sourceRun.id,
+      suite_version: 1,
+      operator_note: "Preserve custom non-authoritative context."
+    });
+
+    const approveResponse = await app.inject({
+      method: "POST",
+      url: `/v1/admin/projects/proj_demo/evolution/proposals/${proposal.id}/transitions`,
+      headers: { authorization: "Bearer admin_demo_key" },
+      payload: { action: "approve", review_note: "Approved for regression only." }
+    });
+    expect(approveResponse.json<{ proposal: { status: string } }>().proposal.status).toBe(
+      "approved"
+    );
+
+    const reusedSourceRunResponse = await app.inject({
+      method: "POST",
+      url: `/v1/admin/projects/proj_demo/evolution/proposals/${proposal.id}/transitions`,
+      headers: { authorization: "Bearer admin_demo_key" },
+      payload: { action: "record_regression", regression_run_id: sourceRun.id }
+    });
+    expect(reusedSourceRunResponse.statusCode).toBe(409);
+
+    const regressionRunResponse = await app.inject({
+      method: "POST",
+      url: "/v1/admin/projects/proj_demo/evaluations/runs",
+      headers: { authorization: "Bearer admin_demo_key" },
+      payload: evaluationRunPayload(suiteId, {
+        conversation_status: "open",
+        answer: {
+          text: "I cannot confirm from the current knowledge base.",
+          metadata: { no_hit: true },
+          source_refs: []
+        },
+        ai_run: { status: "skipped", metadata: {} },
+        tool_calls: [],
+        handoff_sessions: 0
+      })
+    });
+    const regressionRun = regressionRunResponse.json<{
+      run: { id: string; status: string };
+    }>().run;
+    expect(regressionRun.status).toBe("passed");
+
+    const passedSourceProposalResponse = await app.inject({
+      method: "POST",
+      url: "/v1/admin/projects/proj_demo/evolution/proposals",
+      headers: { authorization: "Bearer admin_demo_key" },
+      payload: {
+        source_run_id: regressionRun.id,
+        kind: "knowledge",
+        title: "Proposal without failed evidence",
+        rationale: "This must be rejected because the source run passed.",
+        artifact: { operation: "draft_patch" }
+      }
+    });
+    expect(passedSourceProposalResponse.statusCode).toBe(409);
+
+    const regressionResponse = await app.inject({
+      method: "POST",
+      url: `/v1/admin/projects/proj_demo/evolution/proposals/${proposal.id}/transitions`,
+      headers: { authorization: "Bearer admin_demo_key" },
+      payload: { action: "record_regression", regression_run_id: regressionRun.id }
+    });
+    expect(regressionResponse.json<{ proposal: { status: string } }>().proposal.status).toBe(
+      "regression_passed"
+    );
+
+    const canaryResponse = await app.inject({
+      method: "POST",
+      url: `/v1/admin/projects/proj_demo/evolution/proposals/${proposal.id}/transitions`,
+      headers: { authorization: "Bearer admin_demo_key" },
+      payload: {
+        action: "start_canary",
+        canary_evidence: {
+          deployment_ref: "staging/revision-42",
+          scope: "5-percent-supervised"
+        },
+        rollback_target: { deployment_ref: "staging/revision-41" }
+      }
+    });
+    expect(canaryResponse.json<{ proposal: { status: string } }>().proposal.status).toBe("canary");
+
+    const promotionResponse = await app.inject({
+      method: "POST",
+      url: `/v1/admin/projects/proj_demo/evolution/proposals/${proposal.id}/transitions`,
+      headers: { authorization: "Bearer admin_demo_key" },
+      payload: {
+        action: "promote",
+        canary_evidence: { outcome: "passed", observed_cases: 50 }
+      }
+    });
+    expect(promotionResponse.json<{ proposal: { status: string } }>().proposal.status).toBe(
+      "promoted"
+    );
+
+    const rollbackResponse = await app.inject({
+      method: "POST",
+      url: `/v1/admin/projects/proj_demo/evolution/proposals/${proposal.id}/transitions`,
+      headers: { authorization: "Bearer admin_demo_key" },
+      payload: {
+        action: "rollback",
+        rollback_evidence: { reason: "Operator rehearsal", restored: true }
+      }
+    });
+    expect(rollbackResponse.json<{ proposal: { status: string } }>().proposal.status).toBe(
+      "rolled_back"
+    );
+
+    const knowledgeAfter = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/knowledge/documents",
+      headers: { authorization: "Bearer admin_demo_key" }
+    });
+    expect(knowledgeAfter.json<{ documents: unknown[] }>().documents).toHaveLength(knowledgeCount);
+
+    const auditResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/audit-log?action=evolution_proposal.rollback",
+      headers: { authorization: "Bearer admin_demo_key" }
+    });
+    expect(
+      auditResponse.json<{ audit_logs: Array<{ targetId?: string }> }>().audit_logs[0]
+    ).toMatchObject({ targetId: proposal.id });
+  });
 });
+
+function evaluationRunPayload(
+  suiteId: string,
+  observation: Record<string, unknown>
+): Record<string, unknown> {
+  return {
+    suite_id: suiteId,
+    observations: [
+      {
+        scenario_slug: "safe-refusal",
+        observation
+      }
+    ]
+  };
+}
 
 async function readSseUntil(
   response: Response,

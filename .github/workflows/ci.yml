@@ -74,6 +74,9 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Run deterministic golden evaluation
+        run: pnpm eval:golden
+
       - name: Apply database migrations
         run: pnpm db:migrate
 
@@ -82,6 +85,9 @@ jobs:
 
       - name: Verify PostgreSQL answer runtime
         run: pnpm smoke:postgres-answer
+
+      - name: Verify PostgreSQL governed evolution
+        run: pnpm smoke:postgres-evolution
 
       - name: Verify service entrypoints
         run: |

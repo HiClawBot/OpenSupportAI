@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DETERMINISTIC_EVALUATOR_VERSION } from "@opensupportai/evals";
 
 const metadataSchema = z.record(z.string(), z.unknown()).default({});
 const httpUrlSchema = z
@@ -65,7 +66,8 @@ const adminScopeSchema = z.enum([
   "admin:tools",
   "admin:assist",
   "admin:jobs",
-  "admin:webhooks"
+  "admin:webhooks",
+  "admin:evolution"
 ]);
 
 export const createApiKeyBodySchema = z.object({
@@ -174,6 +176,200 @@ export const upsertSlackChannelBodySchema = z.object({
   default_inbox_id: z.string().trim().min(1).max(120).default("inbox_default"),
   status: z.enum(["active", "disabled"]).default("active")
 });
+
+const evaluationCategorySchema = z.enum([
+  "faq",
+  "ambiguity",
+  "prompt_injection",
+  "missing_identity",
+  "tool_failure",
+  "llm_failure",
+  "handoff"
+]);
+
+const evaluationOutcomeSchema = z.enum([
+  "grounded",
+  "no_hit",
+  "needs_identity",
+  "tool",
+  "degraded",
+  "handoff",
+  "unknown"
+]);
+
+const evaluationThresholdsBodySchema = z.object({
+  min_score: z.number().min(0).max(100),
+  min_pass_rate: z.number().min(0).max(1),
+  require_critical_pass: z.boolean()
+});
+
+const evaluationExpectationsBodySchema = z.object({
+  outcome: evaluationOutcomeSchema,
+  conversation_status: z.string().trim().min(1).max(80).optional(),
+  ai_run_status: z.string().trim().min(1).max(80).optional(),
+  min_citations: z.number().int().min(0).max(100).optional(),
+  min_handoff_sessions: z.number().int().min(0).max(100).optional(),
+  tool_call_status: z.string().trim().min(1).max(80).optional(),
+  required_answer_metadata: z
+    .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+    .optional(),
+  answer_includes: z.array(z.string().min(1).max(500)).max(20).optional(),
+  answer_excludes: z.array(z.string().min(1).max(500)).max(20).optional()
+});
+
+const evaluationScenarioBodySchema = z.object({
+  slug: z
+    .string()
+    .trim()
+    .min(1)
+    .max(120)
+    .regex(/^[a-z0-9][a-z0-9._-]*$/),
+  category: evaluationCategorySchema,
+  critical: z.boolean().default(false),
+  input: metadataSchema,
+  expectations: evaluationExpectationsBodySchema,
+  metadata: metadataSchema.optional()
+});
+
+export const createEvaluationSuiteBodySchema = z
+  .object({
+    slug: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .regex(/^[a-z0-9][a-z0-9._-]*$/),
+    version: z.number().int().min(1).max(1_000_000),
+    name: z.string().trim().min(1).max(200),
+    evaluator_version: z.literal(DETERMINISTIC_EVALUATOR_VERSION),
+    thresholds: evaluationThresholdsBodySchema,
+    scenarios: z.array(evaluationScenarioBodySchema).min(1).max(500),
+    metadata: metadataSchema.optional()
+  })
+  .superRefine((value, context) => {
+    const slugs = new Set<string>();
+    for (const scenario of value.scenarios) {
+      if (slugs.has(scenario.slug)) {
+        context.addIssue({
+          code: "custom",
+          message: `Scenario slug must be unique within the suite: ${scenario.slug}`,
+          path: ["scenarios"]
+        });
+      }
+      slugs.add(scenario.slug);
+    }
+  });
+
+export const listEvaluationSuitesQuerySchema = z.object({
+  status: z.enum(["draft", "active", "retired"]).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50)
+});
+
+const evaluationObservationBodySchema = z.object({
+  conversation_status: z.string().trim().min(1).max(80),
+  answer: z
+    .object({
+      text: z.string().max(20_000),
+      metadata: metadataSchema,
+      source_refs: z.array(metadataSchema).max(100)
+    })
+    .optional(),
+  ai_run: z
+    .object({
+      status: z.string().trim().min(1).max(80),
+      metadata: metadataSchema
+    })
+    .optional(),
+  tool_calls: z
+    .array(
+      z.object({
+        status: z.string().trim().min(1).max(80),
+        tool_slug: z.string().trim().min(1).max(120)
+      })
+    )
+    .max(100)
+    .default([]),
+  handoff_sessions: z.number().int().min(0).max(100)
+});
+
+export const createEvaluationRunBodySchema = z.object({
+  suite_id: z.string().trim().min(1).max(120),
+  observations: z
+    .array(
+      z.object({
+        scenario_slug: z.string().trim().min(1).max(120),
+        observation: evaluationObservationBodySchema
+      })
+    )
+    .min(1)
+    .max(500)
+});
+
+export const listEvaluationRunsQuerySchema = z.object({
+  status: z.enum(["passed", "failed"]).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50)
+});
+
+export const createEvolutionProposalBodySchema = z.object({
+  source_run_id: z.string().trim().min(1).max(120),
+  kind: z.enum(["knowledge", "prompt", "tool"]),
+  title: z.string().trim().min(1).max(200),
+  rationale: z.string().trim().min(1).max(4000),
+  artifact: metadataSchema,
+  baseline: metadataSchema.optional()
+});
+
+export const listEvolutionProposalsQuerySchema = z.object({
+  status: z
+    .enum([
+      "draft",
+      "approved",
+      "regression_passed",
+      "canary",
+      "promoted",
+      "rejected",
+      "rolled_back"
+    ])
+    .optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50)
+});
+
+const nonEmptyEvidenceSchema = metadataSchema.refine((value) => Object.keys(value).length > 0, {
+  message: "Evidence must not be empty"
+});
+
+export const transitionEvolutionProposalBodySchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("approve"),
+    review_note: z.string().trim().max(2000).optional()
+  }),
+  z.object({
+    action: z.literal("reject"),
+    review_note: z.string().trim().min(1).max(2000)
+  }),
+  z.object({
+    action: z.literal("record_regression"),
+    regression_run_id: z.string().trim().min(1).max(120),
+    review_note: z.string().trim().max(2000).optional()
+  }),
+  z.object({
+    action: z.literal("start_canary"),
+    canary_evidence: nonEmptyEvidenceSchema,
+    rollback_target: nonEmptyEvidenceSchema,
+    review_note: z.string().trim().max(2000).optional()
+  }),
+  z.object({
+    action: z.literal("promote"),
+    canary_evidence: nonEmptyEvidenceSchema,
+    review_note: z.string().trim().max(2000).optional()
+  }),
+  z.object({
+    action: z.literal("rollback"),
+    rollback_evidence: nonEmptyEvidenceSchema,
+    rollback_target: nonEmptyEvidenceSchema.optional(),
+    review_note: z.string().trim().max(2000).optional()
+  })
+]);
 
 export const chatwootWebhookBodySchema = z.record(z.string(), z.unknown());
 

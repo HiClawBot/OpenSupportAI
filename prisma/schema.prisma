@@ -47,6 +47,11 @@ model Project {
   toolDefinitions      ToolDefinition[]
   toolCalls            ToolCall[]
   conversationInsights ConversationInsight[]
+  evaluationSuites     EvaluationSuite[]
+  evaluationScenarios  EvaluationScenario[]
+  evaluationRuns       EvaluationRun[]
+  evaluationResults    EvaluationResult[]
+  evolutionProposals   EvolutionProposal[]
 
   @@index([organizationId])
   @@map("projects")
@@ -463,4 +468,142 @@ model WorkerHeartbeat {
 
   @@index([status, lastSeenAt])
   @@map("worker_heartbeats")
+}
+
+model EvaluationSuite {
+  id               String    @id @default(cuid())
+  projectId        String    @map("project_id")
+  slug             String
+  version          Int
+  name             String
+  status           String    @default("active")
+  evaluatorVersion String    @map("evaluator_version")
+  thresholds       Json
+  metadata         Json      @default("{}")
+  createdBy        String?   @map("created_by")
+  activatedAt      DateTime? @map("activated_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  project   Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  scenarios EvaluationScenario[]
+  runs      EvaluationRun[]
+
+  @@unique([id, projectId])
+  @@unique([projectId, slug, version])
+  @@index([projectId, status, createdAt])
+  @@map("evaluation_suites")
+}
+
+model EvaluationScenario {
+  id           String   @id @default(cuid())
+  projectId    String   @map("project_id")
+  suiteId      String   @map("suite_id")
+  slug         String
+  category     String
+  critical     Boolean  @default(false)
+  input        Json
+  expectations Json
+  metadata     Json     @default("{}")
+  orderIndex   Int      @default(0) @map("order_index")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  project Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  suite   EvaluationSuite    @relation(fields: [suiteId, projectId], references: [id, projectId], onDelete: Cascade)
+  results EvaluationResult[]
+
+  @@unique([id, projectId])
+  @@unique([suiteId, slug])
+  @@index([projectId, category])
+  @@map("evaluation_scenarios")
+}
+
+model EvaluationRun {
+  id               String    @id @default(cuid())
+  projectId        String    @map("project_id")
+  suiteId          String    @map("suite_id")
+  suiteVersion     Int       @map("suite_version")
+  status           String
+  evaluatorVersion String    @map("evaluator_version")
+  thresholds       Json
+  score            Float
+  passRate         Float     @map("pass_rate")
+  passedCount      Int       @map("passed_count")
+  failedCount      Int       @map("failed_count")
+  criticalFailures Json      @default("[]") @map("critical_failures")
+  summary          Json      @default("{}")
+  createdBy        String?   @map("created_by")
+  startedAt        DateTime  @map("started_at")
+  completedAt      DateTime? @map("completed_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  project             Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  suite               EvaluationSuite     @relation(fields: [suiteId, projectId], references: [id, projectId], onDelete: Restrict)
+  results             EvaluationResult[]
+  sourceProposals     EvolutionProposal[] @relation("ProposalSourceRun")
+  regressionProposals EvolutionProposal[] @relation("ProposalRegressionRun")
+
+  @@unique([id, projectId])
+  @@index([projectId, status, createdAt])
+  @@index([suiteId, createdAt])
+  @@map("evaluation_runs")
+}
+
+model EvaluationResult {
+  id           String   @id @default(cuid())
+  projectId    String   @map("project_id")
+  runId        String   @map("run_id")
+  scenarioId   String?  @map("scenario_id")
+  scenarioSlug String   @map("scenario_slug")
+  category     String
+  critical     Boolean  @default(false)
+  status       String
+  score        Float
+  outcome      String
+  assertions   Json
+  observed     Json
+  error        String?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  project  Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  run      EvaluationRun       @relation(fields: [runId, projectId], references: [id, projectId], onDelete: Cascade)
+  scenario EvaluationScenario? @relation(fields: [scenarioId, projectId], references: [id, projectId], onDelete: Restrict)
+
+  @@unique([runId, scenarioSlug])
+  @@index([projectId, status, createdAt])
+  @@index([scenarioId])
+  @@map("evaluation_results")
+}
+
+model EvolutionProposal {
+  id              String    @id @default(cuid())
+  projectId       String    @map("project_id")
+  sourceRunId     String    @map("source_run_id")
+  regressionRunId String?   @map("regression_run_id")
+  kind            String
+  status          String    @default("draft")
+  title           String
+  rationale       String
+  artifact        Json
+  artifactHash    String    @map("artifact_hash")
+  baseline        Json      @default("{}")
+  canaryEvidence  Json?     @map("canary_evidence")
+  rollbackTarget  Json?     @map("rollback_target")
+  reviewNote      String?   @map("review_note")
+  createdBy       String?   @map("created_by")
+  reviewedBy      String?   @map("reviewed_by")
+  reviewedAt      DateTime? @map("reviewed_at")
+  promotedAt      DateTime? @map("promoted_at")
+  rolledBackAt    DateTime? @map("rolled_back_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceRun     EvaluationRun  @relation("ProposalSourceRun", fields: [sourceRunId, projectId], references: [id, projectId], onDelete: Restrict)
+  regressionRun EvaluationRun? @relation("ProposalRegressionRun", fields: [regressionRunId, projectId], references: [id, projectId], onDelete: Restrict)
+
+  @@unique([id, projectId])
+  @@index([projectId, status, createdAt])
+  @@index([sourceRunId])
+  @@index([regressionRunId])
+  @@map("evolution_proposals")
 }

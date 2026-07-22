@@ -20,6 +20,11 @@ English:
 - Added tenant-safe relational constraints, contact deduplication migration, project-scoped handoff mappings, and race-safe webhook claims.
 - Replaced the placeholder webhook retry flow with an authenticated `501` response until real provider replay handlers exist.
 - Fixed Prisma 7 PostgreSQL runtime initialization and bundled API/worker production entrypoints so Docker's `node dist/index.js` command is executable.
+- Added a versioned deterministic evaluator package and a seven-scenario critical golden corpus covering grounded FAQ, ambiguity, prompt injection, missing identity, tool failure, model failure, and handoff.
+- Added project-scoped evaluation suites, scenarios, runs, results, and governed knowledge/prompt/tool proposals with audit-backed approval, regression, canary, promotion, and rollback gates.
+- Added Admin Console governance operations while keeping production root credentials memory-only and leaving every proposal artifact non-applying by default.
+- Added PostgreSQL evolution lifecycle smoke coverage and CI enforcement for the deterministic golden gate.
+- Added explicit identity-clarification and tool-failure metadata paths so safety outcomes are observable and testable.
 
 中文：
 
@@ -39,6 +44,11 @@ English:
 - 新增租户关系约束、contact 去重 migration、项目级 handoff mapping 和 race-safe webhook claim。
 - 移除 placeholder webhook retry 流程；在真实 provider replay handler 完成前，鉴权后的保留接口返回 `501`。
 - 修复 Prisma 7 PostgreSQL runtime 初始化，并打包 API/worker 生产入口，确保 Docker 的 `node dist/index.js` 命令可执行。
+- 新增版本化确定性评测器包和七场景关键 golden corpus，覆盖知识问答、歧义、prompt injection、缺少身份、工具失败、模型失败和人工转接。
+- 新增项目级评测套件、场景、运行、结果，以及带审计的知识/提示词/工具提案审批、回归、灰度、晋级和回滚门禁。
+- Admin Console 新增治理操作；生产 root 凭据只保存在内存中，全部 proposal artifact 默认都不会自动应用。
+- 新增 PostgreSQL 治理进化生命周期 smoke test，并在 CI 强制执行确定性 golden gate。
+- 新增明确的身份补充与工具失败 metadata 路径，使安全结果可观察、可测试。
 
 ## v1.0.0 - 2026-06-18
 

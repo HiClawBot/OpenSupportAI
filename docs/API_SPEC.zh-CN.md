@@ -1688,6 +1688,42 @@ export type SupportEvent =
 
 ---
 
+## 治理评测与进化 API
+
+以下 endpoint 需要 root admin token，或具有 `admin:evolution` scope 的项目 API key：
+
+```http
+GET    /v1/admin/projects/{project_id}/evaluations/suites
+POST   /v1/admin/projects/{project_id}/evaluations/suites
+GET    /v1/admin/projects/{project_id}/evaluations/runs
+GET    /v1/admin/projects/{project_id}/evaluations/runs/{run_id}
+POST   /v1/admin/projects/{project_id}/evaluations/runs
+GET    /v1/admin/projects/{project_id}/evolution/proposals
+POST   /v1/admin/projects/{project_id}/evolution/proposals
+POST   /v1/admin/projects/{project_id}/evolution/proposals/{proposal_id}/transitions
+```
+
+创建 suite 时必须提交唯一的 `slug + version`、`evaluator_version=osa-deterministic-v1`、阈值和至少一个 scenario。运行创建接口要求每个 scenario 恰好有一条可信 observation；服务端使用版本化确定性评测器生成断言、总分、通过率和 critical failures。
+
+Run 列表接口只返回 score、pass rate、critical failures 等摘要，不加载 observations；只有单 run 详情接口返回完整 results 和 assertions。
+
+提案只允许从失败 run 创建，`kind` 支持 `knowledge`、`prompt`、`tool`。状态机支持：
+
+```text
+draft -> approved -> regression_passed -> canary -> promoted
+draft -> rejected
+canary -> rolled_back
+promoted -> rolled_back
+```
+
+`record_regression` 必须引用批准后新建、相同 suite/version 且通过的 run。`start_canary` 必须提交包含 `deployment_ref` 与 `scope` 的 `canary_evidence` 和非空 `rollback_target`。`promote` 要求 `canary_evidence.outcome=passed`。`rollback` 必须提交非空 `rollback_evidence`。
+
+状态冲突、过期 expected-status、复用源运行或不满足门禁时返回 `409`。创建和每次 transition 都会写入 audit log；artifact 正文不会写入审计 metadata。当前 API 只治理证据和状态，不会自动修改生产知识库、提示词或工具。
+
+完整契约和限制见 [GOVERNED_EVOLUTION.zh-CN.md](./GOVERNED_EVOLUTION.zh-CN.md)。
+
+---
+
 ## 版本策略
 
 - `/v1` 从 v1.0.0 起进入稳定公共契约。

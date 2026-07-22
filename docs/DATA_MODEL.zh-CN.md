@@ -584,6 +584,51 @@ organization_id
 
 ---
 
+## 治理评测模型
+
+### evaluation_suites
+
+保存按项目隔离、版本不可变的评测定义。`project_id + slug + version` 唯一；`thresholds` 保存最低分、最低通过率和关键场景必须通过开关；`evaluator_version` 固定评测语义。
+
+### evaluation_scenarios
+
+保存 suite 内有序场景，包括 `category`、`critical`、`input` 与 `expectations`。`suite_id + slug` 唯一，且 suite 关系同时使用 `project_id` 约束，防止跨租户关联。
+
+### evaluation_runs
+
+保存一次完整运行的 suite version、evaluator version、阈值快照、状态、总分、通过率、通过/失败数量、关键失败和 summary。Run 创建后作为发布证据使用，不提供更新接口。
+
+### evaluation_results
+
+保存每个 scenario 的确定性结果，包括 `status`、`score`、`outcome`、`assertions`、`observed` 和可选 `error`。`run_id + scenario_slug` 唯一。
+
+### evolution_proposals
+
+保存从失败 run 创建的 `knowledge|prompt|tool` 提案。主要字段：
+
+```text
+project_id
+source_run_id
+regression_run_id nullable
+kind
+status
+title
+rationale
+artifact
+artifact_hash
+baseline
+canary_evidence nullable
+rollback_target nullable
+review_note nullable
+created_by / reviewed_by
+reviewed_at / promoted_at / rolled_back_at
+created_at / updated_at
+```
+
+`artifact_hash` 是规范化 artifact 的 SHA-256，用于不可变证据识别。状态更新使用当前状态 fencing；`source_run` 与 `regression_run` 都通过 `project_id` 复合关系约束。提案记录本身不会修改知识库、LLM 配置或 tool definition。
+
+---
+
 ## 枚举建议
 
 ### ConversationStatus

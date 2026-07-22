@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { chunkText, scoreChunk, tokenize } from "../knowledge-text";
-import { IdempotencyConflictError } from "./types";
+import { GovernanceConflictError, IdempotencyConflictError } from "./types";
 import type {
   AdminApiKeyLookup,
   AiRunRecord,
@@ -17,6 +17,15 @@ import type {
   CreateKnowledgeDocumentInput,
   CreateMessageInput,
   CreateProjectInput,
+  EvaluationRunRecord,
+  EvaluationRunSummaryRecord,
+  EvaluationResultRecord,
+  EvaluationScenarioRecord,
+  EvaluationSuiteRecord,
+  EvaluationSuiteStatus,
+  EvolutionProposalKind,
+  EvolutionProposalRecord,
+  EvolutionProposalStatus,
   HandoffSessionRecord,
   InboxRecord,
   IntegrationConfigRecord,
@@ -1404,6 +1413,271 @@ export class PrismaSupportRepository implements SupportRepository {
     return mapConversationInsight(insight);
   }
 
+  async createEvaluationSuite(
+    input: Parameters<SupportRepository["createEvaluationSuite"]>[0]
+  ): Promise<EvaluationSuiteRecord> {
+    try {
+      const suite = await this.prisma.evaluationSuite.create({
+        data: {
+          id: id("evalsuite"),
+          project: { connect: { id: input.projectId } },
+          slug: input.slug,
+          version: input.version,
+          name: input.name,
+          status: input.status,
+          evaluatorVersion: input.evaluatorVersion,
+          thresholds: jsonInput(input.thresholds),
+          metadata: jsonInput(input.metadata ?? {}),
+          createdBy: input.createdBy,
+          activatedAt: input.status === "active" ? new Date() : undefined,
+          scenarios: {
+            create: input.scenarios.map((scenario) => ({
+              id: id("evalscenario"),
+              project: { connect: { id: input.projectId } },
+              slug: scenario.slug,
+              category: scenario.category,
+              critical: scenario.critical,
+              input: jsonInput(scenario.input),
+              expectations: jsonInput(scenario.expectations),
+              metadata: jsonInput(scenario.metadata ?? {}),
+              orderIndex: scenario.orderIndex
+            }))
+          }
+        },
+        include: {
+          scenarios: { orderBy: { orderIndex: "asc" } }
+        }
+      });
+      return mapEvaluationSuite(suite);
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        throw new GovernanceConflictError(
+          `Evaluation suite version already exists: ${input.slug}@${input.version}`
+        );
+      }
+      throw error;
+    }
+  }
+
+  async listEvaluationSuites(input: {
+    projectId: string;
+    status?: EvaluationSuiteStatus;
+    limit?: number;
+  }): Promise<EvaluationSuiteRecord[]> {
+    const suites = await this.prisma.evaluationSuite.findMany({
+      where: {
+        projectId: input.projectId,
+        ...(input.status ? { status: input.status } : {})
+      },
+      include: {
+        scenarios: { orderBy: { orderIndex: "asc" } }
+      },
+      take: input.limit ?? 50,
+      orderBy: { createdAt: "desc" }
+    });
+    return suites.map(mapEvaluationSuite);
+  }
+
+  async findEvaluationSuite(input: {
+    projectId: string;
+    id: string;
+  }): Promise<EvaluationSuiteRecord | undefined> {
+    const suite = await this.prisma.evaluationSuite.findFirst({
+      where: { id: input.id, projectId: input.projectId },
+      include: {
+        scenarios: { orderBy: { orderIndex: "asc" } }
+      }
+    });
+    return suite ? mapEvaluationSuite(suite) : undefined;
+  }
+
+  async createEvaluationRun(
+    input: Parameters<SupportRepository["createEvaluationRun"]>[0]
+  ): Promise<EvaluationRunRecord> {
+    const scenarioBySlug = new Map(
+      input.suite.scenarios.map((scenario) => [scenario.slug, scenario])
+    );
+    const run = await this.prisma.evaluationRun.create({
+      data: {
+        id: id("evalrun"),
+        project: { connect: { id: input.projectId } },
+        suite: {
+          connect: {
+            id_projectId: { id: input.suite.id, projectId: input.projectId }
+          }
+        },
+        suiteVersion: input.suite.version,
+        status: input.summary.status,
+        evaluatorVersion: input.summary.evaluatorVersion,
+        thresholds: jsonInput(input.summary.thresholds),
+        score: input.summary.score,
+        passRate: input.summary.passRate,
+        passedCount: input.summary.passedCount,
+        failedCount: input.summary.failedCount,
+        criticalFailures: jsonInput(input.summary.criticalFailures),
+        summary: jsonInput({
+          evaluator_version: input.summary.evaluatorVersion,
+          critical_failures: input.summary.criticalFailures
+        }),
+        createdBy: input.createdBy,
+        startedAt: new Date(input.startedAt),
+        completedAt: new Date(input.completedAt),
+        results: {
+          create: input.summary.results.map((result) => {
+            const scenario = scenarioBySlug.get(result.scenarioSlug);
+            return {
+              id: id("evalresult"),
+              project: { connect: { id: input.projectId } },
+              ...(scenario
+                ? {
+                    scenario: {
+                      connect: {
+                        id_projectId: {
+                          id: scenario.id,
+                          projectId: input.projectId
+                        }
+                      }
+                    }
+                  }
+                : {}),
+              scenarioSlug: result.scenarioSlug,
+              category: result.category,
+              critical: result.critical,
+              status: result.status,
+              score: result.score,
+              outcome: result.outcome,
+              assertions: jsonInput(result.assertions),
+              observed: jsonInput(result.observation)
+            };
+          })
+        }
+      },
+      include: {
+        results: { orderBy: { createdAt: "asc" } }
+      }
+    });
+    return mapEvaluationRun(run);
+  }
+
+  async listEvaluationRuns(input: {
+    projectId: string;
+    status?: "passed" | "failed";
+    limit?: number;
+  }): Promise<EvaluationRunSummaryRecord[]> {
+    const runs = await this.prisma.evaluationRun.findMany({
+      where: {
+        projectId: input.projectId,
+        ...(input.status ? { status: input.status } : {})
+      },
+      take: input.limit ?? 50,
+      orderBy: { createdAt: "desc" }
+    });
+    return runs.map(mapEvaluationRunSummary);
+  }
+
+  async findEvaluationRun(input: {
+    projectId: string;
+    id: string;
+  }): Promise<EvaluationRunRecord | undefined> {
+    const run = await this.prisma.evaluationRun.findFirst({
+      where: { id: input.id, projectId: input.projectId },
+      include: {
+        results: { orderBy: { createdAt: "asc" } }
+      }
+    });
+    return run ? mapEvaluationRun(run) : undefined;
+  }
+
+  async createEvolutionProposal(input: {
+    projectId: string;
+    sourceRunId: string;
+    kind: EvolutionProposalKind;
+    title: string;
+    rationale: string;
+    artifact: JsonRecord;
+    artifactHash: string;
+    baseline?: JsonRecord;
+    createdBy?: string;
+  }): Promise<EvolutionProposalRecord> {
+    const proposal = await this.prisma.evolutionProposal.create({
+      data: {
+        id: id("proposal"),
+        projectId: input.projectId,
+        sourceRunId: input.sourceRunId,
+        kind: input.kind,
+        title: input.title,
+        rationale: input.rationale,
+        artifact: jsonInput(input.artifact),
+        artifactHash: input.artifactHash,
+        baseline: jsonInput(input.baseline ?? {}),
+        createdBy: input.createdBy
+      }
+    });
+    return mapEvolutionProposal(proposal);
+  }
+
+  async listEvolutionProposals(input: {
+    projectId: string;
+    status?: EvolutionProposalStatus;
+    limit?: number;
+  }): Promise<EvolutionProposalRecord[]> {
+    const proposals = await this.prisma.evolutionProposal.findMany({
+      where: {
+        projectId: input.projectId,
+        ...(input.status ? { status: input.status } : {})
+      },
+      take: input.limit ?? 50,
+      orderBy: { createdAt: "desc" }
+    });
+    return proposals.map(mapEvolutionProposal);
+  }
+
+  async findEvolutionProposal(input: {
+    projectId: string;
+    id: string;
+  }): Promise<EvolutionProposalRecord | undefined> {
+    const proposal = await this.prisma.evolutionProposal.findFirst({
+      where: { id: input.id, projectId: input.projectId }
+    });
+    return proposal ? mapEvolutionProposal(proposal) : undefined;
+  }
+
+  async transitionEvolutionProposal(
+    input: Parameters<SupportRepository["transitionEvolutionProposal"]>[0]
+  ): Promise<EvolutionProposalRecord> {
+    const proposals = await this.prisma.evolutionProposal.updateManyAndReturn({
+      where: {
+        id: input.id,
+        projectId: input.projectId,
+        status: input.expectedStatus
+      },
+      data: {
+        status: input.status,
+        regressionRunId: input.regressionRunId,
+        canaryEvidence: input.canaryEvidence ? jsonInput(input.canaryEvidence) : undefined,
+        rollbackTarget: input.rollbackTarget ? jsonInput(input.rollbackTarget) : undefined,
+        reviewNote: input.reviewNote,
+        reviewedBy: input.reviewedBy,
+        reviewedAt: input.reviewedAt ? new Date(input.reviewedAt) : undefined,
+        promotedAt: input.promotedAt ? new Date(input.promotedAt) : undefined,
+        rolledBackAt: input.rolledBackAt ? new Date(input.rolledBackAt) : undefined
+      }
+    });
+    if (!proposals[0]) {
+      const current = await this.findEvolutionProposal({
+        projectId: input.projectId,
+        id: input.id
+      });
+      if (!current) {
+        throw new Error(`Evolution proposal not found: ${input.id}`);
+      }
+      throw new GovernanceConflictError(
+        `Evolution proposal status changed: expected ${input.expectedStatus}, found ${current.status}`
+      );
+    }
+    return mapEvolutionProposal(proposals[0]);
+  }
+
   async createAsyncJob(input: {
     projectId: string;
     type: string;
@@ -1586,6 +1860,16 @@ type PrismaConversationInsight = Awaited<
   ReturnType<PrismaClient["conversationInsight"]["findFirst"]>
 >;
 type PrismaAsyncJob = Awaited<ReturnType<PrismaClient["asyncJob"]["findFirst"]>>;
+type PrismaEvaluationSuite = Prisma.EvaluationSuiteGetPayload<{
+  include: { scenarios: true };
+}>;
+type PrismaEvaluationScenario = Prisma.EvaluationScenarioGetPayload<Record<string, never>>;
+type PrismaEvaluationRun = Prisma.EvaluationRunGetPayload<{
+  include: { results: true };
+}>;
+type PrismaEvaluationRunSummary = Prisma.EvaluationRunGetPayload<Record<string, never>>;
+type PrismaEvaluationResult = Prisma.EvaluationResultGetPayload<Record<string, never>>;
+type PrismaEvolutionProposal = Prisma.EvolutionProposalGetPayload<Record<string, never>>;
 
 function mapProject(project: NonNullable<PrismaProject>): ProjectRecord {
   return {
@@ -1847,6 +2131,116 @@ function mapConversationInsight(
     metadata: jsonRecord(insight.metadata),
     createdAt: insight.createdAt.toISOString(),
     updatedAt: insight.updatedAt.toISOString()
+  };
+}
+
+function mapEvaluationSuite(suite: PrismaEvaluationSuite): EvaluationSuiteRecord {
+  return {
+    id: suite.id,
+    projectId: suite.projectId,
+    slug: suite.slug,
+    version: suite.version,
+    name: suite.name,
+    status: suite.status as EvaluationSuiteRecord["status"],
+    evaluatorVersion: suite.evaluatorVersion,
+    thresholds: jsonRecord(suite.thresholds) as EvaluationSuiteRecord["thresholds"],
+    metadata: jsonRecord(suite.metadata),
+    createdBy: suite.createdBy ?? undefined,
+    activatedAt: iso(suite.activatedAt),
+    createdAt: suite.createdAt.toISOString(),
+    scenarios: suite.scenarios.map(mapEvaluationScenario)
+  };
+}
+
+function mapEvaluationScenario(scenario: PrismaEvaluationScenario): EvaluationScenarioRecord {
+  return {
+    id: scenario.id,
+    projectId: scenario.projectId,
+    suiteId: scenario.suiteId,
+    slug: scenario.slug,
+    category: scenario.category as EvaluationScenarioRecord["category"],
+    critical: scenario.critical,
+    input: jsonRecord(scenario.input),
+    expectations: jsonRecord(scenario.expectations),
+    metadata: jsonRecord(scenario.metadata),
+    orderIndex: scenario.orderIndex,
+    createdAt: scenario.createdAt.toISOString()
+  };
+}
+
+function mapEvaluationRun(run: PrismaEvaluationRun): EvaluationRunRecord {
+  return {
+    ...mapEvaluationRunSummary(run),
+    results: run.results.map(mapEvaluationResult)
+  };
+}
+
+function mapEvaluationRunSummary(run: PrismaEvaluationRunSummary): EvaluationRunSummaryRecord {
+  return {
+    id: run.id,
+    projectId: run.projectId,
+    suiteId: run.suiteId,
+    suiteVersion: run.suiteVersion,
+    status: run.status as EvaluationRunRecord["status"],
+    evaluatorVersion: run.evaluatorVersion,
+    thresholds: jsonRecord(run.thresholds) as EvaluationRunRecord["thresholds"],
+    score: run.score,
+    passRate: run.passRate,
+    passedCount: run.passedCount,
+    failedCount: run.failedCount,
+    criticalFailures: stringArray(run.criticalFailures),
+    summary: jsonRecord(run.summary),
+    createdBy: run.createdBy ?? undefined,
+    startedAt: run.startedAt.toISOString(),
+    completedAt: iso(run.completedAt),
+    createdAt: run.createdAt.toISOString()
+  };
+}
+
+function mapEvaluationResult(result: PrismaEvaluationResult): EvaluationResultRecord {
+  return {
+    id: result.id,
+    projectId: result.projectId,
+    runId: result.runId,
+    scenarioId: result.scenarioId ?? undefined,
+    scenarioSlug: result.scenarioSlug,
+    category: result.category as EvaluationResultRecord["category"],
+    critical: result.critical,
+    status: result.status as EvaluationResultRecord["status"],
+    score: result.score,
+    outcome: result.outcome,
+    assertions: Array.isArray(result.assertions)
+      ? (result.assertions as EvaluationResultRecord["assertions"])
+      : [],
+    observed: jsonRecord(result.observed) as EvaluationResultRecord["observed"],
+    error: result.error ?? undefined,
+    createdAt: result.createdAt.toISOString()
+  };
+}
+
+function mapEvolutionProposal(proposal: PrismaEvolutionProposal): EvolutionProposalRecord {
+  return {
+    id: proposal.id,
+    projectId: proposal.projectId,
+    sourceRunId: proposal.sourceRunId,
+    regressionRunId: proposal.regressionRunId ?? undefined,
+    kind: proposal.kind as EvolutionProposalRecord["kind"],
+    status: proposal.status as EvolutionProposalRecord["status"],
+    title: proposal.title,
+    rationale: proposal.rationale,
+    artifact: jsonRecord(proposal.artifact),
+    artifactHash: proposal.artifactHash,
+    baseline: jsonRecord(proposal.baseline),
+    canaryEvidence: proposal.canaryEvidence ? jsonRecord(proposal.canaryEvidence) : undefined,
+    rollbackTarget: proposal.rollbackTarget ? jsonRecord(proposal.rollbackTarget) : undefined,
+    reviewNote: proposal.reviewNote ?? undefined,
+    createdBy: proposal.createdBy ?? undefined,
+    reviewedBy: proposal.reviewedBy ?? undefined,
+    reviewedAt: iso(proposal.reviewedAt),
+    promotedAt: iso(proposal.promotedAt),
+    rolledBackAt: iso(proposal.rolledBackAt),
+    createdAt: proposal.createdAt.toISOString(),
+    updatedAt: proposal.updatedAt.toISOString()
   };
 }
 
