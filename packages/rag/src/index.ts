@@ -17,6 +17,43 @@ export type IndexTextDocumentInput = {
   chunkSize?: number;
 };
 
+export const MIN_LEXICAL_RELEVANCE = 0.34;
+export const MIN_TRIGRAM_RELEVANCE = 0.6;
+
+const englishStopTerms = new Set([
+  "and",
+  "are",
+  "can",
+  "could",
+  "do",
+  "does",
+  "for",
+  "from",
+  "help",
+  "how",
+  "is",
+  "it",
+  "me",
+  "my",
+  "please",
+  "that",
+  "the",
+  "this",
+  "what",
+  "when",
+  "where",
+  "which",
+  "who",
+  "why",
+  "with",
+  "would"
+]);
+
+const cjkQuestionPrefixes =
+  /^(?:这个|那个|请问|请帮我|麻烦|帮我|怎么|如何|为什么|能否|可以|能不能)+/u;
+const cjkQuestionSuffixes =
+  /(?:怎么办|怎么做|是什么|在哪里|为什么|多久到账|要多久|多久|多少|可以吗|吗|呢)+$/u;
+
 export function createNoHitResult(): RetrievalResult {
   return {
     chunks: [],
@@ -71,7 +108,7 @@ export function retrieveByKeyword(
   chunks: KnowledgeChunk[],
   limit = 6
 ): RetrievalResult {
-  const terms = tokenize(query);
+  const terms = lexicalQueryTerms(query);
   if (terms.length === 0) {
     return createNoHitResult();
   }
@@ -80,11 +117,11 @@ export function retrieveByKeyword(
     .filter((chunk) => chunk.projectId === projectId)
     .map((chunk) => ({
       ...chunk,
-      score: score(chunk.content, terms)
+      score: scoreLexicalChunk(chunk.content, terms)
     }))
-    .filter((chunk) => chunk.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
+    .filter((chunk) => chunk.score >= MIN_LEXICAL_RELEVANCE)
+    .sort((a, b) => b.score - a.score || a.chunkIndex - b.chunkIndex || a.id.localeCompare(b.id))
+    .slice(0, Math.max(1, Math.min(limit, 20)));
 
   const topResult = results[0];
   if (!topResult) {
@@ -93,29 +130,74 @@ export function retrieveByKeyword(
 
   return {
     chunks: results,
-    confidence: Math.min(1, 0.35 + topResult.score / Math.max(terms.length, 1))
+    confidence: topResult.score
   };
 }
 
-function tokenize(value: string): string[] {
-  const asciiTerms = value
-    .toLowerCase()
-    .split(/[^\p{Letter}\p{Number}]+/u)
-    .filter((term) => term.length >= 2);
-  const cjkTerms = [...value.matchAll(/\p{Script=Han}{2,}/gu)].flatMap((match) => {
-    const text = match[0];
-    const terms = [text];
-    for (let size = 2; size <= Math.min(4, text.length); size += 1) {
-      for (let index = 0; index <= text.length - size; index += 1) {
-        terms.push(text.slice(index, index + size));
+export function lexicalQueryTerms(value: string, maxTerms = 24): string[] {
+  const normalized = normalizeLexicalText(value);
+  const terms = new Set<string>();
+  for (const match of normalized.matchAll(/[\p{Script=Latin}\p{Number}]+/gu)) {
+    const term = match[0];
+    if (term.length >= 2 && (!englishStopTerms.has(term) || /\p{Number}/u.test(term))) {
+      terms.add(term);
+    }
+  }
+
+  for (const match of normalized.matchAll(/\p{Script=Han}{2,}/gu)) {
+    const segment = normalizeCjkQuestion(match[0]);
+    if (segment.length < 2) continue;
+    if (segment.length <= 12) {
+      terms.add(segment);
+    }
+    for (let size = Math.min(4, segment.length); size >= 2; size -= 1) {
+      for (let index = 0; index <= segment.length - size; index += 1) {
+        terms.add(segment.slice(index, index + size));
       }
     }
-    return terms;
-  });
-  return [...new Set([...asciiTerms, ...cjkTerms])];
+  }
+
+  return [...terms]
+    .sort((left, right) => [...right].length - [...left].length || left.localeCompare(right))
+    .slice(0, Math.max(1, maxTerms));
 }
 
-function score(content: string, terms: string[]): number {
-  const lower = content.toLowerCase();
-  return terms.reduce((sum, term) => sum + (lower.includes(term.toLowerCase()) ? 1 : 0), 0);
+export function scoreLexicalChunk(content: string, terms: string[]): number {
+  if (terms.length === 0) {
+    return 0;
+  }
+  const normalizedContent = normalizeLexicalText(content);
+  const matched = terms.filter((term) => normalizedContent.includes(term));
+  if (matched.length === 0) {
+    return 0;
+  }
+
+  const weight = (term: string) => Math.min(6, [...term].length);
+  const totalWeight = terms.reduce((sum, term) => sum + weight(term), 0);
+  const matchedWeight = matched.reduce((sum, term) => sum + weight(term), 0);
+  const longestTerm = Math.max(...terms.map((term) => [...term].length));
+  const longestMatch = Math.max(...matched.map((term) => [...term].length));
+  const anchor = longestMatch / Math.max(longestTerm, 1);
+  const coverage = matchedWeight / Math.max(totalWeight, 1);
+  const diversity = Math.min(1, matched.length / Math.min(4, terms.length));
+
+  return roundScore(Math.min(1, anchor * 0.55 + coverage * 0.3 + diversity * 0.15));
+}
+
+export function normalizeLexicalText(value: string): string {
+  return value.normalize("NFKC").toLocaleLowerCase("en-US").replace(/\s+/g, " ").trim();
+}
+
+function normalizeCjkQuestion(value: string): string {
+  let normalized = value;
+  let previous = "";
+  while (normalized !== previous) {
+    previous = normalized;
+    normalized = normalized.replace(cjkQuestionPrefixes, "").replace(cjkQuestionSuffixes, "");
+  }
+  return normalized;
+}
+
+function roundScore(value: number): number {
+  return Math.round(value * 10_000) / 10_000;
 }

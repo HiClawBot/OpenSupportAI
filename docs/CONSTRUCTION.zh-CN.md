@@ -507,28 +507,30 @@ pdf
 create knowledge_document(status=pending)
 → parse content
 → chunk
-→ embed
 → insert knowledge_chunks
+→ trigger maintain lexical search_text
 → set document status=indexed
 ```
 
 ### chunk 策略
 
 ```text
-chunk_size: 600-900 tokens
-chunk_overlap: 100-150 tokens
+worker chunk_size: 900 characters
+同步 API chunk_size: 1200 characters
 保留 title/source_uri/heading_path
 ```
 
 ### 检索
 
-```sql
-SELECT *
-FROM knowledge_chunks
-WHERE project_id = $projectId
-ORDER BY embedding <-> $queryEmbedding
-LIMIT 6;
+```text
+project_id + indexed document filter
+→ PostgreSQL FTS / CJK n-gram / trigram candidate search
+→ bounded candidate set
+→ deterministic score >= 0.34
+→ stable top_k (normal answer path: 6)
 ```
+
+`knowledge_chunks.embedding` 保留为后续 hybrid retrieval 预留字段，当前 ingestion 不调用 embedding provider，在线 retrieval 不执行 vector search。
 
 ### source_refs
 

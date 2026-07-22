@@ -30,13 +30,13 @@ Beta 明确不承诺：多 API 横向扩展、自动 mutation tool、Email/Teleg
 - 非 root 生产镜像、one-shot migration、readiness、worker loss 检测、备份恢复和 CI Compose 演练。
 - 七场景关键 golden corpus、确定性 CI 阈值、持久化 evaluation evidence，以及带人工审批、回归、灰度、晋级和回滚的提案状态机。
 - Admin Console 治理工作区；生产 root token 不持久化，proposal 不自动修改生产状态。
+- 有界 PostgreSQL 词法检索：indexed 文档过滤、FTS、中文 n-gram、trigram fallback、确定性阈值和数据库 smoke。
 
 ### `v1.1.0-beta.1` 发布前剩余
 
-1. 用有界 PostgreSQL 全文/词法检索替换 Prisma broad substring scan，校准阈值、引用和 no-hit。
-2. 补齐 Widget locale、错误恢复和 Governance 浏览器自动化覆盖。
-3. 执行低流量 load test、LLM/tool/worker fault injection、恢复演练和 24 小时 staging soak。
-4. 关闭全部 P0/P1，生成双语 release notes、checksums/SBOM 和可追溯发布证据。
+1. 补齐 Widget locale、错误恢复和 Governance 浏览器自动化覆盖。
+2. 执行低流量 load test、LLM/tool/worker fault injection、恢复演练和 24 小时 staging soak。
+3. 关闭全部 P0/P1，生成双语 release notes、checksums/SBOM 和可追溯发布证据。
 
 发布原则：模型可以提出候选改进，但不能审批自己的变更，也不能绕过回归、灰度和回滚门禁直接修改生产状态。
 
@@ -55,7 +55,7 @@ Conversation API
 SSE events
 OpenAI-compatible LLM Adapter
 Markdown/Text Knowledge Ingestion
-Keyword Retrieval（pgvector schema 已准备，生产词法检索仍在施工）
+PostgreSQL Lexical Retrieval（FTS + CJK n-gram + trigram）
 AI Orchestrator
 Chatwoot Adapter
 Admin Console 简版

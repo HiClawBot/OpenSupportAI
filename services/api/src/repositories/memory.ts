@@ -37,7 +37,7 @@ import type {
   ToolDefinitionRecord,
   WebhookEventRecord
 } from "./types";
-import { chunkText, scoreChunk, tokenize } from "../knowledge-text";
+import { chunkText, MIN_LEXICAL_RELEVANCE, scoreChunk, tokenize } from "../knowledge-text";
 
 function now(): string {
   return new Date().toISOString();
@@ -671,9 +671,12 @@ export class MemorySupportRepository implements SupportRepository {
         ...chunk,
         score: scoreChunk(chunk.content, terms)
       }))
-      .filter((chunk) => (chunk.score ?? 0) > 0)
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-      .slice(0, limit);
+      .filter((chunk) => (chunk.score ?? 0) >= MIN_LEXICAL_RELEVANCE)
+      .sort(
+        (a, b) =>
+          (b.score ?? 0) - (a.score ?? 0) || a.chunkIndex - b.chunkIndex || a.id.localeCompare(b.id)
+      )
+      .slice(0, Math.max(1, Math.min(limit, 20)));
   }
 
   async getActiveLlmProvider(projectId: string): Promise<LlmProviderRecord | undefined> {

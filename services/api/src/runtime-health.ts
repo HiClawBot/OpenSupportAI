@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 
-export const EXPECTED_DATABASE_MIGRATION = "202607220004_governed_evolution";
+export const EXPECTED_DATABASE_MIGRATION = "202607220005_lexical_retrieval";
 export const REQUIRED_WORKER_JOB_TYPES = ["answer.generate", "knowledge.index"] as const;
 
 export type RuntimeWorkerHeartbeat = {

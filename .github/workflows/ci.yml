@@ -89,6 +89,9 @@ jobs:
       - name: Verify PostgreSQL governed evolution
         run: pnpm smoke:postgres-evolution
 
+      - name: Verify PostgreSQL lexical retrieval
+        run: pnpm smoke:postgres-retrieval
+
       - name: Verify service entrypoints
         run: |
           NODE_ENV=test node services/api/dist/index.js

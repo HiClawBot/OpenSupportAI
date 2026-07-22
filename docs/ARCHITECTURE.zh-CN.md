@@ -36,7 +36,7 @@ flowchart LR
   H --> CW[Chatwoot]
   H --> TD[Tiledesk]
   H --> ZA[Zammad]
-  R --> V[(pgvector)]
+  R --> V[(PostgreSQL Lexical Index)]
   DB -->|persisted message cursor| API
   R --> S[(Object Storage)]
 ```
@@ -64,7 +64,8 @@ flowchart LR
 ### 基础设施层
 
 - PostgreSQL
-- pgvector
+- PostgreSQL FTS、CJK n-gram 与 pg_trgm
+- pgvector-ready schema
 - LLM Provider
 - External Helpdesk
 
@@ -152,13 +153,14 @@ source connector
 parser
 cleaner
 chunker
-embedding client
-vector store
-retriever
-source ref builder
+  lexical index
+  retriever
+  source ref builder
 ```
 
-v0.1 使用 PostgreSQL + pgvector。未来通过 adapter 支持：
+当前 Prisma runtime 使用 PostgreSQL FTS、中文 n-gram 和 trigram 生成有界候选集，再使用共享的确定性规则校准相关性。查询按 `project_id` 隔离，只读取 `indexed` 文档；memory mode 与 PostgreSQL mode 共用相同 score、threshold 和稳定排序语义。
+
+Schema 保留 pgvector embedding 字段，但当前在线路径没有生成 embedding 或执行向量搜索。未来可在保持 no-hit、租户隔离与 source refs 契约不变的前提下增加 hybrid retrieval，并通过 adapter 支持：
 
 ```text
 Qdrant
@@ -286,7 +288,7 @@ sequenceDiagram
   API->>Conv: create end_user message
   Conv->>DB: insert message
   API->>RAG: retrieve query
-  RAG->>DB: vector search by project_id
+  RAG->>DB: bounded lexical search by project_id
   RAG-->>API: chunks + source refs
   API->>LLM: stream chat completion
   LLM-->>API: delta tokens
@@ -325,14 +327,14 @@ sequenceDiagram
 
 ## 可替换点
 
-| 能力          | v0.1 默认         | 后续替换                                   |
-| ------------- | ----------------- | ------------------------------------------ |
-| LLM           | OpenAI-compatible | LiteLLM, Anthropic adapter, Gemini adapter |
-| Embedding     | OpenAI-compatible | local embedding, bge, jina                 |
-| Vector        | pgvector          | Qdrant, OpenSearch, RAGFlow                |
-| Handoff       | Chatwoot          | Tiledesk, Zammad, Slack, Webhook           |
-| Realtime      | SSE               | WebSocket                                  |
-| Observability | ai_runs           | Langfuse, OpenTelemetry                    |
+| 能力          | v0.1 默认          | 后续替换                                     |
+| ------------- | ------------------ | -------------------------------------------- |
+| LLM           | OpenAI-compatible  | LiteLLM, Anthropic adapter, Gemini adapter   |
+| Embedding     | contract reserved  | OpenAI-compatible, local, bge, jina          |
+| Retrieval     | PostgreSQL lexical | pgvector hybrid, Qdrant, OpenSearch, RAGFlow |
+| Handoff       | Chatwoot           | Tiledesk, Zammad, Slack, Webhook             |
+| Realtime      | SSE                | WebSocket                                    |
+| Observability | ai_runs            | Langfuse, OpenTelemetry                      |
 
 ---
 
@@ -383,3 +385,7 @@ Suite、scenario、run、result 和 proposal 全部携带 `project_id`。Reposit
 ### ADR-006：自我进化采用确定性门禁和人工控制
 
 理由：客服系统的生产变更需要可重复证据、明确责任人和可回滚路径。模型可以生成候选提案，但不能充当自己的发布审批人，也不能绕过回归和灰度门禁自动修改生产状态。
+
+### ADR-007：Beta 默认采用有界 PostgreSQL 词法检索
+
+理由：在不依赖外部 embedding provider 的情况下提供可复现、可索引、租户隔离且可拒答的中英文检索。候选集与最终结果都有硬上限；未来 hybrid retrieval 必须继续满足相同的安全与引用契约。

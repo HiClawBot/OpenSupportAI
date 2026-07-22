@@ -1,6 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
-import { chunkText, scoreChunk, tokenize } from "../knowledge-text";
+import {
+  chunkText,
+  MIN_LEXICAL_RELEVANCE,
+  MIN_TRIGRAM_RELEVANCE,
+  normalizeLexicalText,
+  scoreChunk,
+  tokenize
+} from "../knowledge-text";
 import { GovernanceConflictError, IdempotencyConflictError } from "./types";
 import type {
   AdminApiKeyLookup,
@@ -834,21 +841,81 @@ export class PrismaSupportRepository implements SupportRepository {
     if (terms.length === 0) {
       return [];
     }
-
-    const chunks = await this.prisma.knowledgeChunk.findMany({
-      where: { projectId },
-      take: 200,
-      orderBy: { createdAt: "desc" }
-    });
+    const boundedLimit = Math.max(1, Math.min(limit, 20));
+    const candidateLimit = Math.max(24, Math.min(48, boundedLimit * 8));
+    const lexicalQuery = terms.join(" OR ");
+    const trigramAnchor = terms[0] ?? normalizeLexicalText(query);
+    const chunks = await this.prisma.$queryRaw<PrismaLexicalKnowledgeChunk[]>(Prisma.sql`
+      WITH parameters AS (
+        SELECT
+          websearch_to_tsquery('simple', ${lexicalQuery}) AS "ts_query",
+          lower(${trigramAnchor}) AS "trigram_query"
+      ),
+      ranked AS (
+        SELECT
+          chunk."id",
+          chunk."project_id",
+          chunk."document_id",
+          chunk."chunk_index",
+          chunk."content",
+          chunk."token_count",
+          chunk."metadata",
+          chunk."created_at",
+          ts_rank_cd(
+            to_tsvector('simple', chunk."search_text"),
+            parameters."ts_query",
+            32
+          )::double precision AS "fts_rank",
+          word_similarity(
+            parameters."trigram_query",
+            lower(chunk."content")
+          )::double precision AS "trigram_rank"
+        FROM "knowledge_chunks" AS chunk
+        INNER JOIN "knowledge_documents" AS document
+          ON document."id" = chunk."document_id"
+          AND document."project_id" = chunk."project_id"
+        CROSS JOIN parameters
+        WHERE chunk."project_id" = ${projectId}
+          AND document."status" = 'indexed'
+          AND (
+            to_tsvector('simple', chunk."search_text") @@ parameters."ts_query"
+            OR parameters."trigram_query" <% lower(chunk."content")
+          )
+      )
+      SELECT *
+      FROM ranked
+      WHERE "fts_rank" > 0 OR "trigram_rank" >= ${MIN_TRIGRAM_RELEVANCE}
+      ORDER BY
+        GREATEST(LEAST(1, "fts_rank" * 4), "trigram_rank") DESC,
+        "created_at" DESC,
+        "chunk_index" ASC,
+        "id" ASC
+      LIMIT ${candidateLimit}
+    `);
 
     return chunks
-      .map((chunk) => ({
-        ...mapKnowledgeChunk(chunk),
-        score: scoreChunk(chunk.content, terms)
-      }))
-      .filter((chunk) => (chunk.score ?? 0) > 0)
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-      .slice(0, limit);
+      .map((chunk) => {
+        const deterministicScore = scoreChunk(chunk.content, terms);
+        const trigramScore = chunk.trigram_rank >= MIN_TRIGRAM_RELEVANCE ? chunk.trigram_rank : 0;
+        return {
+          id: chunk.id,
+          projectId: chunk.project_id,
+          documentId: chunk.document_id,
+          chunkIndex: chunk.chunk_index,
+          content: chunk.content,
+          tokenCount: chunk.token_count ?? undefined,
+          metadata: jsonRecord(chunk.metadata),
+          score: Math.round(Math.max(deterministicScore, trigramScore) * 10_000) / 10_000
+        } satisfies KnowledgeChunkRecord;
+      })
+      .filter((chunk) => (chunk.score ?? 0) >= MIN_LEXICAL_RELEVANCE)
+      .sort(
+        (left, right) =>
+          (right.score ?? 0) - (left.score ?? 0) ||
+          left.chunkIndex - right.chunkIndex ||
+          left.id.localeCompare(right.id)
+      )
+      .slice(0, boundedLimit);
   }
 
   async getActiveLlmProvider(projectId: string): Promise<LlmProviderRecord | undefined> {
@@ -1846,7 +1913,6 @@ type PrismaContact = Awaited<ReturnType<PrismaClient["contact"]["findFirst"]>>;
 type PrismaConversation = Awaited<ReturnType<PrismaClient["conversation"]["findFirst"]>>;
 type PrismaMessage = Awaited<ReturnType<PrismaClient["message"]["findFirst"]>>;
 type PrismaKnowledgeDocument = Awaited<ReturnType<PrismaClient["knowledgeDocument"]["findFirst"]>>;
-type PrismaKnowledgeChunk = Awaited<ReturnType<PrismaClient["knowledgeChunk"]["findFirst"]>>;
 type PrismaLlmProvider = Awaited<ReturnType<PrismaClient["llmProvider"]["findFirst"]>>;
 type PrismaAiRun = Awaited<ReturnType<PrismaClient["aiRun"]["findFirst"]>>;
 type PrismaHandoffSession = Awaited<ReturnType<PrismaClient["handoffSession"]["findFirst"]>>;
@@ -1870,6 +1936,18 @@ type PrismaEvaluationRun = Prisma.EvaluationRunGetPayload<{
 type PrismaEvaluationRunSummary = Prisma.EvaluationRunGetPayload<Record<string, never>>;
 type PrismaEvaluationResult = Prisma.EvaluationResultGetPayload<Record<string, never>>;
 type PrismaEvolutionProposal = Prisma.EvolutionProposalGetPayload<Record<string, never>>;
+type PrismaLexicalKnowledgeChunk = {
+  id: string;
+  project_id: string;
+  document_id: string;
+  chunk_index: number;
+  content: string;
+  token_count: number | null;
+  metadata: Prisma.JsonValue;
+  created_at: Date;
+  fts_rank: number;
+  trigram_rank: number;
+};
 
 function mapProject(project: NonNullable<PrismaProject>): ProjectRecord {
   return {
@@ -1955,18 +2033,6 @@ function mapKnowledgeDocument(
     error: document.error ?? undefined,
     createdAt: document.createdAt.toISOString(),
     updatedAt: document.updatedAt.toISOString()
-  };
-}
-
-function mapKnowledgeChunk(chunk: NonNullable<PrismaKnowledgeChunk>): KnowledgeChunkRecord {
-  return {
-    id: chunk.id,
-    projectId: chunk.projectId,
-    documentId: chunk.documentId,
-    chunkIndex: chunk.chunkIndex,
-    content: chunk.content,
-    tokenCount: chunk.tokenCount ?? undefined,
-    metadata: jsonRecord(chunk.metadata)
   };
 }
 
