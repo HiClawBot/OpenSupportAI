@@ -32,10 +32,11 @@ Beta 明确不承诺：多 API 横向扩展、自动 mutation tool、Email/Teleg
 - Admin Console 治理工作区；生产 root token 不持久化，proposal 不自动修改生产状态。
 - 有界 PostgreSQL 词法检索：indexed 文档过滤、FTS、中文 n-gram、trigram fallback、确定性阈值和数据库 smoke。
 - Widget 纯中英文 locale、网络错误重试、失效会话重建，以及桌面/移动端 Widget 与 Governance 浏览器自动化。
+- 有界负载、LLM/工具故障、Worker 停机积压恢复和 soak 工具；生产 Compose CI 会执行短时运维证据门禁。
 
 ### `v1.1.0-beta.1` 发布前剩余
 
-1. 执行低流量 load test、LLM/tool/worker fault injection、恢复演练和 24 小时 staging soak。
+1. 完成实际连续 24 小时 staging soak，并保留合格的机器可读报告。
 2. 关闭全部 P0/P1，生成双语 release notes、checksums/SBOM 和可追溯发布证据。
 
 发布原则：模型可以提出候选改进，但不能审批自己的变更，也不能绕过回归、灰度和回滚门禁直接修改生产状态。

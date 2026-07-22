@@ -20,7 +20,7 @@
   "scripts": {
     "dev": "turbo dev",
     "build": "turbo build",
-    "lint": "turbo lint && eslint e2e playwright.config.ts",
+    "lint": "turbo lint && eslint e2e playwright.config.ts scripts/beta-*.mjs scripts/lib/beta-runtime.mjs",
     "test": "turbo test",
     "test:browser": "playwright test",
     "typecheck": "turbo typecheck && tsc -p tsconfig.e2e.json",
@@ -37,6 +37,10 @@
     "smoke:postgres-answer": "tsx scripts/postgres-answer-smoke.ts",
     "smoke:postgres-evolution": "tsx scripts/postgres-evolution-smoke.ts",
     "smoke:postgres-retrieval": "tsx scripts/postgres-retrieval-smoke.ts",
+    "smoke:load": "node scripts/beta-load-smoke.mjs",
+    "smoke:faults": "node scripts/beta-fault-smoke.mjs",
+    "smoke:worker-recovery": "node scripts/beta-worker-recovery.mjs",
+    "soak:beta": "node scripts/beta-soak.mjs",
     "eval:golden": "tsx scripts/golden-evaluation.ts"
   },
   "devDependencies": {
