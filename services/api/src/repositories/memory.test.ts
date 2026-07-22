@@ -4,12 +4,13 @@ import { MemorySupportRepository } from "./memory";
 describe("memory repository reliability contracts", () => {
   it("claims a queued job only once and fences the owner", async () => {
     const repository = await seededRepository();
+    const now = "2026-07-22T00:00:00.000Z";
     const job = await repository.createAsyncJob({
       projectId: "proj_demo",
       type: "knowledge.index",
-      payload: { document_id: "doc_demo_billing" }
+      payload: { document_id: "doc_demo_billing" },
+      runAt: now
     });
-    const now = "2026-07-22T00:00:00.000Z";
     const claims = await Promise.all([
       repository.claimNextAsyncJob({ workerId: "worker_1", now, leaseMs: 1000 }),
       repository.claimNextAsyncJob({ workerId: "worker_2", now, leaseMs: 1000 })
@@ -28,14 +29,16 @@ describe("memory repository reliability contracts", () => {
 
   it("recovers an expired lease and fails an exhausted stale job", async () => {
     const repository = await seededRepository();
+    const firstAttemptAt = "2026-07-22T00:00:00.000Z";
     const recoverable = await repository.createAsyncJob({
       projectId: "proj_demo",
       type: "knowledge.index",
-      maxAttempts: 2
+      maxAttempts: 2,
+      runAt: firstAttemptAt
     });
     await repository.claimNextAsyncJob({
       workerId: "worker_1",
-      now: "2026-07-22T00:00:00.000Z",
+      now: firstAttemptAt,
       leaseMs: 1000
     });
     const recovered = await repository.claimNextAsyncJob({
