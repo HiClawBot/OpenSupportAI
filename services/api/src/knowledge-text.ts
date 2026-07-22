@@ -27,25 +27,11 @@ export function chunkText(content: string): string[] {
   return chunks;
 }
 
-export function tokenize(value: string): string[] {
-  const asciiTerms = value
-    .toLowerCase()
-    .split(/[^\p{Letter}\p{Number}]+/u)
-    .filter((term) => term.length >= 2);
-  const cjkTerms = [...value.matchAll(/\p{Script=Han}{2,}/gu)].flatMap((match) => {
-    const text = match[0];
-    const terms = [text];
-    for (let size = 2; size <= Math.min(4, text.length); size += 1) {
-      for (let index = 0; index <= text.length - size; index += 1) {
-        terms.push(text.slice(index, index + size));
-      }
-    }
-    return terms;
-  });
-  return [...new Set([...asciiTerms, ...cjkTerms])];
-}
-
-export function scoreChunk(content: string, terms: string[]): number {
-  const lower = content.toLowerCase();
-  return terms.reduce((score, term) => score + (lower.includes(term.toLowerCase()) ? 1 : 0), 0);
-}
+export {
+  lexicalQueryTerms,
+  MIN_LEXICAL_RELEVANCE,
+  MIN_TRIGRAM_RELEVANCE,
+  normalizeLexicalText,
+  scoreLexicalChunk as scoreChunk,
+  lexicalQueryTerms as tokenize
+} from "@opensupportai/rag";

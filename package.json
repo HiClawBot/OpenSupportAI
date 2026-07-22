@@ -35,6 +35,7 @@
     "smoke:tools": "node scripts/tool-executor-smoke.mjs",
     "smoke:postgres-answer": "tsx scripts/postgres-answer-smoke.ts",
     "smoke:postgres-evolution": "tsx scripts/postgres-evolution-smoke.ts",
+    "smoke:postgres-retrieval": "tsx scripts/postgres-retrieval-smoke.ts",
     "eval:golden": "tsx scripts/golden-evaluation.ts"
   },
   "devDependencies": {

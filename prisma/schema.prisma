@@ -200,6 +200,7 @@ model KnowledgeChunk {
   documentId String                       @map("document_id")
   chunkIndex Int                          @map("chunk_index")
   content    String
+  searchText String                       @default("") @map("search_text")
   embedding  Unsupported("vector(1536)")?
   tokenCount Int?                         @map("token_count")
   metadata   Json                         @default("{}")

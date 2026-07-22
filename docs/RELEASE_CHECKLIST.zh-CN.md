@@ -20,10 +20,11 @@ pnpm smoke:channels -- --help
 pnpm smoke:tools -- --help
 pnpm smoke:postgres-answer
 pnpm smoke:postgres-evolution
+pnpm smoke:postgres-retrieval
 sh scripts/production-compose-smoke.sh
 ```
 
-`smoke:postgres-answer` 与 `smoke:postgres-evolution` 需要可用的 PostgreSQL + pgvector 与 `DATABASE_URL`。GitHub Actions 会自动启动临时 pgvector 服务，执行全部 migrations/seed，并验证消息/job 事务、worker 完成、回答重放幂等，以及提案审批、回归、灰度、晋级和回滚状态机。
+三个 PostgreSQL smoke 都需要可用的 PostgreSQL + pgvector 与 `DATABASE_URL`。GitHub Actions 会自动启动临时 pgvector 服务，执行全部 migrations/seed，并验证消息/job 事务、worker 完成、回答重放幂等，提案审批、回归、灰度、晋级和回滚状态机，以及中英文词法检索、no-hit、document status 和 tenant isolation。
 
 `eval:golden` 必须达到 `evals/golden/beta-core.v1.json` 内声明的全部阈值，且所有 critical scenario 通过。该门禁是确定性的，不依赖外部 LLM 或 model judge。
 
@@ -61,6 +62,8 @@ VITE_API_URL=http://localhost:4000 pnpm --filter @opensupportai/demo-app dev
 - 管理台 knowledge document 列表能看到 status、chunk count、error/source 摘要，并可触发 reindex。
 - 管理端 `POST /v1/admin/projects/{project_id}/knowledge/documents/{document_id}/reindex` 会创建 `knowledge.index` async job，并将文档状态标记为 `pending`。
 - Worker 的 `knowledge.index` handler 会把文档标记为 `indexing`、重建 chunks，并最终标记为 `indexed` 或 `failed`。
+- Prisma retrieval 只返回当前项目中 `indexed` 文档的 chunk；中文自然问句与英文关键词都能命中，无关问题返回 no-hit。
+- `knowledge_chunks.search_text` 由 trigger 自动维护，FTS 与 trigram GIN 索引均存在；repository 候选集和最终结果数量有硬上限。
 - Prisma 模式发送普通用户消息时，用户消息与 `answer.generate` job 在一个事务中提交，HTTP 响应无需等待 LLM 或工具执行。
 - Worker 完成 `answer.generate` 后会写入唯一 AI message；同一 job 重放不会产生重复回答或重复 AI run。
 - API 与 worker 不共享 EventHub 时，已打开的 SSE 连接仍能通过持久化消息补拉收到 `ai.message.completed`。

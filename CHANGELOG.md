@@ -25,6 +25,8 @@ English:
 - Added Admin Console governance operations while keeping production root credentials memory-only and leaving every proposal artifact non-applying by default.
 - Added PostgreSQL evolution lifecycle smoke coverage and CI enforcement for the deterministic golden gate.
 - Added explicit identity-clarification and tool-failure metadata paths so safety outcomes are observable and testable.
+- Replaced the Prisma broad substring scan with bounded PostgreSQL lexical retrieval using indexed-document filtering, FTS, CJK n-grams, trigram fallback, and deterministic relevance thresholds.
+- Added `pg_trgm`, trigger-maintained lexical search text, FTS/trigram indexes, and a real PostgreSQL retrieval smoke covering Chinese, English, no-hit, document state, and tenant isolation.
 
 中文：
 
@@ -49,6 +51,8 @@ English:
 - Admin Console 新增治理操作；生产 root 凭据只保存在内存中，全部 proposal artifact 默认都不会自动应用。
 - 新增 PostgreSQL 治理进化生命周期 smoke test，并在 CI 强制执行确定性 golden gate。
 - 新增明确的身份补充与工具失败 metadata 路径，使安全结果可观察、可测试。
+- 将 Prisma broad substring scan 替换为有界 PostgreSQL 词法检索，包含 indexed 文档过滤、FTS、中文 n-gram、trigram fallback 和确定性相关性阈值。
+- 新增 `pg_trgm`、trigger 维护的 lexical search text、FTS/trigram 索引，以及覆盖中英文、no-hit、文档状态和租户隔离的真实 PostgreSQL retrieval smoke。
 
 ## v1.0.0 - 2026-06-18
 

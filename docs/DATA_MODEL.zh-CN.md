@@ -255,7 +255,8 @@ document_id       string references knowledge_documents(id)
 chunk_index       integer
 content           text
 embedding         vector
- token_count       integer nullable
+search_text       text        -- trigger 维护的 lexical search text
+token_count       integer nullable
 metadata          jsonb
 created_at        timestamp
 ```
@@ -266,10 +267,12 @@ created_at        timestamp
 project_id
 document_id
 project_id + document_id
-vector index on embedding
+GIN FTS index on to_tsvector('simple', search_text)
+GIN trigram index on lower(content)
+vector index on embedding（预留，当前 retrieval 未使用）
 ```
 
-注意：向量维度取决于 embedding model。实现时应将维度作为配置或 migration 决策。
+`search_text` 在插入或更新 `content` 时由数据库 trigger 生成；中文内容追加 2-gram 和 3-gram，用于没有空格的查询。当前 retrieval 使用 FTS 与 trigram 索引生成有界候选集，并在应用层执行共享确定性阈值。向量维度固定在现有 migration 中，embedding 字段供后续 hybrid retrieval 使用。
 
 ---
 

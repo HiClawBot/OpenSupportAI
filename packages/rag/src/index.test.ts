@@ -30,4 +30,14 @@ describe("rag package skeleton", () => {
 
     expect(retrieveByKeyword("proj_b", "退款", chunks)).toEqual(createNoHitResult());
   });
+
+  it("rejects question framing without a meaningful knowledge match", () => {
+    const chunks = indexTextDocument({
+      projectId: "proj_demo",
+      documentId: "doc_1",
+      content: "用户可以在安全设置中修改登录邮箱。"
+    });
+
+    expect(retrieveByKeyword("proj_demo", "这个为什么不行？", chunks)).toEqual(createNoHitResult());
+  });
 });

@@ -2,6 +2,21 @@ import { describe, expect, it } from "vitest";
 import { MemorySupportRepository } from "./memory";
 
 describe("memory repository reliability contracts", () => {
+  it("uses the lexical threshold for multilingual retrieval and safe no-hit", async () => {
+    const repository = await seededRepository();
+
+    await expect(repository.retrieveKnowledge("proj_demo", "退款多久到账？", 6)).resolves.toEqual([
+      expect.objectContaining({
+        id: "chunk_demo_refund",
+        projectId: "proj_demo",
+        score: expect.any(Number)
+      })
+    ]);
+    await expect(repository.retrieveKnowledge("proj_demo", "这个为什么不行？", 6)).resolves.toEqual(
+      []
+    );
+  });
+
   it("creates one source message and one answer job for repeated idempotent writes", async () => {
     const repository = await seededRepository();
     const contact = await repository.upsertContact("proj_demo", {

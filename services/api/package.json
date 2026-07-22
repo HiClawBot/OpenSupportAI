@@ -26,6 +26,7 @@
     "@opensupportai/evals": "workspace:*",
     "@opensupportai/llm": "workspace:*",
     "@opensupportai/protocol": "workspace:*",
+    "@opensupportai/rag": "workspace:*",
     "@prisma/adapter-pg": "7.8.0",
     "@prisma/client": "^7.8.0",
     "dotenv": "^17.4.2",
