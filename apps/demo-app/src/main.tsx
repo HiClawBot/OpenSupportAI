@@ -8,6 +8,7 @@ const apiUrl = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
 function App() {
   useEffect(() => {
+    const locale = new URLSearchParams(window.location.search).get("locale") ?? "zh-CN";
     const controller = OpenSupportAI.init({
       apiUrl,
       projectId: "proj_demo",
@@ -18,7 +19,7 @@ function App() {
         name: "Mina Hart",
         email: "mina.hart@example.com"
       },
-      locale: "zh-CN"
+      locale
     });
     return () => controller.destroy();
   }, []);

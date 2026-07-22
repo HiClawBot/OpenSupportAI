@@ -22,6 +22,29 @@ export type OpenSupportAIWidgetController = {
   destroy: () => void;
 };
 
+type WidgetCopy = {
+  openChat: string;
+  closeChat: string;
+  support: string;
+  empty: string;
+  handoff: string;
+  inputPlaceholder: string;
+  send: string;
+  connectFailed: string;
+  sendFailed: string;
+  handoffFailed: string;
+  handoffRequested: string;
+  handoffNote: string;
+  sessionExpired: string;
+  retry: string;
+  startNew: string;
+};
+
+type RecoveryAction = {
+  label: string;
+  run: () => Promise<void>;
+};
+
 export function init(options: OpenSupportAIWidgetOptions): OpenSupportAIWidgetController {
   const client = new OpenSupportAIWidgetClient({
     apiUrl: options.apiUrl ?? "http://localhost:4000",
@@ -63,6 +86,8 @@ class WidgetView {
   private open = false;
   private sending = false;
   private error: string | undefined;
+  private recoveryAction: RecoveryAction | undefined;
+  private readonly copy: WidgetCopy;
   private readonly createIdempotencyKey = requestIdempotencyKey();
 
   constructor(
@@ -71,35 +96,53 @@ class WidgetView {
     private readonly mount: HTMLElement
   ) {
     this.shadowRoot = mount.attachShadow({ mode: "open" });
-    const stored = readStoredConversation(sessionStorage.getItem(this.storageKey()));
-    this.conversationId = stored?.conversationId;
-    if (stored) {
+    this.copy = resolveWidgetCopy(options.locale);
+    const storageKey = this.storageKey();
+    const stored = readStoredConversation(sessionStorage.getItem(storageKey));
+    const storedIsExpired = stored?.conversationTokenExpiresAt
+      ? Date.parse(stored.conversationTokenExpiresAt) <= Date.now()
+      : false;
+    if (stored && !storedIsExpired) {
+      this.conversationId = stored.conversationId;
       this.client.setConversationToken(stored.conversationId, stored.conversationToken);
+    } else if (storedIsExpired) {
+      sessionStorage.removeItem(storageKey);
     }
-    localStorage.removeItem(this.storageKey());
+    localStorage.removeItem(storageKey);
   }
 
   render(): void {
     this.shadowRoot.innerHTML = `
       <style>${styles}</style>
-      <button class="osa-bubble" aria-label="Open support chat">${this.open ? "×" : "?"}</button>
+      <button class="osa-bubble" aria-label="${escapeHtml(this.open ? this.copy.closeChat : this.copy.openChat)}">${this.open ? "×" : "?"}</button>
       <section class="osa-panel ${this.open ? "is-open" : ""}" aria-live="polite">
         <header class="osa-header">
           <div>
             <strong>OpenSupportAI</strong>
-            <span>Support</span>
+            <span>${escapeHtml(this.copy.support)}</span>
           </div>
-          <button class="osa-icon" aria-label="Close">×</button>
+          <button class="osa-icon" aria-label="${escapeHtml(this.copy.closeChat)}">×</button>
         </header>
         <div class="osa-messages">
-          ${this.messages.length === 0 ? `<div class="osa-empty">有什么可以帮你？</div>` : ""}
+          ${this.messages.length === 0 ? `<div class="osa-empty">${escapeHtml(this.copy.empty)}</div>` : ""}
           ${this.messages.map((message) => this.renderMessage(message)).join("")}
-          ${this.error ? `<div class="osa-error">${escapeHtml(this.error)}</div>` : ""}
+          ${
+            this.error
+              ? `<div class="osa-error" role="alert">
+                  <span>${escapeHtml(this.error)}</span>
+                  ${
+                    this.recoveryAction
+                      ? `<button type="button" class="osa-retry">${escapeHtml(this.recoveryAction.label)}</button>`
+                      : ""
+                  }
+                </div>`
+              : ""
+          }
         </div>
         <form class="osa-composer">
-          <button type="button" class="osa-handoff">人工</button>
-          <input name="text" autocomplete="off" placeholder="输入问题" ${this.sending ? "disabled" : ""} />
-          <button type="submit" class="osa-send" ${this.sending ? "disabled" : ""}>发送</button>
+          <button type="button" class="osa-handoff">${escapeHtml(this.copy.handoff)}</button>
+          <input name="text" autocomplete="off" placeholder="${escapeHtml(this.copy.inputPlaceholder)}" ${this.sending ? "disabled" : ""} />
+          <button type="submit" class="osa-send" ${this.sending ? "disabled" : ""}>${escapeHtml(this.copy.send)}</button>
         </form>
       </section>
     `;
@@ -108,7 +151,7 @@ class WidgetView {
       this.open = !this.open;
       this.render();
       if (this.open) {
-        void this.ensureConversation();
+        void this.openConversation();
       }
     });
     this.shadowRoot.querySelector(".osa-icon")?.addEventListener("click", () => {
@@ -117,6 +160,9 @@ class WidgetView {
     });
     this.shadowRoot.querySelector(".osa-handoff")?.addEventListener("click", () => {
       void this.requestHandoff();
+    });
+    this.shadowRoot.querySelector(".osa-retry")?.addEventListener("click", () => {
+      void this.runRecoveryAction();
     });
     this.shadowRoot.querySelector("form")?.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -130,6 +176,16 @@ class WidgetView {
       }
       void this.send(text);
     });
+  }
+
+  private async openConversation(): Promise<void> {
+    try {
+      this.clearError();
+      await this.ensureConversation();
+    } catch (error) {
+      this.setRecoverableError(error, this.copy.connectFailed, () => this.openConversation());
+      this.render();
+    }
   }
 
   destroy(): void {
@@ -161,7 +217,8 @@ class WidgetView {
       this.storageKey(),
       JSON.stringify({
         conversationId: conversation.conversationId,
-        conversationToken: conversation.conversationToken
+        conversationToken: conversation.conversationToken,
+        conversationTokenExpiresAt: conversation.conversationTokenExpiresAt
       })
     );
     this.unsubscribe = this.client.subscribe(conversation.conversationId, (event) =>
@@ -184,20 +241,20 @@ class WidgetView {
     this.render();
   }
 
-  private async send(text: string): Promise<void> {
+  private async send(text: string, idempotencyKey = requestIdempotencyKey()): Promise<void> {
     this.sending = true;
-    this.error = undefined;
+    this.clearError();
     this.render();
     try {
       const conversationId = await this.ensureConversation();
       await this.client.sendMessage({
         conversationId,
         text,
-        idempotencyKey: requestIdempotencyKey()
+        idempotencyKey
       });
       await this.refreshMessages();
     } catch (error) {
-      this.error = error instanceof Error ? error.message : "发送失败";
+      this.setRecoverableError(error, this.copy.sendFailed, () => this.send(text, idempotencyKey));
     } finally {
       this.sending = false;
       this.render();
@@ -210,15 +267,16 @@ class WidgetView {
       await this.client.requestHandoff({
         conversationId,
         reason: "user_requested",
-        note: "Requested from widget"
+        note: this.copy.handoffNote
       });
       this.messages = [
         ...this.messages,
-        syntheticMessage(conversationId, "system", "已请求人工客服。")
+        syntheticMessage(conversationId, "system", this.copy.handoffRequested)
       ];
+      this.clearError();
       this.render();
     } catch (error) {
-      this.error = error instanceof Error ? error.message : "请求人工失败";
+      this.setRecoverableError(error, this.copy.handoffFailed, () => this.requestHandoff());
       this.render();
     }
   }
@@ -251,14 +309,63 @@ class WidgetView {
     if (event.event === "handoff.requested") {
       this.messages = [
         ...this.messages,
-        syntheticMessage(event.data.conversationId, "system", "已请求人工客服。")
+        syntheticMessage(event.data.conversationId, "system", this.copy.handoffRequested)
       ];
       this.render();
     }
     if (event.event === "support.error") {
       this.error = event.data.message;
+      this.recoveryAction = {
+        label: this.copy.retry,
+        run: () => this.openConversation()
+      };
       this.render();
     }
+  }
+
+  private setRecoverableError(
+    error: unknown,
+    fallbackMessage: string,
+    retry: () => Promise<void>
+  ): void {
+    const authorizationFailed =
+      error instanceof OpenSupportAIRequestError && (error.status === 401 || error.status === 403);
+    this.error = authorizationFailed ? this.copy.sessionExpired : fallbackMessage;
+    this.recoveryAction = authorizationFailed
+      ? {
+          label: this.copy.startNew,
+          run: async () => {
+            this.resetConversation();
+            await retry();
+          }
+        }
+      : { label: this.copy.retry, run: retry };
+  }
+
+  private async runRecoveryAction(): Promise<void> {
+    const action = this.recoveryAction;
+    if (!action) {
+      return;
+    }
+    this.clearError();
+    this.render();
+    await action.run();
+  }
+
+  private clearError(): void {
+    this.error = undefined;
+    this.recoveryAction = undefined;
+  }
+
+  private resetConversation(): void {
+    if (this.conversationId) {
+      this.client.forgetConversationToken(this.conversationId);
+    }
+    this.unsubscribe?.();
+    this.unsubscribe = undefined;
+    this.conversationId = undefined;
+    this.messages = [];
+    sessionStorage.removeItem(this.storageKey());
   }
 
   private renderMessage(message: Message): string {
@@ -306,6 +413,10 @@ export class OpenSupportAIWidgetClient {
 
   setConversationToken(conversationId: string, token: string): void {
     this.conversationTokens.set(conversationId, token);
+  }
+
+  forgetConversationToken(conversationId: string): void {
+    this.conversationTokens.delete(conversationId);
   }
 
   async createConversation(input: {
@@ -589,7 +700,7 @@ export class OpenSupportAIWidgetClient {
       headers
     });
     if (!response.ok) {
-      throw new Error(`OpenSupportAI request failed with status ${response.status}`);
+      throw new OpenSupportAIRequestError(response.status);
     }
     return response.json() as Promise<T>;
   }
@@ -657,9 +768,13 @@ function escapeHtml(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
-function readStoredConversation(
-  value: string | null
-): { conversationId: string; conversationToken: string } | undefined {
+function readStoredConversation(value: string | null):
+  | {
+      conversationId: string;
+      conversationToken: string;
+      conversationTokenExpiresAt?: string;
+    }
+  | undefined {
   if (!value) {
     return undefined;
   }
@@ -673,7 +788,11 @@ function readStoredConversation(
       typeof record["conversationToken"] === "string"
       ? {
           conversationId: record["conversationId"],
-          conversationToken: record["conversationToken"]
+          conversationToken: record["conversationToken"],
+          conversationTokenExpiresAt:
+            typeof record["conversationTokenExpiresAt"] === "string"
+              ? record["conversationTokenExpiresAt"]
+              : undefined
         }
       : undefined;
   } catch {
@@ -694,6 +813,54 @@ function rememberEventMessage(event: ClientEvent, seenMessageIds: Set<string>): 
 function requestIdempotencyKey(): string {
   return globalThis.crypto?.randomUUID?.() ?? `widget-${Date.now()}-${Math.random()}`;
 }
+
+class OpenSupportAIRequestError extends Error {
+  constructor(readonly status: number) {
+    super(`OpenSupportAI request failed with status ${status}`);
+    this.name = "OpenSupportAIRequestError";
+  }
+}
+
+function resolveWidgetCopy(locale: string | undefined): WidgetCopy {
+  const resolvedLocale = (locale ?? globalThis.navigator?.language ?? "en").toLowerCase();
+  return resolvedLocale.startsWith("zh") ? widgetCopyZh : widgetCopyEn;
+}
+
+const widgetCopyEn: WidgetCopy = {
+  openChat: "Open support chat",
+  closeChat: "Close support chat",
+  support: "Support",
+  empty: "How can we help?",
+  handoff: "Human",
+  inputPlaceholder: "Type your question",
+  send: "Send",
+  connectFailed: "Support could not be loaded.",
+  sendFailed: "Your message could not be sent.",
+  handoffFailed: "Human support could not be requested.",
+  handoffRequested: "A human support request has been sent.",
+  handoffNote: "Requested from widget",
+  sessionExpired: "This support session has expired.",
+  retry: "Retry",
+  startNew: "Start new chat"
+};
+
+const widgetCopyZh: WidgetCopy = {
+  openChat: "打开客服对话",
+  closeChat: "关闭客服对话",
+  support: "客户支持",
+  empty: "有什么可以帮你？",
+  handoff: "人工客服",
+  inputPlaceholder: "输入问题",
+  send: "发送",
+  connectFailed: "暂时无法加载客服对话。",
+  sendFailed: "消息发送失败。",
+  handoffFailed: "暂时无法请求人工客服。",
+  handoffRequested: "已请求人工客服。",
+  handoffNote: "用户从客服组件请求人工支持",
+  sessionExpired: "本次客服会话已过期。",
+  retry: "重试",
+  startNew: "开始新会话"
+};
 
 const styles = `
 :host { all: initial; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
@@ -721,7 +888,8 @@ const styles = `
 .osa-message.is-agent .osa-message-text { background: #f2f4f7; color: #111827; }
 .osa-message.is-system .osa-message-text { align-self: center; background: #fff7ed; color: #9a3412; font-size: 12px; }
 .osa-sources { margin-top: 4px; color: #667085; font-size: 11px; }
-.osa-error { margin: 8px 0; padding: 10px 12px; border-radius: 8px; background: #fef2f2; color: #b42318; font-size: 13px; }
+.osa-error { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 8px 0; padding: 10px 12px; border-radius: 8px; background: #fef2f2; color: #b42318; font-size: 13px; }
+.osa-retry { flex: 0 0 auto; min-height: 32px; border: 1px solid #fda29b; border-radius: 6px; padding: 0 10px; background: #fff; color: #b42318; font-weight: 600; cursor: pointer; }
 .osa-composer { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; padding: 12px; border-top: 1px solid #e6e9f0; background: #f8fafc; }
 .osa-composer input { min-width: 0; height: 40px; border: 1px solid #d0d5dd; border-radius: 6px; padding: 0 10px; font-size: 14px; background: #fff; }
 .osa-handoff, .osa-send { height: 40px; border: 0; border-radius: 6px; padding: 0 12px; font-weight: 600; cursor: pointer; }

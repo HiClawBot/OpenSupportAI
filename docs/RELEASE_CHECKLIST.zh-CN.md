@@ -13,6 +13,8 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm build
+pnpm exec playwright install chromium
+pnpm test:browser
 pnpm eval:golden
 pnpm smoke:memory -- --help
 pnpm smoke:chatwoot -- --help
@@ -29,6 +31,8 @@ sh scripts/production-compose-smoke.sh
 `eval:golden` 必须达到 `evals/golden/beta-core.v1.json` 内声明的全部阈值，且所有 critical scenario 通过。该门禁是确定性的，不依赖外部 LLM 或 model judge。
 
 GitHub Actions CI 会在 `main`、Pull Request 和 `v*` tag 上执行同一组核心检查。
+
+`test:browser` 会启动独立的内存 API、Admin Console 和 Demo App，在桌面与移动 Chromium 中验证 Widget 中英文文案、网络失败重试、失效会话重建，以及完整的治理提案生命周期。该测试会显式关闭 API 限流；限流行为由 API regression 单独验证。
 
 `production-compose-smoke.sh` 需要 Docker Compose；GitHub Actions 会自动执行。它是生产 Beta 的镜像、migration、readiness、worker 失联/恢复和 PostgreSQL 备份恢复门槛。本机没有 Docker 时不能把静态 YAML 检查替代为该项通过。
 
@@ -53,6 +57,8 @@ VITE_API_URL=http://localhost:4000 pnpm --filter @opensupportai/demo-app dev
 - `http://localhost:3000` 能打开管理台，默认 admin token 为 `admin_demo_key`。
 - `http://localhost:3001` 能打开 Demo app。
 - Demo app 右下角 Widget 能创建会话。
+- `?locale=en` 的 Widget 控件只显示英文，`?locale=zh-CN` 的 Widget 控件只显示中文。
+- Widget 首次创建会话遇到网络错误时显示可操作的重试；已保存 capability 被拒绝时可清除旧会话并创建新会话。
 - 输入 `怎么取消订阅？` 后能得到基于 demo 知识库的回答。
 - 配置 active 且非 `demo://local` 的 OpenAI-compatible LLM provider 后，知识命中的用户问题会通过 LLM-backed grounded answer path 生成回答，并在 `ai_runs` 中记录 provider/model/prompt/token metadata。
 - 未配置 LLM provider、使用 `demo://local` 或模型请求失败时，知识命中的用户问题会回退到确定性 grounded answer。
@@ -118,6 +124,7 @@ VITE_API_URL=http://localhost:4000 pnpm --filter @opensupportai/demo-app dev
 - 灰度要求 deployment、scope、rollback target；只有 `outcome=passed` 才能晋级。
 - 提案状态变更会写 audit log，且任何 transition 都不会修改 knowledge document、LLM config 或 tool definition。
 - Admin Console 生产构建默认不含 demo root token，刷新页面后 token 被清除。
+- Admin Console 治理 transition 执行期间会禁用并发操作；桌面与移动浏览器都可完成 draft、审批、回归、灰度、晋级和回滚。
 - 治理评测英文与中文文档已分别更新：`docs/GOVERNED_EVOLUTION.md`、`docs/GOVERNED_EVOLUTION.zh-CN.md`。
 
 ## Docker Compose Smoke Test

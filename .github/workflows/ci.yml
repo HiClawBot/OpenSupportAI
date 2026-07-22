@@ -74,6 +74,12 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Verify browser recovery and governance flows
+        run: pnpm test:browser
+
       - name: Run deterministic golden evaluation
         run: pnpm eval:golden
 

@@ -294,6 +294,7 @@ function App() {
   const [selectedProposalId, setSelectedProposalId] = useState<string | undefined>();
   const [evolutionStatus, setEvolutionStatus] = useState<string | undefined>();
   const [governanceError, setGovernanceError] = useState<string | undefined>();
+  const [evolutionBusy, setEvolutionBusy] = useState(false);
   const [opsHealth, setOpsHealth] = useState<OpsHealth | undefined>();
   const [operationsError, setOperationsError] = useState<string | undefined>();
   const [status, setStatus] = useState("Loading");
@@ -727,12 +728,14 @@ function App() {
   }
 
   async function createEvolutionDraft(form: FormData) {
+    if (evolutionBusy) return;
     const sourceRunId = String(form.get("source_run_id") ?? "").trim();
     if (!sourceRunId) {
       setEvolutionStatus("Select a source evaluation run");
       return;
     }
     try {
+      setEvolutionBusy(true);
       setEvolutionStatus("Creating draft");
       const payload = await request<{ proposal: EvolutionProposal }>(
         `/v1/admin/projects/${activeProjectId}/evolution/proposals`,
@@ -754,12 +757,15 @@ function App() {
       setEvolutionStatus(
         proposalError instanceof Error ? proposalError.message : "Unable to create proposal"
       );
+    } finally {
+      setEvolutionBusy(false);
     }
   }
 
   async function transitionProposal(action: string, payload: Record<string, unknown> = {}) {
-    if (!selectedProposal) return;
+    if (!selectedProposal || evolutionBusy) return;
     try {
+      setEvolutionBusy(true);
       setEvolutionStatus(`Recording ${action}`);
       await request(
         `/v1/admin/projects/${activeProjectId}/evolution/proposals/${selectedProposal.id}/transitions`,
@@ -774,6 +780,8 @@ function App() {
       setEvolutionStatus(
         transitionError instanceof Error ? transitionError.message : "Unable to transition proposal"
       );
+    } finally {
+      setEvolutionBusy(false);
     }
   }
 
@@ -1495,7 +1503,11 @@ function App() {
               <p className="eyebrow">Governance</p>
               <h2>Evaluation and controlled evolution</h2>
             </div>
-            <button className="secondary" onClick={() => void loadGovernance(activeProjectId)}>
+            <button
+              className="secondary"
+              disabled={evolutionBusy}
+              onClick={() => void loadGovernance(activeProjectId)}
+            >
               <ArrowClockwise size={16} /> Refresh
             </button>
           </div>
@@ -1586,7 +1598,7 @@ function App() {
                   defaultValue={'{\n  "operation": "draft_patch",\n  "content": ""\n}'}
                 />
               </label>
-              <button className="primary">
+              <button className="primary" disabled={evolutionBusy}>
                 <Plus size={16} /> Create draft
               </button>
             </form>
@@ -1639,6 +1651,7 @@ function App() {
                       <button
                         className="primary"
                         type="button"
+                        disabled={evolutionBusy}
                         onClick={() =>
                           void transitionProposal("approve", {
                             review_note: "Approved for regression only."
@@ -1649,7 +1662,9 @@ function App() {
                       </button>
                       <form className="inline-form" action={(form) => void rejectProposal(form)}>
                         <input name="review_note" required placeholder="Rejection reason" />
-                        <button className="secondary danger">Reject</button>
+                        <button className="secondary danger" disabled={evolutionBusy}>
+                          Reject
+                        </button>
                       </form>
                     </div>
                   ) : null}
@@ -1665,7 +1680,9 @@ function App() {
                           </option>
                         ))}
                       </select>
-                      <button className="primary">Record regression</button>
+                      <button className="primary" disabled={evolutionBusy}>
+                        Record regression
+                      </button>
                     </form>
                   ) : null}
                   {selectedProposal.status === "regression_passed" ? (
@@ -1673,7 +1690,9 @@ function App() {
                       <input name="deployment_ref" required placeholder="Deployment reference" />
                       <input name="scope" required placeholder="Canary scope" />
                       <input name="rollback_ref" required placeholder="Rollback reference" />
-                      <button className="primary">Start canary</button>
+                      <button className="primary" disabled={evolutionBusy}>
+                        Start canary
+                      </button>
                     </form>
                   ) : null}
                   {selectedProposal.status === "canary" ? (
@@ -1685,14 +1704,18 @@ function App() {
                         required
                         placeholder="Observed cases"
                       />
-                      <button className="primary">Promote</button>
+                      <button className="primary" disabled={evolutionBusy}>
+                        Promote
+                      </button>
                     </form>
                   ) : null}
                   {selectedProposal.status === "canary" ||
                   selectedProposal.status === "promoted" ? (
                     <form className="inline-form" action={(form) => void rollbackProposal(form)}>
                       <input name="reason" required placeholder="Rollback reason" />
-                      <button className="secondary danger">Record rollback</button>
+                      <button className="secondary danger" disabled={evolutionBusy}>
+                        Record rollback
+                      </button>
                     </form>
                   ) : null}
                   {selectedProposal.status === "rejected" ||

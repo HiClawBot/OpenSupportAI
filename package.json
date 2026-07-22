@@ -20,9 +20,10 @@
   "scripts": {
     "dev": "turbo dev",
     "build": "turbo build",
-    "lint": "turbo lint",
+    "lint": "turbo lint && eslint e2e playwright.config.ts",
     "test": "turbo test",
-    "typecheck": "turbo typecheck",
+    "test:browser": "playwright test",
+    "typecheck": "turbo typecheck && tsc -p tsconfig.e2e.json",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "db:generate": "prisma generate",
@@ -39,8 +40,9 @@
     "eval:golden": "tsx scripts/golden-evaluation.ts"
   },
   "devDependencies": {
-    "@opensupportai/evals": "workspace:*",
     "@eslint/js": "latest",
+    "@opensupportai/evals": "workspace:*",
+    "@playwright/test": "^1.61.1",
     "@types/node": "latest",
     "esbuild": "^0.28.1",
     "eslint": "latest",
