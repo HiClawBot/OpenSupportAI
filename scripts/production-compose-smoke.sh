@@ -79,7 +79,7 @@ test "$(docker inspect --format '{{.Config.User}}' "$worker_container")" = "node
 heartbeat_count="$(compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT COUNT(*) FROM worker_heartbeats WHERE status = 'ready';")"
 test "$heartbeat_count" = "1"
 
-compose run --rm migrate node_modules/.bin/prisma db seed --config prisma.config.ts
+compose run --rm migrate node_modules/.bin/tsx prisma/seed.ts
 
 API_URL="http://127.0.0.1:${API_PORT}" \
   ADMIN_TOKEN="$ADMIN_API_TOKEN" \
@@ -95,7 +95,7 @@ API_URL="http://127.0.0.1:${API_PORT}" \
   node scripts/beta-fault-smoke.mjs
 
 # Restore the deterministic provider after the disposable outage probe.
-compose run --rm migrate node_modules/.bin/prisma db seed --config prisma.config.ts
+compose run --rm migrate node_modules/.bin/tsx prisma/seed.ts
 
 compose stop --timeout 15 worker
 wait_for_status 503 30
