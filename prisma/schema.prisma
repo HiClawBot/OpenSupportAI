@@ -12,8 +12,8 @@ model Organization {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  projects Project[]
-  apiKeys  ApiKey[]
+  projects  Project[]
+  apiKeys   ApiKey[]
   auditLogs AuditLog[]
 
   @@map("organizations")
@@ -28,24 +28,24 @@ model Project {
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
-  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  inboxes            Inbox[]
-  contacts           Contact[]
-  conversations      Conversation[]
-  messages           Message[]
-  knowledgeSources   KnowledgeSource[]
-  knowledgeDocuments KnowledgeDocument[]
-  knowledgeChunks    KnowledgeChunk[]
-  llmProviders       LlmProvider[]
-  aiRuns             AiRun[]
-  handoffSessions    HandoffSession[]
-  integrationConfigs IntegrationConfig[]
-  webhookEvents      WebhookEvent[]
-  apiKeys            ApiKey[]
-  asyncJobs          AsyncJob[]
-  auditLogs          AuditLog[]
-  toolDefinitions    ToolDefinition[]
-  toolCalls          ToolCall[]
+  organization         Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  inboxes              Inbox[]
+  contacts             Contact[]
+  conversations        Conversation[]
+  messages             Message[]
+  knowledgeSources     KnowledgeSource[]
+  knowledgeDocuments   KnowledgeDocument[]
+  knowledgeChunks      KnowledgeChunk[]
+  llmProviders         LlmProvider[]
+  aiRuns               AiRun[]
+  handoffSessions      HandoffSession[]
+  integrationConfigs   IntegrationConfig[]
+  webhookEvents        WebhookEvent[]
+  apiKeys              ApiKey[]
+  asyncJobs            AsyncJob[]
+  auditLogs            AuditLog[]
+  toolDefinitions      ToolDefinition[]
+  toolCalls            ToolCall[]
   conversationInsights ConversationInsight[]
 
   @@index([organizationId])
@@ -63,6 +63,7 @@ model Inbox {
   project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
   conversations Conversation[]
 
+  @@unique([id, projectId])
   @@index([projectId])
   @@map("inboxes")
 }
@@ -81,33 +82,38 @@ model Contact {
   project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
   conversations Conversation[]
 
+  @@unique([id, projectId])
+  @@unique([projectId, externalUserId])
+  @@unique([projectId, email])
   @@index([projectId])
-  @@index([projectId, externalUserId])
-  @@index([projectId, email])
   @@map("contacts")
 }
 
 model Conversation {
-  id            String    @id @default(cuid())
-  projectId     String    @map("project_id")
-  inboxId       String    @map("inbox_id")
-  contactId     String    @map("contact_id")
-  status        String    @default("open")
-  assigneeType  String    @default("ai") @map("assignee_type")
-  lastMessageAt DateTime? @map("last_message_at")
-  metadata      Json      @default("{}")
-  createdAt     DateTime  @default(now()) @map("created_at")
-  updatedAt     DateTime  @updatedAt @map("updated_at")
+  id              String    @id @default(cuid())
+  projectId       String    @map("project_id")
+  inboxId         String    @map("inbox_id")
+  contactId       String    @map("contact_id")
+  status          String    @default("open")
+  assigneeType    String    @default("ai") @map("assignee_type")
+  lastMessageAt   DateTime? @map("last_message_at")
+  idempotencyKey  String?   @map("idempotency_key")
+  idempotencyHash String?   @map("idempotency_hash")
+  metadata        Json      @default("{}")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
 
-  project         Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  inbox           Inbox            @relation(fields: [inboxId], references: [id], onDelete: Restrict)
-  contact         Contact          @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  project         Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  inbox           Inbox                @relation(fields: [inboxId], references: [id], onDelete: Restrict)
+  contact         Contact              @relation(fields: [contactId], references: [id], onDelete: Restrict)
   messages        Message[]
   aiRuns          AiRun[]
   handoffSessions HandoffSession[]
   toolCalls       ToolCall[]
   insight         ConversationInsight?
 
+  @@unique([id, projectId])
+  @@unique([projectId, idempotencyKey])
   @@index([projectId])
   @@index([projectId, contactId])
   @@index([projectId, status])
@@ -116,22 +122,26 @@ model Conversation {
 }
 
 model Message {
-  id             String   @id @default(cuid())
-  conversationId String   @map("conversation_id")
-  projectId      String   @map("project_id")
-  role           String
-  visibility     String   @default("public")
-  contentType    String   @default("text") @map("content_type")
-  content        Json
-  sourceRefs     Json?    @map("source_refs")
-  metadata       Json     @default("{}")
-  createdAt      DateTime @default(now()) @map("created_at")
+  id              String   @id @default(cuid())
+  sequence        BigInt   @unique @default(autoincrement())
+  conversationId  String   @map("conversation_id")
+  projectId       String   @map("project_id")
+  role            String
+  visibility      String   @default("public")
+  contentType     String   @default("text") @map("content_type")
+  content         Json
+  sourceRefs      Json?    @map("source_refs")
+  idempotencyKey  String?  @map("idempotency_key")
+  idempotencyHash String?  @map("idempotency_hash")
+  metadata        Json     @default("{}")
+  createdAt       DateTime @default(now()) @map("created_at")
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
   aiRuns       AiRun[]
   toolCalls    ToolCall[]
 
+  @@unique([conversationId, idempotencyKey])
   @@index([projectId])
   @@index([conversationId, createdAt])
   @@index([projectId, createdAt])
@@ -169,8 +179,8 @@ model KnowledgeDocument {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  project Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  source  KnowledgeSource?  @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  project Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  source  KnowledgeSource? @relation(fields: [sourceId], references: [id], onDelete: SetNull)
   chunks  KnowledgeChunk[]
 
   @@index([projectId, status])
@@ -180,15 +190,15 @@ model KnowledgeDocument {
 }
 
 model KnowledgeChunk {
-  id          String                  @id @default(cuid())
-  projectId   String                  @map("project_id")
-  documentId  String                  @map("document_id")
-  chunkIndex  Int                     @map("chunk_index")
-  content     String
-  embedding   Unsupported("vector(1536)")?
-  tokenCount  Int?                    @map("token_count")
-  metadata    Json                    @default("{}")
-  createdAt   DateTime                @default(now()) @map("created_at")
+  id         String                       @id @default(cuid())
+  projectId  String                       @map("project_id")
+  documentId String                       @map("document_id")
+  chunkIndex Int                          @map("chunk_index")
+  content    String
+  embedding  Unsupported("vector(1536)")?
+  tokenCount Int?                         @map("token_count")
+  metadata   Json                         @default("{}")
+  createdAt  DateTime                     @default(now()) @map("created_at")
 
   project  Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
   document KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
@@ -264,9 +274,9 @@ model HandoffSession {
   project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
+  @@unique([projectId, provider, externalConversationId], map: "handoff_project_provider_external_conversation_key")
   @@index([projectId])
   @@index([conversationId])
-  @@unique([provider, externalConversationId])
   @@map("handoff_sessions")
 }
 
@@ -287,20 +297,22 @@ model IntegrationConfig {
 }
 
 model WebhookEvent {
-  id              String    @id @default(cuid())
-  projectId       String    @map("project_id")
-  provider        String
-  externalEventId String?   @map("external_event_id")
-  payload         Json
-  status          String    @default("received")
-  error           String?
-  createdAt       DateTime  @default(now()) @map("created_at")
-  processedAt     DateTime? @map("processed_at")
+  id                  String    @id @default(cuid())
+  projectId           String    @map("project_id")
+  provider            String
+  externalEventId     String?   @map("external_event_id")
+  payload             Json
+  status              String    @default("received")
+  error               String?
+  createdAt           DateTime  @default(now()) @map("created_at")
+  processedAt         DateTime? @map("processed_at")
+  processingStartedAt DateTime? @map("processing_started_at")
+  attempts            Int       @default(0)
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
-  @@index([projectId, provider])
   @@unique([projectId, provider, externalEventId])
+  @@index([projectId, provider])
   @@index([status, createdAt])
   @@map("webhook_events")
 }
@@ -414,20 +426,21 @@ model ConversationInsight {
 }
 
 model AsyncJob {
-  id          String    @id @default(cuid())
-  projectId   String    @map("project_id")
-  type        String
-  status      String    @default("queued")
-  payload     Json      @default("{}")
-  result      Json?
-  attempts    Int       @default(0)
-  maxAttempts Int       @default(3) @map("max_attempts")
-  runAt       DateTime  @default(now()) @map("run_at")
-  lockedBy    String?   @map("locked_by")
-  lockedAt    DateTime? @map("locked_at")
-  error       String?
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
+  id             String    @id @default(cuid())
+  projectId      String    @map("project_id")
+  type           String
+  status         String    @default("queued")
+  payload        Json      @default("{}")
+  result         Json?
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(3) @map("max_attempts")
+  runAt          DateTime  @default(now()) @map("run_at")
+  lockedBy       String?   @map("locked_by")
+  lockedAt       DateTime? @map("locked_at")
+  leaseExpiresAt DateTime? @map("lease_expires_at")
+  error          String?
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 

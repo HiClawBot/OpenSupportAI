@@ -16,6 +16,10 @@ export function invalidRequest(message: string): ApiError {
   return new ApiError("invalid_request", message, 400);
 }
 
+export function conflict(message: string): ApiError {
+  return new ApiError("invalid_request", message, 409);
+}
+
 export function unauthorized(message = "Unauthorized"): ApiError {
   return new ApiError("unauthorized", message, 401);
 }

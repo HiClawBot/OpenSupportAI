@@ -21,7 +21,9 @@ const testConfig: ApiConfig = {
   conversationTokenTtlSeconds: 3600,
   streamTokenTtlSeconds: 60,
   sseHeartbeatMs: 15_000,
-  allowPrivateOutbound: true
+  allowPrivateOutbound: true,
+  maxConcurrentAnswersPerProject: 4,
+  llmTimeoutMs: 45_000
 };
 
 type TestBuildAppOptions = Omit<BuildAppOptions, "config" | "repository"> & {
@@ -235,6 +237,97 @@ describe("OpenSupportAI API", () => {
     });
     expect(crossConversationStream.statusCode).toBe(403);
     expect(second.conversation_token).toMatch(/^osa_v1\./);
+  });
+
+  it("deduplicates client writes and paginates message history", async () => {
+    const conversationPayload = {
+      project_id: "proj_demo",
+      inbox_id: "inbox_default",
+      contact: { external_user_id: "idempotent_user" }
+    };
+    const create = () =>
+      app.inject({
+        method: "POST",
+        url: "/v1/client/conversations",
+        headers: {
+          "x-opensupportai-public-key": "pk_demo",
+          "idempotency-key": "conversation-idempotency-1"
+        },
+        payload: conversationPayload
+      });
+    const [firstResponse, duplicateResponse] = await Promise.all([create(), create()]);
+    const first = firstResponse.json<{
+      conversation_id: string;
+      conversation_token: string;
+      idempotent: boolean;
+    }>();
+    const duplicate = duplicateResponse.json<{
+      conversation_id: string;
+      idempotent: boolean;
+    }>();
+    expect(firstResponse.statusCode).toBe(200);
+    expect(duplicateResponse.statusCode).toBe(200);
+    expect(duplicate.conversation_id).toBe(first.conversation_id);
+    expect([first.idempotent, duplicate.idempotent].sort()).toEqual([false, true]);
+
+    const conflictingCreate = await app.inject({
+      method: "POST",
+      url: "/v1/client/conversations",
+      headers: {
+        "x-opensupportai-public-key": "pk_demo",
+        "idempotency-key": "conversation-idempotency-1"
+      },
+      payload: {
+        ...conversationPayload,
+        metadata: { different: true }
+      }
+    });
+    expect(conflictingCreate.statusCode).toBe(409);
+
+    const send = (key: string, text: string) =>
+      app.inject({
+        method: "POST",
+        url: `/v1/client/conversations/${first.conversation_id}/messages`,
+        headers: {
+          authorization: `Bearer ${first.conversation_token}`,
+          "idempotency-key": key
+        },
+        payload: { type: "text", text }
+      });
+    const firstMessage = await send("message-idempotency-1", "怎么取消订阅？");
+    const duplicateMessage = await send("message-idempotency-1", "怎么取消订阅？");
+    expect(firstMessage.statusCode).toBe(200);
+    expect(duplicateMessage.statusCode).toBe(200);
+    expect(duplicateMessage.json<{ message_id: string; idempotent: boolean }>()).toMatchObject({
+      message_id: firstMessage.json<{ message_id: string }>().message_id,
+      idempotent: true
+    });
+
+    const conflictingMessage = await send("message-idempotency-1", "这是不同的消息");
+    expect(conflictingMessage.statusCode).toBe(409);
+    await send("message-idempotency-2", "退款需要什么资料？");
+
+    const firstPageResponse = await app.inject({
+      method: "GET",
+      url: `/v1/client/conversations/${first.conversation_id}/messages?limit=2`,
+      headers: { authorization: `Bearer ${first.conversation_token}` }
+    });
+    const firstPage = firstPageResponse.json<{
+      messages: Array<{ id: string }>;
+      next_cursor?: string;
+    }>();
+    expect(firstPage.messages).toHaveLength(2);
+    expect(firstPage.next_cursor).toBe(firstPage.messages.at(-1)?.id);
+
+    const secondPageResponse = await app.inject({
+      method: "GET",
+      url: `/v1/client/conversations/${first.conversation_id}/messages?limit=2&after=${firstPage.next_cursor}`,
+      headers: { authorization: `Bearer ${first.conversation_token}` }
+    });
+    const secondPage = secondPageResponse.json<{ messages: Array<{ id: string }> }>();
+    expect(secondPage.messages.length).toBeGreaterThan(0);
+    const firstPageIds = new Set(firstPage.messages.map((message) => message.id));
+    expect(secondPage.messages.some((message) => firstPageIds.has(message.id))).toBe(false);
   });
 
   it("does not seed demo credentials during normal application startup", async () => {
@@ -679,6 +772,17 @@ describe("OpenSupportAI API", () => {
     expect(firstSlack.conversation_id).toMatch(/^conv_/);
     expect(firstSlack.message_id).toMatch(/^msg_/);
 
+    const rejectedDuplicateSlackResponse = await app.inject({
+      method: "POST",
+      url: "/v1/channel-webhooks/slack?public_key=pk_demo",
+      headers: {
+        "x-slack-request-timestamp": Math.floor(Date.now() / 1000).toString(),
+        "x-slack-signature": "v0=bad"
+      },
+      payload: slackPayload
+    });
+    expect(rejectedDuplicateSlackResponse.statusCode).toBe(401);
+
     const duplicateSlackResponse = await app.inject({
       method: "POST",
       url: "/v1/channel-webhooks/slack?public_key=pk_demo",
@@ -813,6 +917,20 @@ describe("OpenSupportAI API", () => {
     expect(firstWebhook.status).toBe("processed");
     expect(firstWebhook.conversation_id).toMatch(/^conv_/);
     expect(firstWebhook.message_id).toMatch(/^msg_/);
+
+    const rejectedDuplicateWebhookResponse = await app.inject({
+      method: "POST",
+      url: "/v1/channel-webhooks/generic?public_key=pk_demo",
+      headers: {
+        "x-channel-secret": "wrong"
+      },
+      payload: {
+        project_id: "proj_demo",
+        event_id: "generic_evt_1",
+        text: "A rejected duplicate must not overwrite processed state"
+      }
+    });
+    expect(rejectedDuplicateWebhookResponse.statusCode).toBe(401);
 
     const duplicateWebhookResponse = await app.inject({
       method: "POST",
@@ -1297,7 +1415,7 @@ describe("OpenSupportAI API", () => {
     expect(createdAudit?.metadata["name"]).toBe("Scoped project key");
   });
 
-  it("lists webhook events, schedules retries, and reports ops health", async () => {
+  it("lists webhook events, keeps retry unavailable, and reports ops health", async () => {
     await app.inject({
       method: "POST",
       url: "/v1/admin/projects/proj_demo/integrations/chatwoot",
@@ -1340,12 +1458,13 @@ describe("OpenSupportAI API", () => {
     });
     expect(eventsResponse.statusCode).toBe(200);
     const events = eventsResponse.json<{
-      webhook_events: Array<{ id: string; provider: string; status: string }>;
+      webhook_events: Array<{ id: string; provider: string; status: string; attempts: number }>;
     }>();
     const event = events.webhook_events.find(
       (candidate) => candidate.provider === "chatwoot" && candidate.status === "ignored"
     );
     expect(event).toBeDefined();
+    expect(event?.attempts).toBe(1);
 
     const retryResponse = await app.inject({
       method: "POST",
@@ -1354,16 +1473,18 @@ describe("OpenSupportAI API", () => {
         authorization: "Bearer admin_demo_key"
       }
     });
-    expect(retryResponse.statusCode).toBe(200);
-    const retry = retryResponse.json<{
-      webhook_event: { status: string };
-      job: { id: string; type: string; status: string };
-    }>();
-    expect(retry.webhook_event.status).toBe("received");
-    expect(retry.job).toMatchObject({
-      type: "webhook.retry",
-      status: "queued"
+    expect(retryResponse.statusCode).toBe(501);
+    expect(retryResponse.json<{ error: { message: string } }>().error.message).toContain(
+      "Webhook replay is unavailable"
+    );
+
+    const jobsResponse = await app.inject({
+      method: "GET",
+      url: "/v1/admin/projects/proj_demo/jobs",
+      headers: { authorization: "Bearer admin_demo_key" }
     });
+    const jobs = jobsResponse.json<{ jobs: Array<{ type: string }> }>();
+    expect(jobs.jobs.every((job) => job.type !== "webhook.retry")).toBe(true);
 
     const opsResponse = await app.inject({
       method: "GET",
@@ -1386,8 +1507,7 @@ describe("OpenSupportAI API", () => {
       configured: true,
       status: "active"
     });
-    expect(ops.counts.recent_async_jobs.queued).toBeGreaterThanOrEqual(1);
-    expect(ops.counts.recent_webhook_events.received).toBeGreaterThanOrEqual(1);
+    expect(ops.counts.recent_webhook_events.ignored).toBeGreaterThanOrEqual(1);
   });
 
   it("manages business tools and records demo tool calls", async () => {

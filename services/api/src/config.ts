@@ -17,6 +17,8 @@ export type ApiConfig = {
   streamTokenTtlSeconds: number;
   sseHeartbeatMs: number;
   allowPrivateOutbound: boolean;
+  maxConcurrentAnswersPerProject: number;
+  llmTimeoutMs: number;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
@@ -40,7 +42,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     ),
     streamTokenTtlSeconds: positiveInteger(env["STREAM_TOKEN_TTL_SECONDS"], 60),
     sseHeartbeatMs: positiveInteger(env["SSE_HEARTBEAT_MS"], 15_000),
-    allowPrivateOutbound: parseBoolean(env["ALLOW_PRIVATE_OUTBOUND"], nodeEnv !== "production")
+    allowPrivateOutbound: parseBoolean(env["ALLOW_PRIVATE_OUTBOUND"], nodeEnv !== "production"),
+    maxConcurrentAnswersPerProject: positiveInteger(env["MAX_CONCURRENT_ANSWERS_PER_PROJECT"], 4),
+    llmTimeoutMs: positiveInteger(env["LLM_TIMEOUT_MS"], 45_000)
   };
 
   validateConfig(config, env);

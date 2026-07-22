@@ -46,6 +46,9 @@ describe("OpenSupportAIClient", () => {
           conversation_token_expires_at: "2026-07-22T00:00:00.000Z"
         });
       }
+      if (init?.method === "GET") {
+        return Response.json({ messages: [], next_cursor: "msg_next" });
+      }
       return Response.json({
         message_id: "msg_123",
         conversation_id: "conv_123",
@@ -58,8 +61,16 @@ describe("OpenSupportAIClient", () => {
       publicKey: "pk_demo"
     });
 
-    const conversation = await client.createConversation({});
-    await client.sendMessage({ conversationId: conversation.conversationId, text: "Hello" });
+    const conversation = await client.createConversation({ idempotencyKey: "create-key" });
+    await client.sendMessage({
+      conversationId: conversation.conversationId,
+      text: "Hello",
+      idempotencyKey: "message-key"
+    });
+    const page = await client.listMessages(conversation.conversationId, {
+      limit: 10,
+      after: "msg_0"
+    });
 
     expect(new Headers(calls[0]?.init?.headers).get("x-opensupportai-public-key")).toBe("pk_demo");
     expect(new Headers(calls[0]?.init?.headers).get("authorization")).toBeNull();
@@ -67,6 +78,10 @@ describe("OpenSupportAIClient", () => {
       "Bearer conversation_secret"
     );
     expect(new Headers(calls[1]?.init?.headers).get("x-opensupportai-public-key")).toBeNull();
+    expect(new Headers(calls[0]?.init?.headers).get("idempotency-key")).toBe("create-key");
+    expect(new Headers(calls[1]?.init?.headers).get("idempotency-key")).toBe("message-key");
+    expect(calls[2]?.url).toContain("limit=10&after=msg_0");
+    expect(page.nextCursor).toBe("msg_next");
   });
 
   it("exchanges a capability for a short-lived SSE token and handles native errors", async () => {

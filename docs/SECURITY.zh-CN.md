@@ -336,7 +336,7 @@ OCR 沙箱
 每 conversation 消息频率限制
 每 contact 每小时消息限制
 LLM token budget
-Webhook retry 限制
+Webhook replay 仅在 provider-specific handler 完成后开放；当前保留接口返回 501
 ```
 
 ---

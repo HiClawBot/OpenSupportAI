@@ -63,6 +63,7 @@ class WidgetView {
   private open = false;
   private sending = false;
   private error: string | undefined;
+  private readonly createIdempotencyKey = requestIdempotencyKey();
 
   constructor(
     private readonly client: OpenSupportAIWidgetClient,
@@ -152,7 +153,8 @@ class WidgetView {
       metadata: {
         page_url: window.location.href,
         locale: this.options.locale ?? navigator.language
-      }
+      },
+      idempotencyKey: this.createIdempotencyKey
     });
     this.conversationId = conversation.conversationId;
     sessionStorage.setItem(
@@ -188,7 +190,11 @@ class WidgetView {
     this.render();
     try {
       const conversationId = await this.ensureConversation();
-      await this.client.sendMessage({ conversationId, text });
+      await this.client.sendMessage({
+        conversationId,
+        text,
+        idempotencyKey: requestIdempotencyKey()
+      });
       await this.refreshMessages();
     } catch (error) {
       this.error = error instanceof Error ? error.message : "发送失败";
@@ -311,6 +317,7 @@ export class OpenSupportAIWidgetClient {
       avatarUrl?: string;
     };
     metadata?: Record<string, unknown>;
+    idempotencyKey?: string;
   }): Promise<{
     conversationId: string;
     status: string;
@@ -322,6 +329,7 @@ export class OpenSupportAIWidgetClient {
       status: string;
       conversation_token: string;
       conversation_token_expires_at: string;
+      idempotent?: boolean;
     }>(
       "/v1/client/conversations",
       {
@@ -336,7 +344,8 @@ export class OpenSupportAIWidgetClient {
             avatar_url: input.contact?.avatarUrl
           },
           metadata: input.metadata ?? {}
-        })
+        }),
+        headers: input.idempotencyKey ? { "Idempotency-Key": input.idempotencyKey } : undefined
       },
       { kind: "project" }
     );
@@ -352,11 +361,13 @@ export class OpenSupportAIWidgetClient {
   async sendMessage(input: {
     conversationId: string;
     text: string;
+    idempotencyKey?: string;
   }): Promise<{ messageId: string; conversationId: string; status: string }> {
     const response = await this.request<{
       message_id: string;
       conversation_id: string;
       status: string;
+      idempotent?: boolean;
     }>(
       `/v1/client/conversations/${input.conversationId}/messages`,
       {
@@ -364,7 +375,8 @@ export class OpenSupportAIWidgetClient {
         body: JSON.stringify({
           type: "text",
           text: input.text
-        })
+        }),
+        headers: input.idempotencyKey ? { "Idempotency-Key": input.idempotencyKey } : undefined
       },
       {
         kind: "conversation",
@@ -378,9 +390,19 @@ export class OpenSupportAIWidgetClient {
     };
   }
 
-  listMessages(conversationId: string): Promise<{ messages: Message[] }> {
-    return this.request(
-      `/v1/client/conversations/${conversationId}/messages`,
+  async listMessages(
+    conversationId: string,
+    options: { limit?: number; after?: string } = {}
+  ): Promise<{ messages: Message[]; nextCursor?: string }> {
+    const query = new URLSearchParams();
+    if (options.limit) {
+      query.set("limit", String(options.limit));
+    }
+    if (options.after) {
+      query.set("after", options.after);
+    }
+    const response = await this.request<{ messages: Message[]; next_cursor?: string }>(
+      `/v1/client/conversations/${conversationId}/messages${query.size ? `?${query}` : ""}`,
       {
         method: "GET"
       },
@@ -389,6 +411,7 @@ export class OpenSupportAIWidgetClient {
         conversationId
       }
     );
+    return { messages: response.messages, nextCursor: response.next_cursor };
   }
 
   async requestHandoff(input: {
@@ -418,6 +441,7 @@ export class OpenSupportAIWidgetClient {
     let pollTimer: ReturnType<typeof setInterval> | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let reconnectAttempts = 0;
+    let pollCursor: string | undefined;
     let stopped = false;
     const seenMessageIds = new Set<string>();
     const eventNames = [
@@ -438,7 +462,10 @@ export class OpenSupportAIWidgetClient {
     };
     const poll = async () => {
       try {
-        const response = await this.listMessages(conversationId);
+        const response = await this.listMessages(conversationId, {
+          limit: 100,
+          after: pollCursor
+        });
         for (const message of response.messages) {
           if (seenMessageIds.has(message.id)) {
             continue;
@@ -454,6 +481,7 @@ export class OpenSupportAIWidgetClient {
             data: { message }
           });
         }
+        pollCursor = response.nextCursor ?? response.messages.at(-1)?.id ?? pollCursor;
       } catch {
         // Polling is a fallback; a later interval or stream reconnect can recover.
       }
@@ -549,12 +577,16 @@ export class OpenSupportAIWidgetClient {
           conversationId: string;
         }
   ): Promise<T> {
+    const headers = new Headers(init.headers);
+    if (init.body !== undefined) {
+      headers.set("Content-Type", "application/json");
+    }
+    for (const [name, value] of Object.entries(this.authHeaders(auth))) {
+      headers.set(name, value);
+    }
     const response = await fetch(`${this.options.apiUrl}${path}`, {
       ...init,
-      headers: {
-        ...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
-        ...this.authHeaders(auth)
-      }
+      headers
     });
     if (!response.ok) {
       throw new Error(`OpenSupportAI request failed with status ${response.status}`);
@@ -657,6 +689,10 @@ function rememberEventMessage(event: ClientEvent, seenMessageIds: Set<string>): 
   ) {
     seenMessageIds.add(event.data.message.id);
   }
+}
+
+function requestIdempotencyKey(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `widget-${Date.now()}-${Math.random()}`;
 }
 
 const styles = `

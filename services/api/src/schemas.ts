@@ -31,6 +31,11 @@ export const sendMessageBodySchema = z.object({
   text: z.string().min(1).max(8000)
 });
 
+export const listClientMessagesQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  after: z.string().trim().min(1).max(120).optional()
+});
+
 export const requestHandoffBodySchema = z.object({
   reason: z
     .enum(["user_requested", "low_confidence", "sensitive", "policy"])
@@ -95,7 +100,7 @@ export const listAsyncJobsQuerySchema = z.object({
 });
 
 export const createAsyncJobBodySchema = z.object({
-  type: z.string().trim().min(1).max(120),
+  type: z.literal("knowledge.index"),
   payload: metadataSchema.optional(),
   run_at: z.string().datetime().optional(),
   max_attempts: z.number().int().min(1).max(10).default(3)
@@ -103,12 +108,8 @@ export const createAsyncJobBodySchema = z.object({
 
 export const listWebhookEventsQuerySchema = z.object({
   provider: z.string().trim().min(1).max(80).optional(),
-  status: z.enum(["received", "processed", "failed", "ignored"]).optional(),
+  status: z.enum(["received", "processing", "processed", "failed", "ignored"]).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50)
-});
-
-export const retryWebhookEventBodySchema = z.object({
-  run_at: z.string().datetime().optional()
 });
 
 export const listAuditLogsQuerySchema = z.object({

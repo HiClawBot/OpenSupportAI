@@ -32,6 +32,7 @@ import { type ApiConfig, loadConfig } from "./config";
 import { decryptJson, encryptJson, hashSecret } from "./crypto";
 import {
   ApiError,
+  conflict,
   forbidden,
   invalidRequest,
   notFound,
@@ -45,6 +46,7 @@ import { createOrchestrator, requestHandoff, type GroundedAnswerGenerator } from
 import { createSafeOutboundFetch } from "./outbound";
 import { MemorySupportRepository } from "./repositories/memory";
 import { PrismaSupportRepository } from "./repositories/prisma";
+import { IdempotencyConflictError } from "./repositories/types";
 import type {
   ApiKeyRecord,
   AuditLogRecord,
@@ -73,12 +75,12 @@ import {
   listAuditLogsQuerySchema,
   listAsyncJobsQuerySchema,
   listConversationsQuerySchema,
+  listClientMessagesQuerySchema,
   listToolCallsQuerySchema,
   listToolsQuerySchema,
   listWebhookEventsQuerySchema,
   reindexKnowledgeDocumentBodySchema,
   requestHandoffBodySchema,
-  retryWebhookEventBodySchema,
   sendMessageBodySchema,
   updateToolDefinitionBodySchema,
   upsertChatwootIntegrationBodySchema,
@@ -133,7 +135,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const orchestrator = createOrchestrator(repository, eventHub, {
     requestHandoff: handoffRequester,
     generateGroundedAnswer: createLlmGroundedAnswerGenerator(config, llmFetch),
-    businessToolFetch: toolFetch
+    businessToolFetch: toolFetch,
+    maxConcurrentAnswersPerProject: config.maxConcurrentAnswersPerProject
   });
   const app = Fastify({
     logger:
@@ -198,12 +201,32 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       avatarUrl: body.contact.avatar_url,
       metadata: {}
     });
-    const conversation = await repository.createConversation({
-      projectId: project.id,
-      inboxId: inbox.id,
-      contactId: contact.id,
-      metadata: body.metadata
-    });
+    const key = requestIdempotencyKey(request);
+    let conversation: ConversationRecord;
+    let created = true;
+    try {
+      if (key) {
+        const result = await repository.createIdempotentConversation({
+          projectId: project.id,
+          inboxId: inbox.id,
+          contactId: contact.id,
+          idempotencyKey: key,
+          idempotencyHash: hashSecret(JSON.stringify(body)),
+          metadata: body.metadata
+        });
+        conversation = result.conversation;
+        created = result.created;
+      } else {
+        conversation = await repository.createConversation({
+          projectId: project.id,
+          inboxId: inbox.id,
+          contactId: contact.id,
+          metadata: body.metadata
+        });
+      }
+    } catch (error) {
+      throwIdempotencyConflict(error);
+    }
     const capability = issueClientToken({
       secret: config.clientTokenSecret,
       purpose: "conversation",
@@ -216,12 +239,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       conversation_id: conversation.id,
       status: conversation.status,
       conversation_token: capability.token,
-      conversation_token_expires_at: capability.expiresAt
+      conversation_token_expires_at: capability.expiresAt,
+      idempotent: !created
     };
   });
 
   app.get("/v1/client/conversations/:conversationId/messages", async (request) => {
     const params = request.params as { conversationId: string };
+    const query = listClientMessagesQuerySchema.parse(request.query);
     const { project, conversation } = await authenticateConversation(
       request,
       repository,
@@ -229,8 +254,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       params.conversationId
     );
 
+    const messages = await repository.listMessages(project.id, conversation.id, {
+      limit: query.limit + 1,
+      after: query.after
+    });
+    const hasMore = messages.length > query.limit;
+    const page = hasMore ? messages.slice(0, query.limit) : messages;
     return {
-      messages: await repository.listMessages(project.id, conversation.id)
+      messages: page,
+      next_cursor: hasMore ? page.at(-1)?.id : undefined
     };
   });
 
@@ -244,14 +276,44 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       params.conversationId
     );
 
-    const message = await repository.createMessage({
-      projectId: project.id,
-      conversationId: conversation.id,
-      message: {
-        role: "end_user",
-        text: body.text
+    const key = requestIdempotencyKey(request);
+    let message: MessageRecord;
+    let created = true;
+    try {
+      if (key) {
+        const result = await repository.createIdempotentMessage({
+          projectId: project.id,
+          conversationId: conversation.id,
+          idempotencyKey: key,
+          idempotencyHash: hashSecret(JSON.stringify(body)),
+          message: {
+            role: "end_user",
+            text: body.text
+          }
+        });
+        message = result.message;
+        created = result.created;
+      } else {
+        message = await repository.createMessage({
+          projectId: project.id,
+          conversationId: conversation.id,
+          message: {
+            role: "end_user",
+            text: body.text
+          }
+        });
       }
-    });
+    } catch (error) {
+      throwIdempotencyConflict(error);
+    }
+    if (!created) {
+      return {
+        message_id: message.id,
+        conversation_id: conversation.id,
+        status: "accepted",
+        idempotent: true
+      };
+    }
     eventHub.publish(project.id, conversation.id, {
       event: "message.created",
       data: { message }
@@ -266,7 +328,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     return {
       message_id: message.id,
       conversation_id: conversation.id,
-      status: "accepted"
+      status: "accepted",
+      idempotent: false
     };
   });
 
@@ -389,6 +452,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         : {}
     );
     let webhookEvent: Awaited<ReturnType<SupportRepository["createWebhookEvent"]>> | undefined;
+    let webhookClaimed = false;
 
     try {
       const normalized = await adapter.normalizeInboundWebhook({
@@ -401,9 +465,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         externalEventId: normalized.externalEventId,
         payload: body
       });
-      const idempotentResponse = idempotentWebhookResponse(webhookEvent, normalized.provider);
-      if (idempotentResponse) {
-        return idempotentResponse;
+      const claim = await repository.claimWebhookEvent({
+        projectId: project.id,
+        id: webhookEvent.id
+      });
+      webhookEvent = claim.event;
+      webhookClaimed = claim.claimed;
+      if (!claim.claimed) {
+        return idempotentWebhookResponse(webhookEvent, normalized.provider);
       }
 
       const inbox = await repository.findInbox(project.id, normalized.inboxId);
@@ -451,22 +520,34 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         message_id: message.id
       };
     } catch (error) {
-      webhookEvent ??= await repository.createWebhookEvent({
-        projectId: project.id,
-        provider: "generic_webhook",
-        externalEventId:
-          stringValue(body["event_id"]) ??
-          stringValue(body["eventId"]) ??
-          stringValue(body["id"]) ??
-          stringValue(recordValue(body["message"])?.["id"]) ??
-          stringValue(body["message_id"]),
-        payload: body
-      });
-      await repository.markWebhookEvent({
-        id: webhookEvent.id,
-        status: "failed",
-        error: error instanceof Error ? error.message : "Unknown channel webhook error"
-      });
+      if (!webhookEvent) {
+        webhookEvent = await repository.createWebhookEvent({
+          projectId: project.id,
+          provider: "generic_webhook",
+          externalEventId:
+            stringValue(body["event_id"]) ??
+            stringValue(body["eventId"]) ??
+            stringValue(body["id"]) ??
+            stringValue(recordValue(body["message"])?.["id"]) ??
+            stringValue(body["message_id"]),
+          payload: body
+        });
+      }
+      if (!webhookClaimed) {
+        const claim = await repository.claimWebhookEvent({
+          projectId: project.id,
+          id: webhookEvent.id
+        });
+        webhookEvent = claim.event;
+        webhookClaimed = claim.claimed;
+      }
+      if (webhookClaimed) {
+        await repository.markWebhookEvent({
+          id: webhookEvent.id,
+          status: "failed",
+          error: error instanceof Error ? error.message : "Unknown channel webhook error"
+        });
+      }
       if (error instanceof Error && error.message === "Invalid generic webhook secret") {
         throw unauthorized("Invalid generic webhook secret");
       }
@@ -506,6 +587,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
     const adapter = createSlackAdapter(adapterConfig);
     let webhookEvent: Awaited<ReturnType<SupportRepository["createWebhookEvent"]>> | undefined;
+    let webhookClaimed = false;
 
     try {
       const normalized = await adapter.normalizeInboundWebhook({
@@ -519,9 +601,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         externalEventId: normalized.externalEventId,
         payload: body
       });
-      const idempotentResponse = idempotentWebhookResponse(webhookEvent, normalized.provider);
-      if (idempotentResponse) {
-        return idempotentResponse;
+      const claim = await repository.claimWebhookEvent({
+        projectId: project.id,
+        id: webhookEvent.id
+      });
+      webhookEvent = claim.event;
+      webhookClaimed = claim.claimed;
+      if (!claim.claimed) {
+        return idempotentWebhookResponse(webhookEvent, normalized.provider);
       }
 
       const inbox = await repository.findInbox(project.id, normalized.inboxId);
@@ -569,20 +656,32 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         message_id: message.id
       };
     } catch (error) {
-      webhookEvent ??= await repository.createWebhookEvent({
-        projectId: project.id,
-        provider: "slack",
-        externalEventId:
-          stringValue(body["event_id"]) ??
-          stringValue(recordValue(body["event"])?.["client_msg_id"]) ??
-          stringValue(recordValue(body["event"])?.["ts"]),
-        payload: body
-      });
-      await repository.markWebhookEvent({
-        id: webhookEvent.id,
-        status: "failed",
-        error: error instanceof Error ? error.message : "Unknown Slack webhook error"
-      });
+      if (!webhookEvent) {
+        webhookEvent = await repository.createWebhookEvent({
+          projectId: project.id,
+          provider: "slack",
+          externalEventId:
+            stringValue(body["event_id"]) ??
+            stringValue(recordValue(body["event"])?.["client_msg_id"]) ??
+            stringValue(recordValue(body["event"])?.["ts"]),
+          payload: body
+        });
+      }
+      if (!webhookClaimed) {
+        const claim = await repository.claimWebhookEvent({
+          projectId: project.id,
+          id: webhookEvent.id
+        });
+        webhookEvent = claim.event;
+        webhookClaimed = claim.claimed;
+      }
+      if (webhookClaimed) {
+        await repository.markWebhookEvent({
+          id: webhookEvent.id,
+          status: "failed",
+          error: error instanceof Error ? error.message : "Unknown Slack webhook error"
+        });
+      }
       if (isSlackSignatureError(error)) {
         throw unauthorized(error instanceof Error ? error.message : "Invalid Slack signature");
       }
@@ -1196,53 +1295,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
 
   app.post("/v1/admin/projects/:projectId/webhooks/events/:eventId/retry", async (request) => {
-    const params = request.params as { eventId: string };
-    const { project, identity } = await authenticateAdminProjectIdentity(
-      request,
-      repository,
-      config
-    );
+    const { identity } = await authenticateAdminProjectIdentity(request, repository, config);
     requireAdminScope(identity, "admin:webhooks");
-    const body = retryWebhookEventBodySchema.parse(request.body ?? {});
-    const event = await repository.findWebhookEvent({
-      projectId: project.id,
-      id: params.eventId
-    });
-    if (!event) {
-      throw notFound("Webhook event not found");
-    }
-    if (event.status === "processed") {
-      throw invalidRequest("Processed webhook events do not need retry");
-    }
-
-    const job = await repository.createAsyncJob({
-      projectId: project.id,
-      type: "webhook.retry",
-      payload: {
-        webhook_event_id: event.id,
-        provider: event.provider
-      },
-      runAt: body.run_at
-    });
-    const updatedEvent = await repository.markWebhookEvent({
-      id: event.id,
-      status: "received"
-    });
-    await recordAudit(repository, request, {
-      project,
-      identity,
-      action: "webhook.retry_scheduled",
-      targetType: "webhook_event",
-      targetId: event.id,
-      metadata: {
-        provider: event.provider,
-        job_id: job.id
-      }
-    });
-    return {
-      webhook_event: updatedEvent,
-      job
-    };
+    throw new ApiError(
+      "invalid_request",
+      "Webhook replay is unavailable until provider-specific replay handlers are implemented",
+      501
+    );
   });
 
   app.get("/v1/admin/projects/:projectId/knowledge/documents", async (request) => {
@@ -1616,87 +1675,100 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       externalEventId,
       payload
     });
-    if (webhookEvent.status === "processed") {
-      return { status: "duplicate" };
-    }
-
-    const statusChange = chatwootStatusChangeFromPayload(payload);
-    if (statusChange.accepted) {
-      const result = await processChatwootStatusChange({
-        repository,
-        eventHub,
-        projectId: params.projectId,
-        webhookEventId: webhookEvent.id,
-        statusChange
-      });
-      return result;
-    }
-
-    const humanMessage = chatwootHumanMessageFromPayload(payload);
-    if (!humanMessage.accepted) {
-      await repository.markWebhookEvent({
-        id: webhookEvent.id,
-        status: "ignored"
-      });
-      return { status: "ignored" };
-    }
-
-    const conversationId =
-      humanMessage.localConversationId ??
-      (humanMessage.externalConversationId
-        ? (
-            await repository.findHandoffByExternalConversation({
-              projectId: params.projectId,
-              provider: "chatwoot",
-              externalConversationId: humanMessage.externalConversationId
-            })
-          )?.conversationId
-        : undefined);
-
-    if (!conversationId) {
-      await repository.markWebhookEvent({
-        id: webhookEvent.id,
-        status: "ignored",
-        error: "No local conversation reference"
-      });
-      return { status: "ignored" };
-    }
-
-    const conversation = await repository.findConversation(params.projectId, conversationId);
-    if (!conversation) {
-      await repository.markWebhookEvent({
-        id: webhookEvent.id,
-        status: "ignored",
-        error: "Conversation not found"
-      });
-      return { status: "ignored" };
-    }
-
-    const message = await repository.createMessage({
+    const claim = await repository.claimWebhookEvent({
       projectId: params.projectId,
-      conversationId: conversation.id,
-      message: {
-        role: "human_agent",
-        text: humanMessage.text,
-        metadata: {
-          provider: "chatwoot",
-          external_conversation_id: humanMessage.externalConversationId,
-          external_message_id: humanMessage.externalMessageId
-        }
+      id: webhookEvent.id
+    });
+    if (!claim.claimed) {
+      return { status: "duplicate", webhook_event_status: claim.event.status };
+    }
+
+    try {
+      const statusChange = chatwootStatusChangeFromPayload(payload);
+      if (statusChange.accepted) {
+        const result = await processChatwootStatusChange({
+          repository,
+          eventHub,
+          projectId: params.projectId,
+          webhookEventId: webhookEvent.id,
+          statusChange
+        });
+        return result;
       }
-    });
 
-    eventHub.publish(params.projectId, conversation.id, {
-      event: "human.message.created",
-      data: { message }
-    });
+      const humanMessage = chatwootHumanMessageFromPayload(payload);
+      if (!humanMessage.accepted) {
+        await repository.markWebhookEvent({
+          id: webhookEvent.id,
+          status: "ignored"
+        });
+        return { status: "ignored" };
+      }
 
-    await repository.markWebhookEvent({
-      id: webhookEvent.id,
-      status: "processed"
-    });
+      const conversationId =
+        humanMessage.localConversationId ??
+        (humanMessage.externalConversationId
+          ? (
+              await repository.findHandoffByExternalConversation({
+                projectId: params.projectId,
+                provider: "chatwoot",
+                externalConversationId: humanMessage.externalConversationId
+              })
+            )?.conversationId
+          : undefined);
 
-    return { status: "ok" };
+      if (!conversationId) {
+        await repository.markWebhookEvent({
+          id: webhookEvent.id,
+          status: "ignored",
+          error: "No local conversation reference"
+        });
+        return { status: "ignored" };
+      }
+
+      const conversation = await repository.findConversation(params.projectId, conversationId);
+      if (!conversation) {
+        await repository.markWebhookEvent({
+          id: webhookEvent.id,
+          status: "ignored",
+          error: "Conversation not found"
+        });
+        return { status: "ignored" };
+      }
+
+      const message = await repository.createMessage({
+        projectId: params.projectId,
+        conversationId: conversation.id,
+        message: {
+          role: "human_agent",
+          text: humanMessage.text,
+          metadata: {
+            provider: "chatwoot",
+            external_conversation_id: humanMessage.externalConversationId,
+            external_message_id: humanMessage.externalMessageId
+          }
+        }
+      });
+
+      eventHub.publish(params.projectId, conversation.id, {
+        event: "human.message.created",
+        data: { message }
+      });
+
+      await repository.markWebhookEvent({
+        id: webhookEvent.id,
+        status: "processed"
+      });
+
+      return { status: "ok" };
+    } catch (error) {
+      await repository.markWebhookEvent({
+        id: webhookEvent.id,
+        status: "failed",
+        error: error instanceof Error ? error.message : "Unknown Chatwoot webhook error"
+      });
+      throw error;
+    }
   });
 
   return app;
@@ -1935,7 +2007,7 @@ function createLlmGroundedAnswerGenerator(
       apiKey: llmApiKey(provider, config),
       model: provider.model,
       embeddingModel: provider.embeddingModel,
-      timeoutMs: 45_000,
+      timeoutMs: config.llmTimeoutMs,
       fetchImpl
     });
     const response = await client.generate({
@@ -2047,24 +2119,40 @@ function isSlackSignatureError(error: unknown): boolean {
 function idempotentWebhookResponse(
   event: WebhookEventRecord,
   provider: ChannelProvider
-):
-  | {
-      status: "processed" | "ignored";
-      provider: ChannelProvider;
-      webhook_event_id: string;
-      idempotent: true;
-    }
-  | undefined {
-  if (event.status !== "processed" && event.status !== "ignored") {
-    return undefined;
-  }
-
+): {
+  status: WebhookEventRecord["status"];
+  provider: ChannelProvider;
+  webhook_event_id: string;
+  idempotent: true;
+} {
   return {
     status: event.status,
     provider,
     webhook_event_id: event.id,
     idempotent: true
   };
+}
+
+function requestIdempotencyKey(request: FastifyRequest): string | undefined {
+  const value = request.headers["idempotency-key"];
+  const key = Array.isArray(value) ? value[0] : value;
+  if (!key) {
+    return undefined;
+  }
+  const normalized = key.trim();
+  if (!/^[A-Za-z0-9._:-]{1,200}$/.test(normalized)) {
+    throw invalidRequest(
+      "Idempotency-Key must be 1-200 characters using letters, numbers, dot, underscore, colon, or hyphen"
+    );
+  }
+  return normalized;
+}
+
+function throwIdempotencyConflict(error: unknown): never {
+  if (error instanceof IdempotencyConflictError) {
+    throw conflict(error.message);
+  }
+  throw error;
 }
 
 function safeIntegrationResponse(integration: IntegrationConfigRecord): {

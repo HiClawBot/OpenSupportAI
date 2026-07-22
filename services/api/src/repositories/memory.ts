@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { IdempotencyConflictError } from "./types";
 import type {
   AdminApiKeyLookup,
   AiRunRecord,
@@ -269,21 +270,26 @@ export class MemorySupportRepository implements SupportRepository {
   }
 
   async upsertContact(projectId: string, input: ContactInput): Promise<ContactRecord> {
+    const normalizedInput = {
+      ...input,
+      email: input.email?.trim().toLowerCase()
+    };
     const existing = [...this.contacts.values()].find((contact) => {
       if (contact.projectId !== projectId) {
         return false;
       }
       return (
-        (input.externalUserId && contact.externalUserId === input.externalUserId) ||
-        (input.email && contact.email === input.email)
+        (normalizedInput.externalUserId &&
+          contact.externalUserId === normalizedInput.externalUserId) ||
+        (normalizedInput.email && contact.email === normalizedInput.email)
       );
     });
 
     if (existing) {
       const updated: ContactRecord = {
         ...existing,
-        ...input,
-        metadata: { ...existing.metadata, ...(input.metadata ?? {}) },
+        ...normalizedInput,
+        metadata: { ...existing.metadata, ...(normalizedInput.metadata ?? {}) },
         updatedAt: now()
       };
       this.contacts.set(existing.id, updated);
@@ -294,8 +300,8 @@ export class MemorySupportRepository implements SupportRepository {
     const contact: ContactRecord = {
       id: id("contact"),
       projectId,
-      ...input,
-      metadata: input.metadata ?? {},
+      ...normalizedInput,
+      metadata: normalizedInput.metadata ?? {},
       createdAt: timestamp,
       updatedAt: timestamp
     };
@@ -323,6 +329,33 @@ export class MemorySupportRepository implements SupportRepository {
     };
     this.conversations.set(conversation.id, conversation);
     return conversation;
+  }
+
+  async createIdempotentConversation(input: {
+    projectId: string;
+    inboxId: string;
+    contactId: string;
+    idempotencyKey: string;
+    idempotencyHash: string;
+    metadata?: JsonRecord;
+  }): Promise<{ conversation: ConversationRecord; created: boolean }> {
+    const existing = [...this.conversations.values()].find(
+      (conversation) =>
+        conversation.projectId === input.projectId &&
+        conversation.idempotencyKey === input.idempotencyKey
+    );
+    if (existing) {
+      assertMatchingIdempotencyHash(existing.idempotencyHash, input.idempotencyHash);
+      return { conversation: existing, created: false };
+    }
+    const conversation = await this.createConversation(input);
+    const idempotentConversation: ConversationRecord = {
+      ...conversation,
+      idempotencyKey: input.idempotencyKey,
+      idempotencyHash: input.idempotencyHash
+    };
+    this.conversations.set(conversation.id, idempotentConversation);
+    return { conversation: idempotentConversation, created: true };
   }
 
   async findConversation(
@@ -358,13 +391,24 @@ export class MemorySupportRepository implements SupportRepository {
     return updated;
   }
 
-  async listMessages(projectId: string, conversationId: string): Promise<MessageRecord[]> {
+  async listMessages(
+    projectId: string,
+    conversationId: string,
+    options: { limit?: number; after?: string } = {}
+  ): Promise<MessageRecord[]> {
     await this.requireConversation(projectId, conversationId);
-    return [...this.messages.values()]
+    const messages = [...this.messages.values()]
       .filter(
         (message) => message.projectId === projectId && message.conversationId === conversationId
       )
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const cursorIndex = options.after
+      ? messages.findIndex((message) => message.id === options.after)
+      : -1;
+    if (options.after && cursorIndex < 0) {
+      return [];
+    }
+    return messages.slice(cursorIndex + 1, cursorIndex + 1 + boundedMessageLimit(options.limit));
   }
 
   async createMessage(input: {
@@ -397,6 +441,32 @@ export class MemorySupportRepository implements SupportRepository {
       });
     }
     return message;
+  }
+
+  async createIdempotentMessage(input: {
+    projectId: string;
+    conversationId: string;
+    idempotencyKey: string;
+    idempotencyHash: string;
+    message: CreateMessageInput;
+  }): Promise<{ message: MessageRecord; created: boolean }> {
+    const existing = [...this.messages.values()].find(
+      (message) =>
+        message.conversationId === input.conversationId &&
+        message.idempotencyKey === input.idempotencyKey
+    );
+    if (existing) {
+      assertMatchingIdempotencyHash(existing.idempotencyHash, input.idempotencyHash);
+      return { message: existing, created: false };
+    }
+    const message = await this.createMessage(input);
+    const idempotentMessage: MessageRecord = {
+      ...message,
+      idempotencyKey: input.idempotencyKey,
+      idempotencyHash: input.idempotencyHash
+    };
+    this.messages.set(message.id, idempotentMessage);
+    return { message: idempotentMessage, created: true };
   }
 
   async createKnowledgeDocument(
@@ -668,6 +738,7 @@ export class MemorySupportRepository implements SupportRepository {
       externalEventId: input.externalEventId,
       payload: input.payload,
       status: "received",
+      attempts: 0,
       createdAt: now()
     };
     this.webhookEvents.set(event.id, event);
@@ -687,10 +758,34 @@ export class MemorySupportRepository implements SupportRepository {
       ...event,
       status: input.status,
       error: input.error,
-      processedAt: now()
+      processedAt: ["processed", "failed", "ignored"].includes(input.status) ? now() : undefined
     };
     this.webhookEvents.set(updated.id, updated);
     return updated;
+  }
+
+  async claimWebhookEvent(input: {
+    projectId: string;
+    id: string;
+    now?: string;
+  }): Promise<{ event: WebhookEventRecord; claimed: boolean }> {
+    const event = this.webhookEvents.get(input.id);
+    if (!event || event.projectId !== input.projectId) {
+      throw new Error(`Webhook event not found: ${input.id}`);
+    }
+    if (event.status !== "received") {
+      return { event, claimed: false };
+    }
+    const updated: WebhookEventRecord = {
+      ...event,
+      status: "processing",
+      attempts: event.attempts + 1,
+      processingStartedAt: input.now ?? now(),
+      processedAt: undefined,
+      error: undefined
+    };
+    this.webhookEvents.set(updated.id, updated);
+    return { event: updated, claimed: true };
   }
 
   async findWebhookEvent(input: {
@@ -963,11 +1058,35 @@ export class MemorySupportRepository implements SupportRepository {
     workerId: string;
     types?: string[];
     now?: string;
+    leaseMs?: number;
   }): Promise<AsyncJobRecord | undefined> {
     const timestamp = input.now ?? now();
+    for (const running of this.asyncJobs.values()) {
+      if (
+        running.status === "running" &&
+        running.leaseExpiresAt &&
+        running.leaseExpiresAt <= timestamp &&
+        running.attempts >= running.maxAttempts
+      ) {
+        this.asyncJobs.set(running.id, {
+          ...running,
+          status: "failed",
+          lockedBy: undefined,
+          lockedAt: undefined,
+          leaseExpiresAt: undefined,
+          error: "Job lease expired after the maximum number of attempts",
+          updatedAt: timestamp
+        });
+      }
+    }
     const job = [...this.asyncJobs.values()]
-      .filter((candidate) => candidate.status === "queued")
-      .filter((candidate) => candidate.runAt <= timestamp)
+      .filter(
+        (candidate) =>
+          (candidate.status === "queued" && candidate.runAt <= timestamp) ||
+          (candidate.status === "running" &&
+            Boolean(candidate.leaseExpiresAt && candidate.leaseExpiresAt <= timestamp))
+      )
+      .filter((candidate) => candidate.attempts < candidate.maxAttempts)
       .filter((candidate) => (input.types?.length ? input.types.includes(candidate.type) : true))
       .sort((a, b) => a.runAt.localeCompare(b.runAt) || a.createdAt.localeCompare(b.createdAt))[0];
     if (!job) {
@@ -980,14 +1099,40 @@ export class MemorySupportRepository implements SupportRepository {
       attempts: job.attempts + 1,
       lockedBy: input.workerId,
       lockedAt: timestamp,
+      leaseExpiresAt: new Date(
+        new Date(timestamp).getTime() + (input.leaseMs ?? 60_000)
+      ).toISOString(),
       updatedAt: timestamp
     };
     this.asyncJobs.set(updated.id, updated);
     return updated;
   }
 
-  async completeAsyncJob(input: { id: string; result?: JsonRecord }): Promise<AsyncJobRecord> {
-    const job = this.requireAsyncJob(input.id);
+  async renewAsyncJobLease(input: {
+    id: string;
+    workerId: string;
+    now?: string;
+    leaseMs?: number;
+  }): Promise<AsyncJobRecord> {
+    const job = this.requireOwnedAsyncJob(input.id, input.workerId);
+    const timestamp = input.now ?? now();
+    const updated: AsyncJobRecord = {
+      ...job,
+      leaseExpiresAt: new Date(
+        new Date(timestamp).getTime() + (input.leaseMs ?? 60_000)
+      ).toISOString(),
+      updatedAt: timestamp
+    };
+    this.asyncJobs.set(updated.id, updated);
+    return updated;
+  }
+
+  async completeAsyncJob(input: {
+    id: string;
+    workerId: string;
+    result?: JsonRecord;
+  }): Promise<AsyncJobRecord> {
+    const job = this.requireOwnedAsyncJob(input.id, input.workerId);
     const timestamp = now();
     const updated: AsyncJobRecord = {
       ...job,
@@ -995,6 +1140,7 @@ export class MemorySupportRepository implements SupportRepository {
       result: input.result ?? {},
       lockedBy: undefined,
       lockedAt: undefined,
+      leaseExpiresAt: undefined,
       error: undefined,
       updatedAt: timestamp
     };
@@ -1004,10 +1150,11 @@ export class MemorySupportRepository implements SupportRepository {
 
   async failAsyncJob(input: {
     id: string;
+    workerId: string;
     error: string;
     retryAt?: string;
   }): Promise<AsyncJobRecord> {
-    const job = this.requireAsyncJob(input.id);
+    const job = this.requireOwnedAsyncJob(input.id, input.workerId);
     const timestamp = now();
     const shouldRetry = Boolean(input.retryAt) && job.attempts < job.maxAttempts;
     const updated: AsyncJobRecord = {
@@ -1016,6 +1163,7 @@ export class MemorySupportRepository implements SupportRepository {
       runAt: shouldRetry ? (input.retryAt ?? job.runAt) : job.runAt,
       lockedBy: undefined,
       lockedAt: undefined,
+      leaseExpiresAt: undefined,
       error: input.error,
       updatedAt: timestamp
     };
@@ -1064,6 +1212,26 @@ export class MemorySupportRepository implements SupportRepository {
       throw new Error(`Async job not found: ${jobId}`);
     }
     return job;
+  }
+
+  private requireOwnedAsyncJob(jobId: string, workerId: string): AsyncJobRecord {
+    const job = this.requireAsyncJob(jobId);
+    if (job.status !== "running" || job.lockedBy !== workerId) {
+      throw new Error(`Async job lease is not owned by this worker: ${jobId}`);
+    }
+    return job;
+  }
+}
+
+function boundedMessageLimit(limit: number | undefined): number {
+  return Math.max(1, Math.min(limit ?? 200, 201));
+}
+
+function assertMatchingIdempotencyHash(existing: string | undefined, requested: string): void {
+  if (existing !== requested) {
+    throw new IdempotencyConflictError(
+      "Idempotency key was already used with a different request payload"
+    );
   }
 }
 

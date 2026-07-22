@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { indexTextDocument } from "@opensupportai/rag";
+import { createPrismaClient } from "./prisma-client";
 
 export type WorkerJobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
@@ -11,27 +12,37 @@ export type WorkerJob = {
   payload: Record<string, unknown>;
   attempts: number;
   maxAttempts: number;
+  leaseExpiresAt?: string;
 };
 
 export type WorkerJobQueue = {
-  claimNext(input: { workerId: string; types?: string[] }): Promise<WorkerJob | undefined>;
-  complete(input: { id: string; result?: Record<string, unknown> }): Promise<void>;
-  fail(input: { id: string; error: string; retryAt?: string }): Promise<void>;
+  claimNext(input: {
+    workerId: string;
+    types?: string[];
+    leaseMs: number;
+  }): Promise<WorkerJob | undefined>;
+  renewLease(input: { id: string; workerId: string; leaseMs: number }): Promise<void>;
+  complete(input: {
+    id: string;
+    workerId: string;
+    result?: Record<string, unknown>;
+  }): Promise<void>;
+  fail(input: { id: string; workerId: string; error: string; retryAt?: string }): Promise<void>;
 };
 
 export type WorkerJobHandler = (job: WorkerJob) => Promise<Record<string, unknown> | void>;
 
 export type WorkerRuntimeConfig = {
-  queueName: string;
   workerId: string;
   pollIntervalMs: number;
   retryDelayMs: number;
+  leaseMs: number;
   jobTypes: string[];
 };
 
 export type WorkerRuntime = {
-  runOnce(): Promise<"processed" | "idle">;
-  start(): { stop(): void };
+  runOnce(): Promise<"processed" | "idle" | "busy">;
+  start(): { stop(): Promise<void> };
 };
 
 export type KnowledgeIndexDocument = {
@@ -79,10 +90,10 @@ export type KnowledgeIndexStore = {
 };
 
 export const workerRuntimeConfig: WorkerRuntimeConfig = {
-  queueName: process.env["WORKER_QUEUE_NAME"] ?? "opensupportai",
   workerId: process.env["WORKER_ID"] ?? `worker_${Math.random().toString(16).slice(2)}`,
   pollIntervalMs: Number(process.env["WORKER_POLL_INTERVAL_MS"] ?? 5_000),
   retryDelayMs: Number(process.env["WORKER_RETRY_DELAY_MS"] ?? 30_000),
+  leaseMs: Number(process.env["WORKER_LEASE_MS"] ?? 60_000),
   jobTypes: parseJobTypes(process.env["WORKER_JOB_TYPES"])
 };
 
@@ -97,61 +108,107 @@ export function createWorkerRuntime(input: {
     ...input.config,
     jobTypes: input.config?.jobTypes ?? Object.keys(input.handlers)
   };
+  validateWorkerRuntimeConfig(config);
   const now = input.now ?? (() => new Date());
+  let activeRun: Promise<"processed" | "idle"> | undefined;
 
-  return {
-    async runOnce() {
-      const job = await input.queue.claimNext({
+  const processOne = async (): Promise<"processed" | "idle"> => {
+    const job = await input.queue.claimNext({
+      workerId: config.workerId,
+      types: config.jobTypes,
+      leaseMs: config.leaseMs
+    });
+    if (!job) {
+      return "idle";
+    }
+
+    const handler = input.handlers[job.type];
+    if (!handler) {
+      await input.queue.fail({
+        id: job.id,
         workerId: config.workerId,
-        types: config.jobTypes
+        error: `No handler registered for job type: ${job.type}`
       });
-      if (!job) {
-        return "idle";
-      }
-
-      const handler = input.handlers[job.type];
-      if (!handler) {
-        await input.queue.fail({
-          id: job.id,
-          error: `No handler registered for job type: ${job.type}`
-        });
-        return "processed";
-      }
-
-      try {
-        const result = await handler(job);
-        await input.queue.complete({
-          id: job.id,
-          result: result ?? {}
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown worker error";
-        await input.queue.fail({
-          id: job.id,
-          error: message,
-          retryAt:
-            job.attempts < job.maxAttempts
-              ? new Date(now().getTime() + config.retryDelayMs).toISOString()
-              : undefined
-        });
-      }
-
       return "processed";
+    }
+
+    const heartbeat = setInterval(
+      () => {
+        void input.queue
+          .renewLease({ id: job.id, workerId: config.workerId, leaseMs: config.leaseMs })
+          .catch((error) => {
+            console.error(error instanceof Error ? error.message : "Worker lease renewal failed");
+          });
+      },
+      Math.max(100, Math.floor(config.leaseMs / 3))
+    );
+    try {
+      const result = await handler(job);
+      await input.queue.complete({
+        id: job.id,
+        workerId: config.workerId,
+        result: result ?? {}
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown worker error";
+      await input.queue.fail({
+        id: job.id,
+        workerId: config.workerId,
+        error: message,
+        retryAt:
+          job.attempts < job.maxAttempts
+            ? new Date(now().getTime() + config.retryDelayMs).toISOString()
+            : undefined
+      });
+    } finally {
+      clearInterval(heartbeat);
+    }
+
+    return "processed";
+  };
+
+  const runtime: WorkerRuntime = {
+    async runOnce() {
+      if (activeRun) {
+        return "busy";
+      }
+      activeRun = processOne();
+      try {
+        return await activeRun;
+      } finally {
+        activeRun = undefined;
+      }
     },
     start() {
-      const timer = setInterval(() => {
-        void this.runOnce().catch((error) => {
+      let stopped = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const tick = async () => {
+        if (stopped) {
+          return;
+        }
+        try {
+          await runtime.runOnce();
+        } catch (error) {
           console.error(error instanceof Error ? error.message : "Worker run failed");
-        });
-      }, config.pollIntervalMs);
+        }
+        if (!stopped) {
+          timer = setTimeout(() => void tick(), config.pollIntervalMs);
+        }
+      };
+      timer = setTimeout(() => void tick(), 0);
 
       return {
-        stop() {
-          clearInterval(timer);
+        async stop() {
+          stopped = true;
+          if (timer) {
+            clearTimeout(timer);
+          }
+          await activeRun;
         }
       };
     }
   };
+  return runtime;
 }
 
 export function createKnowledgeIndexHandler(store: KnowledgeIndexStore): WorkerJobHandler {
@@ -239,69 +296,114 @@ export function createDefaultWorkerHandlers(input: {
   knowledgeStore: KnowledgeIndexStore;
 }): Record<string, WorkerJobHandler> {
   return {
-    "knowledge.index": createKnowledgeIndexHandler(input.knowledgeStore),
-    "webhook.retry": async (job) => ({
-      skipped: true,
-      job_type: job.type,
-      reason: "webhook.retry handler is not implemented yet"
-    })
+    "knowledge.index": createKnowledgeIndexHandler(input.knowledgeStore)
   };
 }
 
-export function createPrismaWorkerQueue(prisma: PrismaClient = new PrismaClient()): WorkerJobQueue {
+export function createPrismaWorkerQueue(
+  prisma: PrismaClient = createPrismaClient()
+): WorkerJobQueue {
   return {
     async claimNext(input) {
-      const job = await prisma.asyncJob.findFirst({
-        where: {
-          status: "queued",
-          runAt: { lte: new Date() },
-          ...(input.types?.length ? { type: { in: input.types } } : {})
-        },
-        orderBy: [{ runAt: "asc" }, { createdAt: "asc" }]
-      });
-      if (!job) {
+      const nowValue = new Date();
+      const leaseExpiresAt = new Date(nowValue.getTime() + input.leaseMs);
+      await prisma.$executeRaw(Prisma.sql`
+        UPDATE "async_jobs"
+        SET
+          "status" = 'failed',
+          "locked_by" = NULL,
+          "locked_at" = NULL,
+          "lease_expires_at" = NULL,
+          "error" = 'Job lease expired after the maximum number of attempts',
+          "updated_at" = ${nowValue}
+        WHERE
+          "status" = 'running'
+          AND "lease_expires_at" <= ${nowValue}
+          AND "attempts" >= "max_attempts"
+      `);
+      const typeFilter = input.types?.length
+        ? Prisma.sql`AND "type" IN (${Prisma.join(input.types)})`
+        : Prisma.empty;
+      const claimed = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        WITH candidate AS (
+          SELECT "id"
+          FROM "async_jobs"
+          WHERE (
+            ("status" = 'queued' AND "run_at" <= ${nowValue})
+            OR ("status" = 'running' AND "lease_expires_at" <= ${nowValue})
+          )
+          AND "attempts" < "max_attempts"
+          ${typeFilter}
+          ORDER BY "run_at" ASC, "created_at" ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT 1
+        )
+        UPDATE "async_jobs" AS job
+        SET
+          "status" = 'running',
+          "attempts" = job."attempts" + 1,
+          "locked_by" = ${input.workerId},
+          "locked_at" = ${nowValue},
+          "lease_expires_at" = ${leaseExpiresAt},
+          "updated_at" = ${nowValue}
+        FROM candidate
+        WHERE job."id" = candidate."id"
+        RETURNING job."id"
+      `);
+      if (!claimed[0]) {
         return undefined;
       }
-      const updated = await prisma.asyncJob.update({
-        where: { id: job.id },
-        data: {
-          status: "running",
-          attempts: { increment: 1 },
-          lockedBy: input.workerId,
-          lockedAt: new Date()
-        }
+      return mapPrismaJob(
+        await prisma.asyncJob.findUniqueOrThrow({ where: { id: claimed[0].id } })
+      );
+    },
+    async renewLease(input) {
+      const result = await prisma.asyncJob.updateMany({
+        where: { id: input.id, status: "running", lockedBy: input.workerId },
+        data: { leaseExpiresAt: new Date(Date.now() + input.leaseMs) }
       });
-      return mapPrismaJob(updated);
+      requireOwnedUpdate(result.count, input.id);
     },
     async complete(input) {
-      await prisma.asyncJob.update({
-        where: { id: input.id },
+      const result = await prisma.asyncJob.updateMany({
+        where: { id: input.id, status: "running", lockedBy: input.workerId },
         data: {
           status: "completed",
           result: jsonInput(input.result ?? {}),
           lockedBy: null,
           lockedAt: null,
+          leaseExpiresAt: null,
           error: null
         }
       });
+      requireOwnedUpdate(result.count, input.id);
     },
     async fail(input) {
-      await prisma.asyncJob.update({
-        where: { id: input.id },
+      const existing = await prisma.asyncJob.findFirst({
+        where: { id: input.id, status: "running", lockedBy: input.workerId }
+      });
+      if (!existing) {
+        throw new Error(`Async job lease is not owned by this worker: ${input.id}`);
+      }
+      const shouldRetry = Boolean(input.retryAt) && existing.attempts < existing.maxAttempts;
+      const result = await prisma.asyncJob.updateMany({
+        where: { id: input.id, status: "running", lockedBy: input.workerId },
         data: {
-          status: input.retryAt ? "queued" : "failed",
-          runAt: input.retryAt ? new Date(input.retryAt) : undefined,
+          status: shouldRetry ? "queued" : "failed",
+          runAt: shouldRetry && input.retryAt ? new Date(input.retryAt) : undefined,
           lockedBy: null,
           lockedAt: null,
+          leaseExpiresAt: null,
           error: input.error
         }
       });
+      requireOwnedUpdate(result.count, input.id);
     }
   };
 }
 
 export function createPrismaKnowledgeIndexStore(
-  prisma: PrismaClient = new PrismaClient()
+  prisma: PrismaClient = createPrismaClient()
 ): KnowledgeIndexStore {
   return {
     async getDocument(input) {
@@ -379,12 +481,30 @@ export function createPrismaKnowledgeIndexStore(
 
 function parseJobTypes(value: string | undefined): string[] {
   if (!value) {
-    return ["knowledge.index", "webhook.retry"];
+    return ["knowledge.index"];
   }
   return value
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function validateWorkerRuntimeConfig(config: WorkerRuntimeConfig): void {
+  if (!config.workerId.trim()) {
+    throw new Error("WORKER_ID must not be empty");
+  }
+  for (const [name, value] of [
+    ["WORKER_POLL_INTERVAL_MS", config.pollIntervalMs],
+    ["WORKER_RETRY_DELAY_MS", config.retryDelayMs],
+    ["WORKER_LEASE_MS", config.leaseMs]
+  ] as const) {
+    if (!Number.isInteger(value) || value <= 0) {
+      throw new Error(`${name} must be a positive integer`);
+    }
+  }
+  if (config.jobTypes.length === 0) {
+    throw new Error("WORKER_JOB_TYPES must contain at least one implemented job type");
+  }
 }
 
 function requiredPayloadString(payload: Record<string, unknown>, key: string): string {
@@ -412,6 +532,7 @@ function mapPrismaJob(job: {
   payload: unknown;
   attempts: number;
   maxAttempts: number;
+  leaseExpiresAt: Date | null;
 }): WorkerJob {
   return {
     id: job.id,
@@ -419,26 +540,40 @@ function mapPrismaJob(job: {
     status: job.status as WorkerJobStatus,
     payload: jsonRecord(job.payload),
     attempts: job.attempts,
-    maxAttempts: job.maxAttempts
+    maxAttempts: job.maxAttempts,
+    leaseExpiresAt: job.leaseExpiresAt?.toISOString()
   };
+}
+
+function requireOwnedUpdate(count: number, id: string): void {
+  if (count !== 1) {
+    throw new Error(`Async job lease is not owned by this worker: ${id}`);
+  }
 }
 
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-if (process.env["NODE_ENV"] !== "test") {
-  const prisma = new PrismaClient();
+if (process.env["NODE_ENV"] !== "test" && process.env["WORKER_AUTOSTART"] !== "false") {
+  const prisma = createPrismaClient();
   const runtime = createWorkerRuntime({
     queue: createPrismaWorkerQueue(prisma),
     handlers: createDefaultWorkerHandlers({
       knowledgeStore: createPrismaKnowledgeIndexStore(prisma)
     })
   });
-  if (process.env["WORKER_AUTOSTART"] !== "false") {
-    runtime.start();
-  }
-  console.log(
-    `OpenSupportAI worker ready for queue ${workerRuntimeConfig.queueName}; job types: ${workerRuntimeConfig.jobTypes.join(", ")}`
-  );
+  const controller = runtime.start();
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    await controller.stop();
+    await prisma.$disconnect();
+  };
+  process.once("SIGINT", () => void shutdown());
+  process.once("SIGTERM", () => void shutdown());
+  console.log(`OpenSupportAI worker ready; job types: ${workerRuntimeConfig.jobTypes.join(", ")}`);
 }
